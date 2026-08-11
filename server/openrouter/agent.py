@@ -40,21 +40,12 @@ LOCAL_TOOL_SCHEMAS = [
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
-                    "paths": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 1,
-                        "maxItems": 20,
-                    },
+                    "paths": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 20},
                     "start_line": {"type": "integer", "minimum": 1},
                     "end_line": {"type": "integer", "minimum": 1},
                     "start_byte": {"type": "integer", "minimum": 0},
                     "cursor": {"type": "string"},
-                    "max_bytes": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 256000,
-                    },
+                    "max_bytes": {"type": "integer", "minimum": 1, "maximum": 256000},
                 },
                 "oneOf": [{"required": ["path"]}, {"required": ["paths"]}],
                 "additionalProperties": False,
@@ -181,48 +172,31 @@ LOCAL_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "apply_patch",
-            "description": "Create/update/delete staged text. Use current hash; null only for create. Returns checkpoint.",
+            "description": "Create/update staged UTF-8 text. Each edit must explicitly choose replace_file or replace_exact; returns a bounded diff and checkpoint.",
             "parameters": {
                 "type": "object",
+                "required": ["edits"],
                 "properties": {
                     "edits": {
                         "type": "array",
+                        "minItems": 1,
+                        "maxItems": 100,
                         "items": {
                             "type": "object",
-                            "required": ["path", "expected_sha256", "content"],
+                            "required": ["path", "expected_sha256", "mode"],
                             "properties": {
                                 "path": {"type": "string"},
-                                "expected_sha256": {
-                                    "type": ["string", "null"],
-                                },
-                                "content": {
-                                    "type": ["string", "null"],
-                                },
-                            },
-                            "additionalProperties": False,
-                        },
-                    },
-                    "replacements": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "required": ["path", "expected_sha256", "old_text", "new_text"],
-                            "properties": {
-                                "path": {"type": "string"},
-                                "expected_sha256": {"type": "string"},
-                                "old_text": {"type": "string", "minLength": 1},
-                                "new_text": {"type": "string"},
-                                "expected_occurrences": {
-                                    "type": "integer",
-                                    "minimum": 1,
-                                    "maximum": 1000,
-                                },
+                                "expected_sha256": {"type": ["string", "null"]},
+                                "mode": {"type": "string", "enum": ["replace_file", "replace_exact"]},
+                                "content": {"type": "string"},
+                                "old_str": {"type": "string", "minLength": 1},
+                                "new_str": {"type": "string"},
+                                "expected_occurrences": {"type": "integer", "minimum": 1, "maximum": 1000},
                             },
                             "additionalProperties": False,
                         },
                     },
                 },
-                "anyOf": [{"required": ["edits"]}, {"required": ["replacements"]}],
                 "additionalProperties": False,
             },
         },
@@ -238,7 +212,7 @@ LOCAL_TOOL_SCHEMAS = [
                 "properties": {
                     "executable": {"type": "string"},
                     "arguments": {"type": "array", "items": {"type": "string"}},
-                    "working_directory": {"type": "string"},
+                    "working_directory": {"type": "string", "description": "Must be an existing directory path, not a file or script."},
                     "timeout_seconds": {"type": "integer"},
                     "environment": {"type": "object"},
                     "stdin": {"type": "string", "maxLength": 256000},
@@ -306,16 +280,9 @@ async def agent_turn(
     message = _normalize_message(choices[0]["message"])
     content = message.get("content")
     if isinstance(content, list):
-        content = "".join(
-            str(item.get("text") or "") for item in content if isinstance(item, dict)
-        )
+        content = "".join(str(item.get("text") or "") for item in content if isinstance(item, dict))
     calls = tuple(item for item in message.get("tool_calls") or () if isinstance(item, dict))
-    return AgentTurn(
-        str(content or ""),
-        calls,
-        message,
-        normalize_usage(data.get("usage") or {}),
-    )
+    return AgentTurn(str(content or ""), calls, message, normalize_usage(data.get("usage") or {}))
 
 
 def _normalize_message(raw: dict[str, Any]) -> dict[str, Any]:
@@ -330,13 +297,11 @@ def _normalize_message(raw: dict[str, Any]) -> dict[str, Any]:
         arguments = function.get("arguments")
         if isinstance(arguments, dict):
             arguments = json.dumps(arguments, separators=(",", ":"))
-        calls.append(
-            {
-                "id": str(item.get("id") or uuid.uuid4()),
-                "type": "function",
-                "function": {"name": name, "arguments": str(arguments or "{}")},
-            }
-        )
+        calls.append({
+            "id": str(item.get("id") or uuid.uuid4()),
+            "type": "function",
+            "function": {"name": name, "arguments": str(arguments or "{}")},
+        })
     if calls:
         normalized["tool_calls"] = calls
     return normalized
