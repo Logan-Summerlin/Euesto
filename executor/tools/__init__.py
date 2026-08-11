@@ -1,10 +1,11 @@
 """Network-disabled, staging-only workspace executor tools.
 
-Filesystem lookup: use ``list_files`` with an exact directory or glob to find files or check
-whether a path exists. Use ``search_text`` when you need to search file contents. ``read_file``
-reads by line range or byte range, never both; ``search_text`` path filters restrict which files
-are searched; ``list_files`` reports truncation explicitly; invalid ranges are errors rather
-than successful empty results.
+Filesystem lookup: use ``list_files`` for directory structure, filename discovery, and existence
+checks. Use ``max_depth`` for shallow structural queries and ``max_results`` when only a bounded
+number of entries is needed. Limits and filters constrain traversal where practical; results may
+be truncated, so check ``truncated``/``has_more`` and use the cursor to continue. Use
+``search_text`` when you need to search file contents. ``read_file`` reads by line range or byte
+range, never both; ``search_text`` path filters restrict which files are searched.
 """
 
 from ..checkpoints import restore_checkpoint
