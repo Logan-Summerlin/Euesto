@@ -23,6 +23,7 @@ def list_files(root: Path, arguments: dict, *, limit: int = 1000) -> tuple[str, 
         maximum = min(maximum, MAX_HASH_RESULTS)
     lines: list[str] = []
     truncated = False
+    matched_count = 0
     paths = sorted(directory.rglob("*"), key=lambda item: item.as_posix().casefold())
     start = _decode_cursor(arguments.get("cursor"))
     next_cursor = None
@@ -35,33 +36,43 @@ def list_files(root: Path, arguments: dict, *, limit: int = 1000) -> tuple[str, 
             continue
         if any(part.startswith(".local-chat-") for part in path.relative_to(root).parts):
             continue
-        if fnmatch.fnmatch(relative_from_dir.as_posix(), pattern):
-            if len(lines) >= maximum:
-                truncated = True
-                # The current path triggered the page limit but was not emitted;
-                # resume at it so the next page cannot skip a visible entry.
-                next_cursor = _encode_cursor(index)
-                break
-            display = relative + ("/" if path.is_dir() else "")
-            if include_sha256:
-                kind = "directory" if path.is_dir() else "file"
-                size = "-" if path.is_dir() else str(path.stat().st_size)
-                digest = "-" if path.is_dir() else sha256_file(path)
-                lines.append(f"{kind}\t{size}\t{digest}\t{display}")
-            elif detailed:
-                kind = "directory" if path.is_dir() else "file"
-                size = "-" if path.is_dir() else str(path.stat().st_size)
-                lines.append(f"{kind}\t{size}\t{display}")
-            else:
-                lines.append(display)
-    data: dict[str, object] = {"count": len(lines), "truncated": truncated, "details": detailed}
+        if not fnmatch.fnmatch(relative_from_dir.as_posix(), pattern):
+            continue
+        matched_count += 1
+        if len(lines) >= maximum:
+            truncated = True
+            next_cursor = _encode_cursor(index)
+            break
+        display = relative + ("/" if path.is_dir() else "")
+        if include_sha256:
+            kind = "directory" if path.is_dir() else "file"
+            size = "-" if path.is_dir() else str(path.stat().st_size)
+            digest = "-" if path.is_dir() else sha256_file(path)
+            lines.append(f"{kind}\t{size}\t{digest}\t{display}")
+        elif detailed:
+            kind = "directory" if path.is_dir() else "file"
+            size = "-" if path.is_dir() else str(path.stat().st_size)
+            lines.append(f"{kind}\t{size}\t{display}")
+        else:
+            lines.append(display)
+
+    data: dict[str, object] = {
+        "count": len(lines),
+        "truncated": truncated,
+        "has_more": truncated,
+        "details": detailed,
+    }
     if include_sha256:
         data["include_sha256"] = True
         data["limit"] = maximum
-    if truncated or arguments.get("cursor"):
+    if truncated:
         data["next_cursor"] = next_cursor
-        data["total_known"] = len(paths) if not truncated else None
         data["limit"] = maximum
+    else:
+        data["total_known"] = matched_count
+        if arguments.get("cursor"):
+            data["next_cursor"] = None
+            data["limit"] = maximum
     return "\n".join(lines), data
 
 

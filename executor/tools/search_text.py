@@ -23,7 +23,8 @@ def search_text(root: Path, arguments: dict, *, max_bytes: int, max_results: int
     exclude = str(arguments.get("exclude_glob") or "")
     files = [scope] if scope.is_file() else sorted(scope.rglob("*"), key=lambda item: item.as_posix().casefold())
     matches: list[dict[str, object]] = []
-    files_scanned = 0
+    files_considered = 0
+    files_searched = 0
     truncated = False
     skipped_large = 0
     context_lines = min(5, max(0, int(arguments.get("context_lines") or 0)))
@@ -32,9 +33,6 @@ def search_text(root: Path, arguments: dict, *, max_bytes: int, max_results: int
     seen_matches = 0
     for path in files:
         if not path.is_file() or path.is_symlink():
-            continue
-        if path.stat().st_size > max_bytes:
-            skipped_large += 1
             continue
         relative = path.relative_to(root).as_posix()
         if is_secret_path(relative) or any(
@@ -45,11 +43,15 @@ def search_text(root: Path, arguments: dict, *, max_bytes: int, max_results: int
             exclude and _matches_glob(relative, exclude)
         ):
             continue
-        files_scanned += 1
+        files_considered += 1
+        if path.stat().st_size > max_bytes:
+            skipped_large += 1
+            continue
         try:
             text = path.read_text(encoding="utf-8")
         except (UnicodeError, OSError):
             continue
+        files_searched += 1
         text_lines = text.splitlines()
         for number, line in enumerate(text_lines, 1):
             if pattern.search(line):
@@ -80,7 +82,9 @@ def search_text(root: Path, arguments: dict, *, max_bytes: int, max_results: int
     )
     data: dict[str, object] = {
         "matches_returned": len(matches),
-        "files_scanned": files_scanned,
+        "files_considered": files_considered,
+        "files_searched": files_searched,
+        "files_scanned": files_searched,
         "truncated": truncated,
     }
     if truncated:
