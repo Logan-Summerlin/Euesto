@@ -58,7 +58,11 @@ def test_list_files_details_are_bounded_without_duplicate_path_data(tmp_path: Pa
     assert "file\t3\ta.txt" in output
     assert "directory\t-\tfolder/" in output
     assert ".local-chat-snapshot" not in output
-    assert data == {"count": 2, "truncated": False, "details": True}
+    assert data["count"] == 2
+    assert data["truncated"] is False
+    assert data["has_more"] is False
+    assert data["total_known"] == 2
+    assert data["details"] is True
 
 
 def test_list_files_can_return_bounded_hash_metadata(tmp_path: Path) -> None:
@@ -112,7 +116,11 @@ def test_search_supports_case_and_globs_without_duplicating_matches(tmp_path: Pa
         max_bytes=1_000_000,
     )
     assert output == "one.py:1:Needle"
-    assert data == {"matches_returned": 1, "files_scanned": 1, "truncated": False}
+    assert data["matches_returned"] == 1
+    assert data["files_considered"] == 1
+    assert data["files_searched"] == 1
+    assert data["files_scanned"] == 1
+    assert data["truncated"] is False
 
     _output, limited = search_text(
         tmp_path,

@@ -1,3 +1,12 @@
+"""Network-disabled, staging-only workspace executor tools.
+
+Filesystem lookup: use ``list_files`` with an exact directory or glob to find files or check
+whether a path exists. Use ``search_text`` when you need to search file contents. ``read_file``
+reads by line range or byte range, never both; ``search_text`` path filters restrict which files
+are searched; ``list_files`` reports truncation explicitly; invalid ranges are errors rather
+than successful empty results.
+"""
+
 from ..checkpoints import restore_checkpoint
 from .apply_patch import apply_patch
 from .file_ops import move_or_copy_file
