@@ -25,6 +25,8 @@ def apply_patch(
     if set(arguments) - {"edits"}:
         raise ValueError("Unknown apply_patch arguments")
     edits = arguments.get("edits") or []
+    if isinstance(edits, dict):
+        edits = [edits]
     if not isinstance(edits, list) or not 1 <= len(edits) <= 100:
         raise ValueError("apply_patch requires 1-100 edits")
 

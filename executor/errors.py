@@ -41,6 +41,33 @@ def classify_error(exc: BaseException) -> ExecutorToolError:
     lowered = message.casefold()
     if "working directory" in lowered:
         return ExecutorToolError("working_directory.invalid", message)
+    if "executable is not installed" in lowered:
+        return ExecutorToolError(
+            "command.invalid_arguments",
+            "Invalid run_command argument 'executable': executable is not installed in the executor.",
+        )
+    if "executable must be a non-shell" in lowered:
+        return ExecutorToolError(
+            "command.invalid_arguments",
+            "Invalid run_command argument 'executable': must be an approved non-shell executable name.",
+        )
+    if "command arguments must be" in lowered:
+        return ExecutorToolError(
+            "command.invalid_arguments",
+            "Invalid run_command argument 'arguments': must be an array of strings with at most 200 items.",
+        )
+    if "forbidden environment variable" in lowered:
+        return ExecutorToolError(
+            "command.invalid_arguments",
+            "Invalid run_command argument 'environment': only approved environment variables are allowed.",
+        )
+    if "command stdin must be" in lowered:
+        return ExecutorToolError(
+            "command.invalid_arguments",
+            "Invalid run_command argument 'stdin': must be bounded UTF-8 text.",
+        )
+    if "invalid run_command argument" in lowered:
+        return ExecutorToolError("command.invalid_arguments", message)
     if "hash conflict" in lowered or "match conflict" in lowered:
         return ExecutorToolError("staging.conflict", message, retryable=True)
     if "shrink" in lowered:

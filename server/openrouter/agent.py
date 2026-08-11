@@ -154,8 +154,7 @@ LOCAL_TOOL_SCHEMAS = [
                 "properties": {
                     "source": {"type": "string"},
                     "destination": {"type": "string"},
-                    "expected_sha256": {"type": "string"},
-                    "destination_sha256": {"type": ["string", "null"]},
+                    "expected_sha256": {"type": ["string", "null"]},
                 },
                 "additionalProperties": False,
             },
@@ -181,13 +180,13 @@ LOCAL_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "apply_patch",
-            "description": "edits[].content replaces the ENTIRE file when mode=replace_file. For a snippet edit, use mode=replace_exact (old_str/new_str, hash-checked).",
+            "description": "edits may be one edit object or an array. edits[].content replaces the ENTIRE file when mode=replace_file. For a snippet edit, use mode=replace_exact (old_str/new_str, hash-checked). Example: edits: [{path: \"app.py\", expected_sha256: \"...\", mode: \"replace_file\", content: \"...\"}].",
             "parameters": {
                 "type": "object",
                 "required": ["edits"],
                 "properties": {
                     "edits": {
-                        "type": "array",
+                        "type": ["array", "object"],
                         "minItems": 1,
                         "maxItems": 100,
                         "items": {
@@ -214,7 +213,7 @@ LOCAL_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "run_command",
-            "description": "git and interpreters run via approved commands; staged files persist across calls — write real test files instead of one-off -c snippets.",
+            "description": "git and interpreters run via approved commands; staged files persist across calls — write real test files instead of one-off -c snippets. Commands run non-interactively; input() receives EOF unless stdin is supplied.",
             "parameters": {
                 "type": "object",
                 "required": ["executable", "arguments"],
