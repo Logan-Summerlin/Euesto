@@ -50,11 +50,7 @@ LOCAL_TOOL_SCHEMAS = [
                     "end_line": {"type": "integer", "minimum": 1},
                     "start_byte": {"type": "integer", "minimum": 0},
                     "cursor": {"type": "string"},
-                    "max_bytes": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 256000,
-                    },
+                    "max_bytes": {"type": "integer", "minimum": 1, "maximum": 256000},
                 },
                 "oneOf": [{"required": ["path"]}, {"required": ["paths"]}],
                 "additionalProperties": False,
@@ -213,7 +209,7 @@ LOCAL_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "run_command",
-            "description": "git and interpreters run via approved commands; staged files persist across calls — write real test files instead of one-off -c snippets. Commands run non-interactively; input() receives EOF unless stdin is supplied.",
+            "description": "Run approved commands; staged files persist. Commands run non-interactively; input() gets EOF unless stdin is supplied.",
             "parameters": {
                 "type": "object",
                 "required": ["executable", "arguments"],

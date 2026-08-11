@@ -91,7 +91,7 @@ def apply_patch(
         raise ValueError("Patch content exceeds the mutation limit")
 
     diffs: list[dict[str, object]] = []
-    for path, relative, _current, content in planned:
+    for path, _relative, _current, content in planned:
         diff = _bounded_diff(path, content)
         diffs.append(diff)
 
