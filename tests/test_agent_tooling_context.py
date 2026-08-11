@@ -39,7 +39,7 @@ def test_tool_contracts_expose_existing_controls_without_excess_schema_context()
     assert read_parameters["properties"]["max_bytes"]["maximum"] == 256_000
     assert "case_sensitive" in search_parameters
     assert {"include_glob", "exclude_glob"} <= set(search_parameters)
-    assert "replacements" in patch_parameters["properties"]
+    assert "edits" in patch_parameters["properties"]
     assert all(_schema(name).get("description") for name in {
         "list_files", "read_file", "search_text", "inspect_workspace",
         "inspect_checkpoint", "apply_patch", "run_command", "move_file",
@@ -141,12 +141,13 @@ def test_apply_patch_exact_replacement_uses_read_hash_and_fails_before_writing(
     _output, result = apply_patch(
         tmp_path,
         {
-            "replacements": [
+            "edits": [
                 {
                     "path": "value.txt",
                     "expected_sha256": metadata["sha256"],
-                    "old_text": "two",
-                    "new_text": "2",
+                    "mode": "replace_exact",
+                    "old_str": "two",
+                    "new_str": "2",
                 }
             ]
         },
@@ -161,16 +162,16 @@ def test_apply_patch_exact_replacement_uses_read_hash_and_fails_before_writing(
             tmp_path,
             {
                 "edits": [
-                    {"path": "unwritten.txt", "expected_sha256": None, "content": "new"}
-                ],
-                "replacements": [
+                    {"path": "unwritten.txt", "expected_sha256": None, "mode": "replace_file", "content": "new"},
                     {
                         "path": "value.txt",
                         "expected_sha256": current,
-                        "old_text": "e",
-                        "new_text": "E",
-                    }
-                ],
+                        "mode": "replace_exact",
+                        "old_str": "e",
+                        "new_str": "E",
+                        "expected_occurrences": 2,
+                    },
+                ]
             },
             max_bytes=1_000,
         )

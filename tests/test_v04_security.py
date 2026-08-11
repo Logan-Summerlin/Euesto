@@ -65,7 +65,7 @@ def test_staging_tools_never_change_source(tmp_path: Path) -> None:
     digest = hashlib.sha256(b"old").hexdigest()
     request = ToolRequest(
         "request", "run", "apply_patch", "agent",
-        {"edits": [{"path": "hello.txt", "expected_sha256": digest, "content": "new"}]},
+        {"edits": [{"path": "hello.txt", "expected_sha256": digest, "mode": "replace_file", "content": "new"}]},
     )
     result = asyncio.run(service.execute(request))
     assert result.ok
