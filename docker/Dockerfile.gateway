@@ -1,0 +1,23 @@
+FROM python:3.12.13-slim-bookworm@sha256:ac212230555ffb7ec17c214fb4cf036ced11b30b5b460994376b0725c7f6c151 AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN groupadd --system --gid 10001 gateway \
+    && useradd --system --uid 10001 --gid gateway --home-dir /nonexistent --shell /usr/sbin/nologin gateway \
+    && mkdir --mode=0700 /data \
+    && mkdir --mode=0770 /run/ipc \
+    && chown gateway:gateway /data /run/ipc
+
+WORKDIR /app
+COPY requirements-gateway.txt ./
+RUN python -m pip install --require-hashes --requirement requirements-gateway.txt
+COPY shared ./shared
+COPY server ./server
+
+USER 10001:10001
+EXPOSE 8765
+ENTRYPOINT ["python", "-m", "uvicorn"]
+CMD ["server.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8765", "--no-access-log", "--no-proxy-headers"]

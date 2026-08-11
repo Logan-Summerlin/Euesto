@@ -1,0 +1,13 @@
+FROM python:3.12.13-slim-bookworm@sha256:ac212230555ffb7ec17c214fb4cf036ced11b30b5b460994376b0725c7f6c151
+
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONUTF8=1
+WORKDIR /app
+RUN groupadd --gid 10001 executor && useradd --uid 10002 --gid 10001 --no-create-home executor
+COPY requirements-gateway.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt
+COPY shared /app/shared
+COPY executor /app/executor
+COPY docker/executor-entrypoint.sh /usr/local/bin/executor-entrypoint
+RUN chmod 0555 /usr/local/bin/executor-entrypoint && mkdir -p /run/ipc /work && chown 10002:10001 /run/ipc /work
+USER 10002:10001
+ENTRYPOINT ["/usr/local/bin/executor-entrypoint"]

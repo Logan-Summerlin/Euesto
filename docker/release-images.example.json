@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "gateway": "ghcr.io/logan-summerlin/local-openrouter-chat-gateway:v1.1.0@sha256:replace-with-release-digest",
+  "executor": "ghcr.io/logan-summerlin/local-openrouter-chat-executor:v1.1.0@sha256:replace-with-release-digest"
+}

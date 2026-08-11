@@ -1,0 +1,29 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+.env
+
+# Local secrets and user data
+*.sqlite
+*.sqlite3
+*.db
+*.key
+settings.json
+gateway-session/
+gateway_token.txt
+
+# Packaging output (keep build/chatbot.spec and build/version_info.txt)
+dist/
+build/work/
+build/output/
+build/chatbot/
+*.zip
+
+# Editors and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

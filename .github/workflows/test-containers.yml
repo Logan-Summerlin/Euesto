@@ -1,0 +1,95 @@
+name: Validate local gateway
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  gateway:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install test dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Validate Python
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          pytest
+          ruff check .
+          python -m compileall -q app.py src server shared executor tests scripts
+          pyside6-qmllint qml/Main.qml qml/Sidebar.qml qml/Transcript.qml qml/Composer.qml
+      - name: Render hardened Compose profile
+        shell: bash
+        run: |
+          mkdir -p /tmp/local-chatbot-ci-secrets
+          mkdir -p /tmp/local-chatbot-ci-workspace
+          printf '%s' 'safe fixture' > /tmp/local-chatbot-ci-workspace/fixture.txt
+          printf '%s' 'ci-token-with-at-least-thirty-two-bytes-0001' > /tmp/local-chatbot-ci-secrets/gateway_token.txt
+          printf '%s' 'ci-executor-token-with-at-least-thirty-two-bytes-0001' > /tmp/local-chatbot-ci-secrets/executor_token.txt
+          LOCAL_CHAT_SECRETS_DIR=/tmp/local-chatbot-ci-secrets docker compose --file docker/compose.yaml config > /tmp/local-chatbot-compose.yaml
+          grep -F '127.0.0.1:8765' /tmp/local-chatbot-compose.yaml
+          grep -F 'cap_drop:' /tmp/local-chatbot-compose.yaml
+          grep -F 'no-new-privileges:true' /tmp/local-chatbot-compose.yaml
+          if grep -Fq '/var/run/docker.sock' /tmp/local-chatbot-compose.yaml; then exit 1; fi
+      - name: Build and boot gateway
+        shell: bash
+        run: |
+          export LOCAL_CHAT_SECRETS_DIR=/tmp/local-chatbot-ci-secrets
+          trap 'docker compose --file docker/compose.yaml down --volumes' EXIT
+          docker compose --file docker/compose.yaml up --detach --build
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8765/health >/dev/null; then break; fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:8765/health
+          status=$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8765/v1/status)
+          test "$status" = "401"
+      - name: Validate isolated executor
+        shell: bash
+        run: |
+          export LOCAL_CHAT_SECRETS_DIR=/tmp/local-chatbot-ci-secrets
+          export LOCAL_CHAT_WORKSPACE=/tmp/local-chatbot-ci-workspace
+          export LOCAL_CHAT_WORKSPACE_ID=ci-workspace
+          trap 'docker compose --file docker/compose.yaml --profile agent down --volumes' EXIT
+          docker compose --file docker/compose.yaml --profile agent up --detach --build
+          for attempt in $(seq 1 30); do
+            if docker compose --file docker/compose.yaml exec -T executor test -S /run/ipc/executor.sock; then break; fi
+            sleep 1
+          done
+          test "$(docker inspect local-openrouter-chat-executor-1 --format '{{.HostConfig.NetworkMode}}')" = "none"
+          docker compose --file docker/compose.yaml exec -T gateway test ! -e /source
+          docker compose --file docker/compose.yaml exec -T executor sh -c 'test -r /source/fixture.txt && test ! -w /source/fixture.txt && test -w /work'
+          docker compose --file docker/compose.yaml exec -T executor python - <<'PY'
+          import socket
+          targets = [("127.0.0.1", 8765), ("169.254.169.254", 80), ("1.1.1.1", 53)]
+          for target in targets:
+              try:
+                  socket.create_connection(target, timeout=0.3)
+              except OSError:
+                  pass
+              else:
+                  raise SystemExit(f"unexpected executor network access: {target}")
+          try:
+              socket.getaddrinfo("example.com", 443)
+          except OSError:
+              pass
+          else:
+              raise SystemExit("unexpected executor DNS access")
+          udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+          try:
+              udp.sendto(b"x", ("1.1.1.1", 53))
+          except OSError:
+              pass
+          else:
+              raise SystemExit("unexpected executor UDP access")
+          PY

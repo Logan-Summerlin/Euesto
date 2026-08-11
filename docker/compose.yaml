@@ -1,0 +1,110 @@
+name: local-openrouter-chat
+
+services:
+  gateway:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.gateway
+    image: ${LOCAL_CHAT_GATEWAY_IMAGE:-local-openrouter-chat-gateway:1.1.0}
+    init: true
+    restart: unless-stopped
+    read_only: true
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1:${LOCAL_CHAT_GATEWAY_PORT:-8765}:8765"
+    environment:
+      LOCAL_CHAT_GATEWAY_TOKEN_FILE: /run/secrets/gateway_token
+      LOCAL_CHAT_JOURNAL_PATH: /data/gateway.sqlite3
+      LOCAL_CHAT_EXECUTOR_SOCKET: /run/ipc/executor.sock
+      LOCAL_CHAT_EXECUTOR_TOKEN_FILE: /run/secrets/executor_token
+      LOCAL_CHAT_WORKSPACE_ID: ${LOCAL_CHAT_WORKSPACE_ID:-}
+    secrets:
+      - gateway_token
+      - executor_token
+    volumes:
+      - gateway-data:/data
+      - executor-ipc:/run/ipc
+    tmpfs:
+      - /tmp:size=32m,mode=1777,noexec,nosuid,nodev
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1.5
+    stop_grace_period: 10s
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=2).read()"
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"
+
+  executor:
+    profiles: ["agent"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.executor
+    image: ${LOCAL_CHAT_EXECUTOR_IMAGE:-local-openrouter-chat-executor:1.1.0}
+    init: true
+    restart: "no"
+    network_mode: none
+    read_only: true
+    user: "10002:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      LOCAL_CHAT_EXECUTOR_TOKEN_FILE: /run/secrets/executor_token
+      LOCAL_CHAT_WORKSPACE_ID: ${LOCAL_CHAT_WORKSPACE_ID:-UNSELECTED}
+    secrets:
+      - executor_token
+    volumes:
+      - type: bind
+        source: ${LOCAL_CHAT_WORKSPACE:-/run/local-chat-invalid-workspace}
+        target: /source
+        read_only: true
+      - executor-ipc:/run/ipc
+    tmpfs:
+      - /work:size=2g,mode=0700,uid=10002,gid=10001,nosuid,nodev
+      - /tmp:size=64m,mode=1777,noexec,nosuid,nodev
+    pids_limit: 128
+    mem_limit: 3g
+    cpus: 2.0
+    stop_grace_period: 5s
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import socket; s=socket.socket(socket.AF_UNIX); s.settimeout(1); s.connect('/run/ipc/executor.sock'); s.close()"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: 2m
+        max-file: "2"
+
+secrets:
+  gateway_token:
+    file: ${LOCAL_CHAT_SECRETS_DIR}/gateway_token.txt
+  executor_token:
+    file: ${LOCAL_CHAT_SECRETS_DIR}/executor_token.txt
+
+volumes:
+  gateway-data:
+  executor-ipc:

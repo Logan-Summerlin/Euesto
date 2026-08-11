@@ -1,0 +1,161 @@
+name: Build Windows release
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  runtime-images:
+    runs-on: ubuntu-latest
+    outputs:
+      manifest: ${{ steps.manifest.outputs.path }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image version
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=build-${GITHUB_SHA:0:12}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "owner=$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish gateway image
+        id: gateway
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.gateway
+          push: true
+          tags: ghcr.io/${{ steps.version.outputs.owner }}/local-openrouter-chat-gateway:${{ steps.version.outputs.tag }}
+
+      - name: Build and publish executor image
+        id: executor
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.executor
+          push: true
+          tags: ghcr.io/${{ steps.version.outputs.owner }}/local-openrouter-chat-executor:${{ steps.version.outputs.tag }}
+
+      - name: Verify digest-pinned runtime image pulls
+        shell: bash
+        env:
+          GATEWAY_IMAGE: ghcr.io/${{ steps.version.outputs.owner }}/local-openrouter-chat-gateway:${{ steps.version.outputs.tag }}
+          GATEWAY_DIGEST: ${{ steps.gateway.outputs.digest }}
+          EXECUTOR_IMAGE: ghcr.io/${{ steps.version.outputs.owner }}/local-openrouter-chat-executor:${{ steps.version.outputs.tag }}
+          EXECUTOR_DIGEST: ${{ steps.executor.outputs.digest }}
+        run: |
+          docker pull "${GATEWAY_IMAGE}@${GATEWAY_DIGEST}"
+          docker pull "${EXECUTOR_IMAGE}@${EXECUTOR_DIGEST}"
+
+      - name: Verify anonymous runtime image pulls for tagged releases
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GATEWAY_IMAGE: ghcr.io/${{ steps.version.outputs.owner }}/local-openrouter-chat-gateway:${{ steps.version.outputs.tag }}
+          GATEWAY_DIGEST: ${{ steps.gateway.outputs.digest }}
+          EXECUTOR_IMAGE: ghcr.io/${{ steps.version.outputs.owner }}/local-openrouter-chat-executor:${{ steps.version.outputs.tag }}
+          EXECUTOR_DIGEST: ${{ steps.executor.outputs.digest }}
+        run: |
+          docker logout ghcr.io || true
+          docker pull "${GATEWAY_IMAGE}@${GATEWAY_DIGEST}"
+          docker pull "${EXECUTOR_IMAGE}@${EXECUTOR_DIGEST}"
+
+      - name: Write digest-pinned release manifest
+        id: manifest
+        shell: bash
+        env:
+          GATEWAY_IMAGE: ghcr.io/${{ steps.version.outputs.owner }}/local-openrouter-chat-gateway:${{ steps.version.outputs.tag }}
+          GATEWAY_DIGEST: ${{ steps.gateway.outputs.digest }}
+          EXECUTOR_IMAGE: ghcr.io/${{ steps.version.outputs.owner }}/local-openrouter-chat-executor:${{ steps.version.outputs.tag }}
+          EXECUTOR_DIGEST: ${{ steps.executor.outputs.digest }}
+        run: |
+          jq -n \
+            --arg gateway "${GATEWAY_IMAGE}@${GATEWAY_DIGEST}" \
+            --arg executor "${EXECUTOR_IMAGE}@${EXECUTOR_DIGEST}" \
+            '{schema_version: 1, gateway: $gateway, executor: $executor}' \
+            > docker/release-images.json
+          echo "path=docker/release-images.json" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-image-manifest
+          path: docker/release-images.json
+
+  build-windows:
+    needs: runtime-images
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          pytest
+          ruff check .
+          python -m compileall -q app.py src server shared executor tests scripts
+          pyside6-qmllint qml/Main.qml qml/Sidebar.qml qml/Transcript.qml qml/Composer.qml
+      - name: Add release image manifest to package
+        uses: actions/download-artifact@v4
+        with:
+          name: runtime-image-manifest
+          path: docker
+      - name: Build application
+        run: pyinstaller --noconfirm --clean build/chatbot.spec
+      - name: Smoke-test packaged QML application
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $env:QT_QUICK_BACKEND = "software"
+          $process = Start-Process dist/LocalOpenRouterChat/LocalOpenRouterChat.exe -PassThru
+          Start-Sleep -Seconds 8
+          if ($process.HasExited) { throw "Packaged QML application exited during launch" }
+          Stop-Process -Id $process.Id -Force
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress --yes
+      - name: Build installer
+        shell: pwsh
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\LocalOpenRouterChat.iss'
+      - name: Create portable archive
+        shell: pwsh
+        run: Compress-Archive -Path dist/LocalOpenRouterChat/* -DestinationPath LocalOpenRouterChat-Windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LocalOpenRouterChat-Windows-x64
+          path: |
+            LocalOpenRouterChat-Windows-x64.zip
+            dist/installer/LocalOpenRouterChat-Windows-x64-Setup.exe
+      - name: Attach tagged build to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            LocalOpenRouterChat-Windows-x64.zip
+            dist/installer/LocalOpenRouterChat-Windows-x64-Setup.exe
+          generate_release_notes: true
