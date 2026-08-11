@@ -1,0 +1,50 @@
+from __future__ import annotations
+
+import asyncio
+import hashlib
+from pathlib import Path
+
+from executor.tools.apply_patch import apply_patch
+from server.openrouter.agent import LOCAL_TOOL_SCHEMAS
+
+
+def _schema(name: str) -> dict:
+    return next(item["function"] for item in LOCAL_TOOL_SCHEMAS if item["function"]["name"] == name)
+
+
+def test_apply_patch_accepts_a_single_edit_object(tmp_path: Path) -> None:
+    target = tmp_path / "value.txt"
+    target.write_text("before", encoding="utf-8")
+    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+
+    _output, result = apply_patch(
+        tmp_path,
+        {
+            "edits": {
+                "path": "value.txt",
+                "expected_sha256": digest,
+                "mode": "replace_file",
+                "content": "after",
+            }
+        },
+        max_bytes=1_000,
+    )
+
+    assert target.read_text(encoding="utf-8") == "after"
+    assert result["changed"][0]["path"] == "value.txt"
+
+
+def test_apply_patch_schema_documents_single_edit_form() -> None:
+    patch = _schema("apply_patch")
+    description = patch["description"]
+    assert "one edit object or an array" in description
+    assert "mode=replace_file" in description
+    assert "mode=replace_exact" in description
+    assert "Example:" in description
+
+
+def test_run_command_schema_explains_noninteractive_stdin() -> None:
+    command = _schema("run_command")
+    assert "non-interactively" in command["description"]
+    assert "stdin" in command["description"]
+    assert command["parameters"]["properties"]["stdin"]["maxLength"] == 256000
