@@ -41,6 +41,8 @@ def classify_error(exc: BaseException) -> ExecutorToolError:
     lowered = message.casefold()
     if "working directory" in lowered:
         return ExecutorToolError("working_directory.invalid", message)
+    if "invalid run_command argument" in lowered:
+        return ExecutorToolError("command.invalid_arguments", message)
     if "hash conflict" in lowered or "match conflict" in lowered:
         return ExecutorToolError("staging.conflict", message, retryable=True)
     if "shrink" in lowered:
