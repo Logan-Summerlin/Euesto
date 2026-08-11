@@ -209,7 +209,7 @@ LOCAL_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "run_command",
-            "description": "Run approved commands; staged files persist. Non-interactive; input() gets EOF unless stdin is supplied.",
+            "description": "Run approved commands; staged files persist. Commands run non-interactively; input() gets EOF unless stdin is supplied.",
             "parameters": {
                 "type": "object",
                 "required": ["executable", "arguments"],
