@@ -56,3 +56,10 @@ def test_run_command_argument_errors_have_a_stable_code() -> None:
     )
     assert error.code == "command.invalid_arguments"
     assert "arguments" in error.message
+
+
+def test_legacy_run_command_argument_error_gets_field_specific_guidance() -> None:
+    error = classify_error(ValueError("Command arguments must be a bounded string array"))
+    assert error.code == "command.invalid_arguments"
+    assert "arguments" in error.message
+    assert "array of strings" in error.message
