@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 from pathlib import Path
 
+from executor.errors import classify_error
 from executor.tools.apply_patch import apply_patch
 from server.openrouter.agent import LOCAL_TOOL_SCHEMAS
 
@@ -48,3 +48,11 @@ def test_run_command_schema_explains_noninteractive_stdin() -> None:
     assert "non-interactively" in command["description"]
     assert "stdin" in command["description"]
     assert command["parameters"]["properties"]["stdin"]["maxLength"] == 256000
+
+
+def test_run_command_argument_errors_have_a_stable_code() -> None:
+    error = classify_error(
+        ValueError("Invalid run_command argument 'arguments': must be an array of strings")
+    )
+    assert error.code == "command.invalid_arguments"
+    assert "arguments" in error.message
