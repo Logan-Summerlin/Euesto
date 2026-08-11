@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from executor.errors import classify_error
 from executor.tools.apply_patch import apply_patch
 from server.openrouter.agent import LOCAL_TOOL_SCHEMAS
 
@@ -27,15 +28,13 @@ def test_apply_patch_requires_explicit_mode_and_uses_exact_names(tmp_path: Path)
 
     _output, result = apply_patch(
         tmp_path,
-        {
-            "edits": [{
-                "path": "value.txt",
-                "expected_sha256": digest,
-                "mode": "replace_exact",
-                "old_str": "two",
-                "new_str": "2",
-            }]
-        },
+        {"edits": [{
+            "path": "value.txt",
+            "expected_sha256": digest,
+            "mode": "replace_exact",
+            "old_str": "two",
+            "new_str": "2",
+        }]},
         max_bytes=1_000,
     )
     assert target.read_text(encoding="utf-8") == "one 2 three"
@@ -52,14 +51,12 @@ def test_apply_patch_shrink_guard_blocks_suspicious_whole_file_replacement(tmp_p
     with pytest.raises(Exception) as exc_info:
         apply_patch(
             tmp_path,
-            {
-                "edits": [{
-                    "path": "large.py",
-                    "expected_sha256": digest,
-                    "mode": "replace_file",
-                    "content": "x\n",
-                }]
-            },
+            {"edits": [{
+                "path": "large.py",
+                "expected_sha256": digest,
+                "mode": "replace_file",
+                "content": "x\n",
+            }]},
             max_bytes=10_000,
         )
     assert getattr(exc_info.value, "code", None) == "staging.shrink_warning"
@@ -74,3 +71,8 @@ def test_tool_schema_requires_patch_mode_and_describes_working_directory() -> No
     assert "replacements" not in patch["parameters"]["properties"]
     working_directory = _schema("run_command")["parameters"]["properties"]["working_directory"]
     assert "existing directory" in working_directory["description"]
+
+
+def test_working_directory_has_a_stable_error_code() -> None:
+    classified = classify_error(ValueError("Working directory is not a directory"))
+    assert classified.code == "working_directory.invalid"
