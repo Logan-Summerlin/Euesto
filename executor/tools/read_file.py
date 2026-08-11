@@ -17,8 +17,10 @@ def read_file(root: Path, arguments: dict, *, max_bytes: int) -> tuple[str, dict
     if bool(single) == bool(batch):
         raise ValueError("read_file requires exactly one of path or paths")
     if batch is not None:
-        if arguments.get("cursor") or arguments.get("start_byte"):
+        if arguments.get("cursor") or arguments.get("start_byte") is not None:
             raise ValueError("Cursors and byte offsets require a single file path")
+        if any(key in arguments for key in ("start_line", "end_line")):
+            raise ValueError("Line ranges require a single file path")
         if (
             not isinstance(batch, list)
             or not 1 <= len(batch) <= MAX_BATCH_FILES
@@ -28,6 +30,15 @@ def read_file(root: Path, arguments: dict, *, max_bytes: int) -> tuple[str, dict
         paths = list(batch)
     else:
         paths = [str(single)]
+        if arguments.get("cursor") and any(
+            key in arguments for key in ("start_line", "end_line", "start_byte")
+        ):
+            raise ValueError("Line and byte ranges are mutually exclusive")
+        if arguments.get("start_byte") is not None and any(
+            key in arguments for key in ("start_line", "end_line")
+        ):
+            raise ValueError("Line and byte ranges are mutually exclusive")
+
     if len({value.casefold() for value in paths}) != len(paths):
         raise ValueError("read_file paths must be unique")
 
@@ -64,7 +75,10 @@ def read_file(root: Path, arguments: dict, *, max_bytes: int) -> tuple[str, dict
 def _read_one(
     root: Path, relative: str, arguments: dict, byte_limit: int
 ) -> tuple[str, dict[str, object]]:
-    path = safe_path(root, relative, must_exist=True)
+    try:
+        path = safe_path(root, relative, must_exist=True)
+    except FileNotFoundError as exc:
+        raise ValueError(f"file not found: {relative}") from exc
     if not path.is_file() or path.stat().st_nlink > 1:
         raise ValueError("read_file requires a regular, non-hard-linked file")
     size_bytes = path.stat().st_size
@@ -72,7 +86,9 @@ def _read_one(
     if arguments.get("start_byte") is not None:
         offset = max(0, int(arguments.get("start_byte") or 0))
     if offset > size_bytes:
-        raise ValueError("Read cursor is past the end of the file")
+        raise ValueError(
+            f"byte range is outside file: start_byte={offset}, size_bytes={size_bytes}"
+        )
     with path.open("rb") as handle:
         handle.seek(offset)
         raw = handle.read(byte_limit + 4)
@@ -92,15 +108,16 @@ def _read_one(
                 exc = retry
         else:
             raise ValueError("File is not valid UTF-8 text") from exc
-    next_cursor = (
-        _encode_cursor(offset + len(raw))
-        if offset + len(raw) < size_bytes
-        else None
-    )
+
     lines = text.splitlines()
     start = max(1, int(arguments.get("start_line") or 1))
     end = int(arguments.get("end_line") or len(lines))
-    selected = lines[start - 1 : max(start - 1, end)]
+    if any(key in arguments for key in ("start_line", "end_line")):
+        if start > end or start > len(lines) or end > len(lines):
+            raise ValueError(
+                f"line range is outside file: start_line={start}, end_line={end}, line_count={len(lines)}"
+            )
+    selected = lines[start - 1 : end]
     content = "\n".join(selected)
     metadata = {
         "path": relative,
