@@ -181,48 +181,31 @@ LOCAL_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "apply_patch",
-            "description": "Create/update/delete staged text. Use current hash; null only for create. Returns checkpoint.",
+            "description": "edits[].content replaces the ENTIRE file when mode=replace_file. For a snippet edit, use mode=replace_exact (old_str/new_str, hash-checked).",
             "parameters": {
                 "type": "object",
+                "required": ["edits"],
                 "properties": {
                     "edits": {
                         "type": "array",
+                        "minItems": 1,
+                        "maxItems": 100,
                         "items": {
                             "type": "object",
-                            "required": ["path", "expected_sha256", "content"],
+                            "required": ["path", "expected_sha256", "mode"],
                             "properties": {
                                 "path": {"type": "string"},
-                                "expected_sha256": {
-                                    "type": ["string", "null"],
-                                },
-                                "content": {
-                                    "type": ["string", "null"],
-                                },
-                            },
-                            "additionalProperties": False,
-                        },
-                    },
-                    "replacements": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "required": ["path", "expected_sha256", "old_text", "new_text"],
-                            "properties": {
-                                "path": {"type": "string"},
-                                "expected_sha256": {"type": "string"},
-                                "old_text": {"type": "string", "minLength": 1},
-                                "new_text": {"type": "string"},
-                                "expected_occurrences": {
-                                    "type": "integer",
-                                    "minimum": 1,
-                                    "maximum": 1000,
-                                },
+                                "expected_sha256": {"type": ["string", "null"]},
+                                "mode": {"type": "string", "enum": ["replace_file", "replace_exact"]},
+                                "content": {"type": "string"},
+                                "old_str": {"type": "string", "minLength": 1},
+                                "new_str": {"type": "string"},
+                                "expected_occurrences": {"type": "integer", "minimum": 1, "maximum": 1000},
                             },
                             "additionalProperties": False,
                         },
                     },
                 },
-                "anyOf": [{"required": ["edits"]}, {"required": ["replacements"]}],
                 "additionalProperties": False,
             },
         },
@@ -231,14 +214,14 @@ LOCAL_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "run_command",
-            "description": "Run literal argv, no shell/pipes/redirects. Bounded stdin is sent then closed.",
+            "description": "git and interpreters run via approved commands; staged files persist across calls — write real test files instead of one-off -c snippets.",
             "parameters": {
                 "type": "object",
                 "required": ["executable", "arguments"],
                 "properties": {
                     "executable": {"type": "string"},
                     "arguments": {"type": "array", "items": {"type": "string"}},
-                    "working_directory": {"type": "string"},
+                    "working_directory": {"type": "string", "description": "Must be an existing directory path, not a file or script."},
                     "timeout_seconds": {"type": "integer"},
                     "environment": {"type": "object"},
                     "stdin": {"type": "string", "maxLength": 256000},

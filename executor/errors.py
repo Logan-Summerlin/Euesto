@@ -39,8 +39,12 @@ def classify_error(exc: BaseException) -> ExecutorToolError:
         return ExecutorToolError("file.invalid_utf8", "The file is not valid UTF-8 text.")
     message = safe_message(exc)
     lowered = message.casefold()
+    if "working directory" in lowered:
+        return ExecutorToolError("working_directory.invalid", message)
     if "hash conflict" in lowered or "match conflict" in lowered:
         return ExecutorToolError("staging.conflict", message, retryable=True)
+    if "shrink" in lowered:
+        return ExecutorToolError("staging.shrink_warning", message)
     if "exceeds" in lowered or "too large" in lowered or "limit" in lowered:
         return ExecutorToolError("limit.exceeded", message)
     if "missing" in lowered or "does not exist" in lowered or "not found" in lowered:
