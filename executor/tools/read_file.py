@@ -82,6 +82,11 @@ def _read_one(
     if not path.is_file() or path.stat().st_nlink > 1:
         raise ValueError("read_file requires a regular, non-hard-linked file")
     size_bytes = path.stat().st_size
+    line_range_requested = any(key in arguments for key in ("start_line", "end_line"))
+    if line_range_requested and size_bytes > byte_limit:
+        raise ValueError(
+            f"line range cannot be validated within max_bytes: size_bytes={size_bytes}, max_bytes={byte_limit}"
+        )
     offset = _cursor_offset(arguments.get("cursor"))
     if arguments.get("start_byte") is not None:
         offset = max(0, int(arguments.get("start_byte") or 0))
@@ -112,11 +117,10 @@ def _read_one(
     lines = text.splitlines()
     start = max(1, int(arguments.get("start_line") or 1))
     end = int(arguments.get("end_line") or len(lines))
-    if any(key in arguments for key in ("start_line", "end_line")):
-        if start > end or start > len(lines) or end > len(lines):
-            raise ValueError(
-                f"line range is outside file: start_line={start}, end_line={end}, line_count={len(lines)}"
-            )
+    if line_range_requested and (start > end or start > len(lines) or end > len(lines)):
+        raise ValueError(
+            f"line range is outside file: start_line={start}, end_line={end}, line_count={len(lines)}"
+        )
     selected = lines[start - 1 : end]
     content = "\n".join(selected)
     next_cursor = (

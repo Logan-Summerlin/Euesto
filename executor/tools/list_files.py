@@ -68,11 +68,11 @@ def list_files(root: Path, arguments: dict, *, limit: int = 1000) -> tuple[str, 
     if truncated:
         data["next_cursor"] = next_cursor
         data["limit"] = maximum
-    else:
+    elif not arguments.get("cursor"):
         data["total_known"] = matched_count
-        if arguments.get("cursor"):
-            data["next_cursor"] = None
-            data["limit"] = maximum
+    else:
+        data["next_cursor"] = None
+        data["limit"] = maximum
     return "\n".join(lines), data
 
 
