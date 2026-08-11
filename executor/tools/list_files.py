@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import fnmatch
+from collections.abc import Iterator
 from pathlib import Path
 
 from ..paths import is_secret_path, safe_path
@@ -24,12 +25,14 @@ def list_files(root: Path, arguments: dict, *, limit: int = 1000) -> tuple[str, 
     lines: list[str] = []
     truncated = False
     matched_count = 0
-    paths = sorted(directory.rglob("*"), key=lambda item: item.as_posix().casefold())
     start = _decode_cursor(arguments.get("cursor"))
     next_cursor = None
-    for index, path in enumerate(paths[start:], start):
+
+    for index, path in enumerate(_iter_paths(directory, max_depth), start=0):
+        if index < start:
+            continue
         relative_from_dir = path.relative_to(directory)
-        if len(relative_from_dir.parts) > max_depth or path.is_symlink():
+        if path.is_symlink():
             continue
         relative = path.relative_to(root).as_posix()
         if is_secret_path(relative):
@@ -74,6 +77,30 @@ def list_files(root: Path, arguments: dict, *, limit: int = 1000) -> tuple[str, 
         data["next_cursor"] = None
         data["limit"] = maximum
     return "\n".join(lines), data
+
+
+def _iter_paths(directory: Path, max_depth: int) -> Iterator[Path]:
+    """Yield paths in deterministic order without materializing the tree."""
+    if max_depth <= 0:
+        return
+    yield from _walk(directory, directory, 0, max_depth)
+
+
+def _walk(directory: Path, root: Path, depth: int, max_depth: int) -> Iterator[Path]:
+    try:
+        children = sorted(directory.iterdir(), key=lambda item: item.name.casefold())
+    except OSError:
+        return
+    for path in children:
+        yield path
+        if depth >= max_depth - 1 or path.is_symlink() or not path.is_dir():
+            continue
+        relative = path.relative_to(root).as_posix()
+        if is_secret_path(relative) or any(
+            part.startswith(".local-chat-") for part in path.relative_to(root).parts
+        ):
+            continue
+        yield from _walk(path, root, depth + 1, max_depth)
 
 
 def _encode_cursor(index: int) -> str:

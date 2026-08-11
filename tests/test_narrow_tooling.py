@@ -54,6 +54,68 @@ def test_list_files_reports_truncation_and_keeps_default_output_minimal(tmp_path
     assert "size_bytes" not in data
 
 
+def test_list_files_max_depth_prunes_recursive_traversal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shallow = tmp_path / "shallow"
+    deep = shallow / "nested"
+    deep.mkdir(parents=True)
+    (deep / "file.txt").write_text("nested", encoding="utf-8")
+    (tmp_path / "sibling.txt").write_text("sibling", encoding="utf-8")
+    original_iterdir = Path.iterdir
+    traversed: list[Path] = []
+
+    def tracking_iterdir(path: Path):
+        traversed.append(path)
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", tracking_iterdir)
+    output, data = list_files(tmp_path, {"max_depth": 1})
+
+    assert output.splitlines() == ["shallow/", "sibling.txt"]
+    assert data["total_known"] == 2
+    assert traversed == [tmp_path]
+
+
+def test_list_files_max_results_stops_before_descending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = tmp_path / "a"
+    second = tmp_path / "b"
+    first.mkdir()
+    second.mkdir()
+    for index in range(100):
+        (second / f"{index:03}.txt").write_text("x", encoding="utf-8")
+    original_iterdir = Path.iterdir
+    traversed: list[Path] = []
+
+    def tracking_iterdir(path: Path):
+        traversed.append(path)
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", tracking_iterdir)
+    output, data = list_files(tmp_path, {"max_results": 1})
+
+    assert output == "a/"
+    assert data["truncated"] is True
+    assert second not in traversed
+
+
+def test_list_files_preserves_deterministic_order_and_cursor(tmp_path: Path) -> None:
+    for name in ("b.txt", "a.txt", "c.txt"):
+        (tmp_path / name).write_text(name, encoding="utf-8")
+
+    first, first_data = list_files(tmp_path, {"max_results": 2})
+    second, second_data = list_files(
+        tmp_path,
+        {"max_results": 2, "cursor": first_data["next_cursor"]},
+    )
+
+    assert first.splitlines() == ["a.txt", "b.txt"]
+    assert second.splitlines() == ["c.txt"]
+    assert second_data["has_more"] is False
+
+
 def test_search_text_glob_limits_files_considered_and_searched(tmp_path: Path) -> None:
     (tmp_path / "match.txt").write_text("needle\n", encoding="utf-8")
     (tmp_path / "other.py").write_text("needle\n", encoding="utf-8")
