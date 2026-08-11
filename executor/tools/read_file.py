@@ -119,6 +119,11 @@ def _read_one(
             )
     selected = lines[start - 1 : end]
     content = "\n".join(selected)
+    next_cursor = (
+        _encode_cursor(offset + len(raw))
+        if offset + len(raw) < size_bytes
+        else None
+    )
     metadata = {
         "path": relative,
         "sha256": _sha256(path),
