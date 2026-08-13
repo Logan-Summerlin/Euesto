@@ -43,6 +43,7 @@ def request(*, mode: str = "plan", approval_policy: str = "prompt") -> AgentRunR
         mode=mode,
         workspace_id="workspace",
         approval_policy=approval_policy,
+        session_id="session-1",
     )
 
 
@@ -76,7 +77,9 @@ def test_final_agent_turn_emits_response_before_completion_and_persists_it(monke
     assert event_types.index("model.delta") < event_types.index("usage.updated")
     assert event_types.index("usage.updated") < event_types.index("run.completed")
     assert [payload["text"] for kind, payload in events if kind == "model.delta"] == ["Task complete."]
-    assert saved[-1][-1][-1] == {"role": "assistant", "content": "Task complete."}
+    assert len(saved) == 1
+    assert saved[0][0:3] == ("session-1", "workspace", "plan")
+    assert saved[0][4][-1] == {"role": "assistant", "content": "Task complete."}
 
 
 def test_agent_completion_emits_desktop_publication_manifest(monkeypatch) -> None:
