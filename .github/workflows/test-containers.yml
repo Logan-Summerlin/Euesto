@@ -1,3 +1,4 @@
+# Branch tooling validation intentionally runs on the overhaul branch.
 name: Validate local gateway
 
 on:
