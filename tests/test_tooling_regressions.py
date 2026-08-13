@@ -57,10 +57,6 @@ def test_removed_legacy_tools_are_rejected_by_the_request_contract() -> None:
             ToolRequest("request", "run", name, "agent", {})
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="GatewayService still contains stale pre-overhaul tool calls; remove the xfail when fixed.",
-)
 def test_gateway_service_does_not_construct_removed_tools() -> None:
     source = Path("server/service.py").read_text(encoding="utf-8")
     offenders = sorted(
@@ -78,3 +74,32 @@ def test_gateway_and_agent_tool_vocabularies_cannot_diverge() -> None:
     assert '"inspect_workspace"' not in source
     assert '"run_command"' not in source
     assert '"apply_patch"' not in source
+
+
+def test_gateway_status_advertises_only_canonical_local_tools() -> None:
+    source = Path("server/service.py").read_text(encoding="utf-8")
+    assert '("read", "write", "edit", "bash", "grep", "find", "ls")' in source
+    assert '"inspect_workspace"' not in source
+    assert '"inspect_checkpoint"' not in source
+    assert '"apply_patch"' not in source
+    assert '"run_command"' not in source
+
+
+def test_staging_inspection_uses_executor_status_not_a_removed_tool() -> None:
+    source = Path("server/service.py").read_text(encoding="utf-8")
+    start = source.index("    async def inspect_staging")
+    end = source.index("    async def get_models", start)
+    method = source[start:end]
+    assert "await self.executor.status()" in method
+    assert "ToolRequest(" not in method
+    assert "inspect_workspace" not in method
+
+
+def test_auto_preflight_uses_executor_status_not_a_removed_tool() -> None:
+    source = Path("server/service.py").read_text(encoding="utf-8")
+    start = source.index("    async def start_agent")
+    end = source.index("    async def resume_agent", start)
+    method = source[start:end]
+    assert "await self.executor.status()" in method
+    assert "inspect_workspace" not in method
+    assert "auto-preflight" not in method
