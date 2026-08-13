@@ -98,7 +98,8 @@ def assemble_transcript(
     """Build the semantic transcript consumed by QML.
 
     Activity is nested inside its assistant turn so a long agent run never creates a
-    second top-level transcript. Legacy events remain visible in one collapsed row.
+    second top-level transcript. Incomplete runs without an assistant message fall back
+    to their parent user turn so activity survives refresh and remains visible.
     """
     branch = list(messages)
     activity_by_assistant: dict[int, TranscriptActivity] = {}
@@ -117,7 +118,9 @@ def assemble_transcript(
         if message.id is None:
             continue
         activity = (
-            activity_by_assistant.get(message.id) if message.role == "assistant" else None
+            activity_by_assistant.get(message.id)
+            if message.role == "assistant"
+            else activity_by_parent.get(message.id)
         )
         transcript.append(_message_item(message, activity))
 
@@ -368,6 +371,7 @@ def _file_name(tool: str, payload: dict[str, object]) -> str | None:
                 if match:
                     return _clean_file_name(match.group(1))
     return None
+
 
 def _clean_file_name(value: str) -> str:
     value = value.strip().replace("\\", "/")

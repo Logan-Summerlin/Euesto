@@ -74,7 +74,11 @@ class AgentRuntime:
                 budget.add_usage(turn.usage)
                 messages.append(turn.message)
                 if not turn.tool_calls:
-                    final = [*visible, {"role": "assistant", "content": str(turn.content or "")}]
+                    content = str(turn.content or "")
+                    if content:
+                        await self.append(run_id, "model.delta", {"text": content})
+                    await self.append(run_id, "usage.updated", dict(turn.usage or {}))
+                    final = [*visible, {"role": "assistant", "content": content}]
                     if request.session_id and self.session_saver:
                         self.session_saver(request.session_id, request.workspace_id, request.mode, messages, final)
                     self._save_snapshot(run_id, request, messages, final, budget, False)
@@ -165,7 +169,11 @@ class AgentRuntime:
         approval_id = str(uuid.uuid4())
         manifest = await self.executor.manifest(run_id, approval_id)
         if manifest.operations:
-            await self.append(run_id, "approval.required" if approval_policy != "auto" else "checkpoint.created", {"approval_id": approval_id, "kind": "publish", "manifest": manifest.to_dict(), "available_decisions": ["deny", "allow_once"]})
+            await self.append(run_id, "checkpoint.created", {
+                "checkpoint_id": manifest.approval_id,
+                "publish_manifest": manifest.to_dict(),
+                "auto_publish": approval_policy == "auto",
+            })
 
 
 def _rule_for_request(request: ToolRequest, workspace_id: str) -> PermissionRule:
