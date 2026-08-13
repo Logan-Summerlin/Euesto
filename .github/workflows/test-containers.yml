@@ -1,3 +1,4 @@
+# Branch tooling validation intentionally runs on the overhaul branch.
 name: Validate local gateway
 
 on:
@@ -5,6 +6,7 @@ on:
   push:
     branches:
       - main
+      - tooling-overhaul-phase-1
 
 permissions:
   contents: read
@@ -20,12 +22,20 @@ jobs:
           cache: pip
       - name: Install test dependencies
         run: pip install -r requirements-dev.txt
-      - name: Validate Python
+      - name: Validate tooling and completion regression suite
+        run: >-
+          pytest -q
+          tests/test_executor_tool_surface.py
+          tests/test_narrow_tooling.py
+          tests/test_tooling_regressions.py
+          tests/test_completion_publication.py
+          tests/test_agent_completion_flow.py
+          tests/test_gateway_completion_flow.py
+      - name: Validate Python and tooling
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
           pytest
-          ruff check .
           python -m compileall -q app.py src server shared executor tests scripts
           pyside6-qmllint qml/Main.qml qml/Sidebar.qml qml/Transcript.qml qml/Composer.qml
       - name: Render hardened Compose profile

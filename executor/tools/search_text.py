@@ -35,13 +35,9 @@ def search_text(root: Path, arguments: dict, *, max_bytes: int, max_results: int
         if not path.is_file() or path.is_symlink():
             continue
         relative = path.relative_to(root).as_posix()
-        if is_secret_path(relative) or any(
-            part.startswith(".local-chat-") for part in path.relative_to(root).parts
-        ):
+        if is_secret_path(relative) or any(part.startswith(".local-chat-") for part in path.relative_to(root).parts):
             continue
-        if not _matches_glob(relative, include) or (
-            exclude and _matches_glob(relative, exclude)
-        ):
+        if not _matches_glob(relative, include) or (exclude and _matches_glob(relative, exclude)):
             continue
         files_considered += 1
         if path.stat().st_size > max_bytes:
@@ -61,13 +57,9 @@ def search_text(root: Path, arguments: dict, *, max_bytes: int, max_results: int
                 if len(matches) >= limit:
                     truncated = True
                     break
-                before = text_lines[max(0, number - 1 - context_lines) : number - 1]
-                after = text_lines[number : number + context_lines]
-                item: dict[str, object] = {
-                    "path": relative,
-                    "line": number,
-                    "text": line[:500],
-                }
+                before = text_lines[max(0, number - 1 - context_lines): number - 1]
+                after = text_lines[number: number + context_lines]
+                item: dict[str, object] = {"path": relative, "line": number, "text": line[:500]}
                 if context_lines:
                     item["context_before"] = before
                     item["context_after"] = after
@@ -77,16 +69,8 @@ def search_text(root: Path, arguments: dict, *, max_bytes: int, max_results: int
                 matches.append(item)
         if truncated:
             break
-    output = "\n".join(
-        f"{item['path']}:{item['line']}:{item['text']}" for item in matches
-    )
-    data: dict[str, object] = {
-        "matches_returned": len(matches),
-        "files_considered": files_considered,
-        "files_searched": files_searched,
-        "files_scanned": files_searched,
-        "truncated": truncated,
-    }
+    output = "\n".join(f"{item['path']}:{item['line']}:{item['text']}" for item in matches)
+    data: dict[str, object] = {"matches_returned": len(matches), "files_considered": files_considered, "files_searched": files_searched, "files_scanned": files_searched, "truncated": truncated}
     if truncated:
         data["next_cursor"] = _encode_cursor(max(0, seen_matches - 1))
     if context_lines:

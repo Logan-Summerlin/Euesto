@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import Any
@@ -38,10 +39,13 @@ class PermissionRule:
         if self.path_prefix is not None and not (path == self.path_prefix or path.startswith(self.path_prefix.rstrip("/") + "/")):
             return False
         if self.executable is not None:
-            if request.tool != "run_command" or request.arguments.get("executable") != self.executable:
+            if request.tool != "bash":
                 return False
-            arguments = tuple(str(item) for item in request.arguments.get("arguments") or ())
-            if arguments[: len(self.argument_prefix)] != self.argument_prefix:
+            try:
+                tokens = shlex.split(str(request.arguments.get("command") or ""), posix=True)
+            except ValueError:
+                return False
+            if not tokens or tokens[0] != self.executable or tokens[1 : 1 + len(self.argument_prefix)] != list(self.argument_prefix):
                 return False
         return True
 
