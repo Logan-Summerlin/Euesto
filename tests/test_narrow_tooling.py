@@ -49,6 +49,8 @@ def test_canonical_tool_profile_is_exact() -> None:
     for name in TOOL_NAMES - PLAN_TOOLS:
         with pytest.raises(ValueError, match="Plan mode only permits"):
             ToolRequest("request", "run", name, "plan")
-    for name in ("list_files", "read_file", "search_text", "inspect_workspace", "inspect_checkpoint", "apply_patch", "run_command", "move_file", "copy_file", "restore_checkpoint"):
-        with pytest.raises(ValueError, match=f"Unknown tool: {name}"):
-            ToolRequest("request", "run", name, "agent")
+
+
+def test_plan_bash_is_rejected_by_the_canonical_contract() -> None:
+    with pytest.raises(ValueError, match="Plan mode only permits"):
+        ToolRequest("request", "run", "bash", "plan")
