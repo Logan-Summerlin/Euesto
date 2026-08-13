@@ -17,6 +17,7 @@ def openrouter_tools(enabled: Mapping[str, bool]) -> list[dict[str, Any]]:
     return tools
 
 
+TOOL_PROFILE = "pi-compatible"
 TOOL_NAMES = frozenset({"read", "write", "edit", "bash", "grep", "find", "ls"})
 PLAN_TOOLS = frozenset({"read", "grep", "find", "ls"})
 AGENT_TOOLS = TOOL_NAMES
