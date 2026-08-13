@@ -7,6 +7,7 @@ on:
     branches:
       - main
       - tooling-overhaul-phase-1
+      - tooling-reporting-hardening
 
 permissions:
   contents: read
@@ -31,6 +32,7 @@ jobs:
           tests/test_completion_publication.py
           tests/test_agent_completion_flow.py
           tests/test_gateway_completion_flow.py
+          tests/test_tooling_reporting_hardening.py
       - name: Validate Python and tooling
         env:
           QT_QPA_PLATFORM: offscreen
