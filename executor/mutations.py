@@ -50,10 +50,30 @@ def guard_shrink(relative: str, path: Path, content: str | None) -> None:
         )
 
 
-def bounded_diff(path: Path, content: str | None) -> dict[str, object]:
-    old = path.read_text(encoding="utf-8") if path.exists() else ""
-    new = content or ""
-    lines = list(difflib.unified_diff(old.splitlines(), new.splitlines(), fromfile=str(path), tofile=str(path), lineterm=""))
+def bounded_diff(
+    path: Path,
+    old_content: str,
+    new_content: str,
+    *,
+    fromfile: str | None = None,
+    tofile: str | None = None,
+) -> dict[str, object]:
+    """Return a bounded diff between the content before and after a mutation.
+
+    The caller supplies both versions so a diff cannot accidentally compare a file
+    to itself after the write. Truncation is explicit in both the flag and text.
+    """
+    old_lines = old_content.splitlines()
+    new_lines = new_content.splitlines()
+    lines = list(
+        difflib.unified_diff(
+            old_lines,
+            new_lines,
+            fromfile=fromfile or str(path),
+            tofile=tofile or str(path),
+            lineterm="",
+        )
+    )
     truncated = len(lines) > MAX_DIFF_LINES
     if truncated:
         lines = lines[:MAX_DIFF_LINES]
@@ -62,4 +82,17 @@ def bounded_diff(path: Path, content: str | None) -> dict[str, object]:
     if len(encoded) > MAX_DIFF_BYTES:
         text = encoded[:MAX_DIFF_BYTES].decode("utf-8", errors="ignore")
         truncated = True
-    return {"path": path.name, "text": text, "truncated": truncated, "lines": len(lines)}
+    if truncated:
+        text = f"{text}\n… [diff truncated; showing a bounded preview] …"
+    changed_lines = sum(1 for line in lines if line.startswith(("+", "-")) and not line.startswith(("+++", "---")))
+    added_lines = sum(1 for line in lines if line.startswith("+") and not line.startswith("+++"))
+    removed_lines = sum(1 for line in lines if line.startswith("-") and not line.startswith("---"))
+    return {
+        "path": path.as_posix(),
+        "text": text,
+        "truncated": truncated,
+        "lines": len(lines),
+        "changed_lines": changed_lines,
+        "added_lines": added_lines,
+        "removed_lines": removed_lines,
+    }
