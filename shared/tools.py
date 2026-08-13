@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
@@ -10,44 +9,19 @@ def openrouter_tools(enabled: Mapping[str, bool]) -> list[dict[str, Any]]:
     """Build the visible OpenRouter-hosted tools from composer settings."""
     tools: list[dict[str, Any]] = []
     if enabled.get("web_search"):
-        tools.append({
-            "type": "openrouter:web_search",
-            "parameters": {
-                "search_context_size": "low",
-                "max_total_results": 12,
-                "max_results": 4,
-            },
-        })
+        tools.append({"type": "openrouter:web_search", "parameters": {"search_context_size": "low", "max_total_results": 12, "max_results": 4}})
     if enabled.get("web_fetch"):
-        tools.append({
-            "type": "openrouter:web_fetch",
-            "parameters": {"max_content_tokens": 3000},
-        })
+        tools.append({"type": "openrouter:web_fetch", "parameters": {"max_content_tokens": 3000}})
     if enabled.get("datetime"):
         tools.append({"type": "openrouter:datetime"})
     return tools
 
 
-TOOL_NAMES = frozenset(
-    {
-        "list_files",
-        "read_file",
-        "search_text",
-        "inspect_workspace",
-        "inspect_checkpoint",
-        "apply_patch",
-        "run_command",
-        "move_file",
-        "copy_file",
-        "restore_checkpoint",
-    }
-)
-READ_TOOLS = frozenset(
-    {"list_files", "read_file", "search_text", "inspect_workspace", "inspect_checkpoint"}
-)
-MUTATION_TOOLS = frozenset(
-    {"apply_patch", "run_command", "move_file", "copy_file", "restore_checkpoint"}
-)
+TOOL_NAMES = frozenset({"read", "write", "edit", "bash", "grep", "find", "ls"})
+PLAN_TOOLS = frozenset({"read", "grep", "find", "ls"})
+AGENT_TOOLS = TOOL_NAMES
+READ_TOOLS = PLAN_TOOLS
+MUTATION_TOOLS = frozenset({"write", "edit", "bash"})
 MAX_TOOL_ARGUMENT_BYTES = 512_000
 
 
@@ -66,8 +40,8 @@ class ToolRequest:
             raise ValueError(f"Unknown tool: {self.tool}")
         if self.mode not in {"plan", "agent"}:
             raise ValueError("Executor tools require Plan or Agent mode")
-        if self.mode == "plan" and self.tool in MUTATION_TOOLS:
-            raise ValueError("Plan mode cannot mutate or execute commands")
+        if self.mode == "plan" and self.tool not in PLAN_TOOLS:
+            raise ValueError("Plan mode only permits read-only tools")
         if len(repr(self.arguments).encode("utf-8")) > MAX_TOOL_ARGUMENT_BYTES:
             raise ValueError("Tool arguments are too large")
 
@@ -75,7 +49,7 @@ class ToolRequest:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ToolRequest:
+    def from_dict(cls, data: dict[str, Any]) -> "ToolRequest":
         expected = {"request_id", "run_id", "tool", "mode", "arguments"}
         unknown = set(data) - expected
         if unknown:
@@ -85,8 +59,7 @@ class ToolRequest:
             raise ValueError("Tool arguments must be an object")
         return cls(
             request_id=str(data.get("request_id") or ""), run_id=str(data.get("run_id") or ""),
-            tool=str(data.get("tool") or ""), mode=str(data.get("mode") or ""),
-            arguments=dict(arguments),
+            tool=str(data.get("tool") or ""), mode=str(data.get("mode") or ""), arguments=dict(arguments),
         )
 
 
@@ -108,31 +81,16 @@ class ToolResult:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ToolResult:
-        expected = {
-            "request_id",
-            "ok",
-            "output",
-            "data",
-            "error_code",
-            "truncated",
-            "elapsed_seconds",
-            "returned",
-            "total_known",
-            "limit",
-            "next_cursor",
-        }
+    def from_dict(cls, data: dict[str, Any]) -> "ToolResult":
+        expected = {"request_id", "ok", "output", "data", "error_code", "truncated", "elapsed_seconds", "returned", "total_known", "limit", "next_cursor"}
         if set(data) - expected:
             raise ValueError("Unknown tool result fields")
         return cls(
-            request_id=str(data.get("request_id") or ""), ok=bool(data.get("ok")),
-            output=str(data.get("output") or ""), data=dict(data.get("data") or {}),
-            error_code=str(data["error_code"]) if data.get("error_code") else None,
+            request_id=str(data.get("request_id") or ""), ok=bool(data.get("ok")), output=str(data.get("output") or ""),
+            data=dict(data.get("data") or {}), error_code=str(data["error_code"]) if data.get("error_code") else None,
             truncated=bool(data.get("truncated")), elapsed_seconds=float(data.get("elapsed_seconds") or 0),
-            returned=_optional_nonnegative_int(data.get("returned")),
-            total_known=_optional_nonnegative_int(data.get("total_known")),
-            limit=_optional_nonnegative_int(data.get("limit")),
-            next_cursor=(str(data["next_cursor"]) if data.get("next_cursor") else None),
+            returned=_optional_nonnegative_int(data.get("returned")), total_known=_optional_nonnegative_int(data.get("total_known")),
+            limit=_optional_nonnegative_int(data.get("limit")), next_cursor=(str(data["next_cursor"]) if data.get("next_cursor") else None),
         )
 
 
@@ -155,6 +113,7 @@ class PublishOperation:
     content: str | None = None
 
     def __post_init__(self) -> None:
+        import hashlib
         if self.operation not in {"create", "update", "delete"}:
             raise ValueError("Unknown publish operation")
         if self.operation == "create" and self.base_sha256 is not None:
@@ -189,7 +148,7 @@ class PublishManifest:
         return data
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> PublishManifest:
+    def from_dict(cls, data: dict[str, Any]) -> "PublishManifest":
         expected = {"manifest_id", "run_id", "workspace_id", "source_snapshot_id", "approval_id", "operations"}
         if set(data) - expected:
             raise ValueError("Unknown publish manifest fields")
@@ -197,8 +156,7 @@ class PublishManifest:
         if not isinstance(raw, list) or len(raw) > 500:
             raise ValueError("Publish operations must be a bounded array")
         return cls(
-            manifest_id=str(data.get("manifest_id") or ""), run_id=str(data.get("run_id") or ""),
-            workspace_id=str(data.get("workspace_id") or ""), source_snapshot_id=str(data.get("source_snapshot_id") or ""),
-            approval_id=str(data.get("approval_id") or ""),
+            manifest_id=str(data.get("manifest_id") or ""), run_id=str(data.get("run_id") or ""), workspace_id=str(data.get("workspace_id") or ""),
+            source_snapshot_id=str(data.get("source_snapshot_id") or ""), approval_id=str(data.get("approval_id") or ""),
             operations=tuple(PublishOperation(**item) for item in raw if isinstance(item, dict)),
         )
