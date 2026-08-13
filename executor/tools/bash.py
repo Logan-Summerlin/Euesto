@@ -8,7 +8,7 @@ import time
 from collections import deque
 from pathlib import Path
 
-from ..checkpoints import create_checkpoint
+from ..mutations import create_mutation_checkpoint, rollback_mutation
 from ..paths import safe_path
 
 MAX_EVENT_COUNT = 128
@@ -77,65 +77,73 @@ class BashRunner:
 
         requested_env = arguments.get("env", {})
         environment = self._environment(requested_env)
-        checkpoint_id = create_checkpoint(
-            root,
-            max_files=max_checkpoint_files,
-            max_total_bytes=max_checkpoint_bytes,
-            max_storage_bytes=max_checkpoint_bytes,
-        )
+        checkpoint_id = create_mutation_checkpoint(root, max_files=max_checkpoint_files, max_total_bytes=max_checkpoint_bytes)
 
         started = time.perf_counter()
         self._start_events(request_id)
-        process = await asyncio.create_subprocess_exec(
-            "/bin/bash",
-            "-lc",
-            command,
-            cwd=cwd,
-            env=environment,
-            stdin=asyncio.subprocess.PIPE if stdin_text is not None else None,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
-        )
-        self._processes[request_id] = process
-        stdout_task = asyncio.create_task(self._read_stream(request_id, "stdout", process.stdout, max_output))
-        stderr_task = asyncio.create_task(self._read_stream(request_id, "stderr", process.stderr, max_output))
-        stdin_task = asyncio.create_task(self._write_stdin(process, stdin_text))
+        stdout_task = stderr_task = stdin_task = None
+        process: asyncio.subprocess.Process | None = None
         try:
-            stdout_result, stderr_result, _ = await asyncio.wait_for(
-                asyncio.gather(stdout_task, stderr_task, stdin_task), timeout=timeout
+            process = await asyncio.create_subprocess_exec(
+                "/bin/bash",
+                "-lc",
+                command,
+                cwd=cwd,
+                env=environment,
+                stdin=asyncio.subprocess.PIPE if stdin_text is not None else None,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
             )
-            await process.wait()
-        except TimeoutError as exc:
-            await self.cancel(request_id)
-            await asyncio.gather(stdout_task, stderr_task, stdin_task, return_exceptions=True)
-            raise TimeoutError("Bash command exceeded its approved timeout") from exc
-        except asyncio.CancelledError:
-            await self.cancel(request_id)
-            await asyncio.gather(stdout_task, stderr_task, stdin_task, return_exceptions=True)
-            raise
-        finally:
-            self._processes.pop(request_id, None)
+            self._processes[request_id] = process
+            stdout_task = asyncio.create_task(self._read_stream(request_id, "stdout", process.stdout, max_output))
+            stderr_task = asyncio.create_task(self._read_stream(request_id, "stderr", process.stderr, max_output))
+            stdin_task = asyncio.create_task(self._write_stdin(process, stdin_text))
+            try:
+                stdout_result, stderr_result, _ = await asyncio.wait_for(
+                    asyncio.gather(stdout_task, stderr_task, stdin_task), timeout=timeout
+                )
+                await process.wait()
+            except TimeoutError as exc:
+                await self.cancel(request_id)
+                await asyncio.gather(stdout_task, stderr_task, stdin_task, return_exceptions=True)
+                rollback_mutation(root, checkpoint_id)
+                raise TimeoutError("Bash command exceeded its approved timeout") from exc
+            except asyncio.CancelledError:
+                await self.cancel(request_id)
+                await asyncio.gather(stdout_task, stderr_task, stdin_task, return_exceptions=True)
+                rollback_mutation(root, checkpoint_id)
+                raise
+            finally:
+                self._processes.pop(request_id, None)
 
-        stdout, stdout_bytes, stdout_truncated = stdout_result
-        stderr, stderr_bytes, stderr_truncated = stderr_result
-        combined_bytes = stdout + (b"\n" if stdout and stderr else b"") + stderr
-        combined_truncated = len(combined_bytes) > max_output
-        combined = combined_bytes[:max_output].decode("utf-8", errors="replace")
-        return combined, {
-            "exit_code": process.returncode,
-            "checkpoint_id": checkpoint_id,
-            "elapsed_seconds": time.perf_counter() - started,
-            "stdout": stdout.decode("utf-8", errors="replace"),
-            "stderr": stderr.decode("utf-8", errors="replace"),
-            "stdout_bytes": stdout_bytes,
-            "stderr_bytes": stderr_bytes,
-            "stdout_truncated": stdout_truncated,
-            "stderr_truncated": stderr_truncated,
-            "stdin_bytes": len(stdin_text.encode("utf-8")) if stdin_text is not None else 0,
-            "truncated": stdout_truncated or stderr_truncated or combined_truncated,
-            "cancelled": request_id in self._cancelled,
-        }
+            stdout, stdout_bytes, stdout_truncated = stdout_result
+            stderr, stderr_bytes, stderr_truncated = stderr_result
+            rolled_back = process.returncode != 0
+            if rolled_back:
+                rollback_mutation(root, checkpoint_id)
+            combined_bytes = stdout + (b"\n" if stdout and stderr else b"") + stderr
+            combined_truncated = len(combined_bytes) > max_output
+            combined = combined_bytes[:max_output].decode("utf-8", errors="replace")
+            return combined, {
+                "exit_code": process.returncode,
+                "checkpoint_id": checkpoint_id,
+                "elapsed_seconds": time.perf_counter() - started,
+                "stdout": stdout.decode("utf-8", errors="replace"),
+                "stderr": stderr.decode("utf-8", errors="replace"),
+                "stdout_bytes": stdout_bytes,
+                "stderr_bytes": stderr_bytes,
+                "stdout_truncated": stdout_truncated,
+                "stderr_truncated": stderr_truncated,
+                "stdin_bytes": len(stdin_text.encode("utf-8")) if stdin_text is not None else 0,
+                "truncated": stdout_truncated or stderr_truncated or combined_truncated,
+                "cancelled": request_id in self._cancelled,
+                "rolled_back": rolled_back,
+            }
+        except Exception:
+            if process is None:
+                rollback_mutation(root, checkpoint_id)
+            raise
 
     @staticmethod
     def _environment(requested: object) -> dict[str, str]:

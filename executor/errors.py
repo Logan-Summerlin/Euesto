@@ -6,8 +6,6 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class ExecutorToolError(Exception):
-    """A stable, user-safe error returned by one executor tool call."""
-
     code: str
     message: str
     retryable: bool = False
@@ -20,53 +18,23 @@ _ABSOLUTE_PATH = re.compile(r"(?:[A-Za-z]:[\\/]|/)[^\s,;)]*")
 
 
 def safe_message(value: object) -> str:
-    """Keep diagnostics useful without disclosing executor filesystem paths."""
-    message = str(value or "The executor rejected the request.")
-    return _ABSOLUTE_PATH.sub("<workspace-path>", message)[:2_000]
+    return _ABSOLUTE_PATH.sub("<workspace-path>", str(value or "The executor rejected the request."))[:2_000]
 
 
 def classify_error(exc: BaseException) -> ExecutorToolError:
-    """Map legacy tool exceptions to the stable executor error vocabulary."""
     if isinstance(exc, ExecutorToolError):
         return exc
     if isinstance(exc, PermissionError):
         return ExecutorToolError("permission.denied", "The executor denied that operation.")
     if isinstance(exc, TimeoutError):
-        return ExecutorToolError(
-            "tool.timeout", "The operation exceeded its approved timeout.", retryable=True
-        )
-    if isinstance(exc, UnicodeError) or "UTF-8" in str(exc) or "utf-8" in str(exc):
+        return ExecutorToolError("tool.timeout", "The operation exceeded its approved timeout.", retryable=True)
+    if isinstance(exc, UnicodeError) or "utf-8" in str(exc).casefold():
         return ExecutorToolError("file.invalid_utf8", "The file is not valid UTF-8 text.")
     message = safe_message(exc)
     lowered = message.casefold()
     if "working directory" in lowered:
         return ExecutorToolError("working_directory.invalid", message)
-    if "executable is not installed" in lowered:
-        return ExecutorToolError(
-            "command.invalid_arguments",
-            "Invalid run_command argument 'executable': executable is not installed in the executor.",
-        )
-    if "executable must be a non-shell" in lowered:
-        return ExecutorToolError(
-            "command.invalid_arguments",
-            "Invalid run_command argument 'executable': must be an approved non-shell executable name.",
-        )
-    if "command arguments must be" in lowered:
-        return ExecutorToolError(
-            "command.invalid_arguments",
-            "Invalid run_command argument 'arguments': must be an array of strings with at most 200 items.",
-        )
-    if "forbidden environment variable" in lowered:
-        return ExecutorToolError(
-            "command.invalid_arguments",
-            "Invalid run_command argument 'environment': only approved environment variables are allowed.",
-        )
-    if "command stdin must be" in lowered:
-        return ExecutorToolError(
-            "command.invalid_arguments",
-            "Invalid run_command argument 'stdin': must be bounded UTF-8 text.",
-        )
-    if "invalid run_command argument" in lowered:
+    if "stdin" in lowered or "environment" in lowered or "command" in lowered:
         return ExecutorToolError("command.invalid_arguments", message)
     if "hash conflict" in lowered or "match conflict" in lowered:
         return ExecutorToolError("staging.conflict", message, retryable=True)
@@ -79,5 +47,5 @@ def classify_error(exc: BaseException) -> ExecutorToolError:
     if "not a file" in lowered or "regular" in lowered or "directory" in lowered:
         return ExecutorToolError("path.invalid_type", message)
     if isinstance(exc, OSError):
-        return ExecutorToolError("io.internal", "The executor could not complete the file operation.", retryable=True)
+        return ExecutorToolError("io.internal", "The executor could not complete the operation.", retryable=True)
     return ExecutorToolError("request.invalid_arguments", message)

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
-from ..checkpoints import create_checkpoint, restore_checkpoint
+from ..mutations import bounded_diff, create_mutation_checkpoint, guard_shrink, rollback_mutation, sha256
 from ..paths import safe_path
 
 
@@ -44,26 +43,27 @@ def edit(
     content_bytes = content.encode("utf-8")
     if len(content_bytes) > max_bytes:
         raise ValueError("Edited content exceeds the mutation limit")
-    old_hash = _sha256(path)
+    old_hash = sha256(path)
     expected = arguments.get("expected_sha256")
     if expected is not None:
         if not isinstance(expected, str) or old_hash != expected:
             raise ValueError(f"Staging hash conflict: {relative}")
     elif not isinstance(expected, type(None)):
         raise ValueError("expected_sha256 must be a string when supplied")
+    guard_shrink(relative, path, content)
 
-    checkpoint_id = create_checkpoint(
+    checkpoint_id = create_mutation_checkpoint(
         root,
         max_files=max_checkpoint_files,
         max_total_bytes=max_checkpoint_bytes,
-        max_storage_bytes=max_checkpoint_bytes,
     )
     try:
         path.write_text(content, encoding="utf-8", newline="")
     except Exception:
-        restore_checkpoint(root, checkpoint_id)
+        rollback_mutation(root, checkpoint_id)
         raise
-    new_hash = hashlib.sha256(content_bytes).hexdigest()
+    new_hash = sha256(path)
+    diff = bounded_diff(path, None)
     return f"Edited {relative}.", {
         "path": relative,
         "old_sha256": old_hash,
@@ -72,13 +72,6 @@ def edit(
         "expected_occurrences": expected_occurrences,
         "actual_occurrences": actual,
         "size_bytes": len(content_bytes),
+        "diff": diff,
         "atomicity": "validated-before-write-with-checkpoint-rollback",
     }
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(128 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
