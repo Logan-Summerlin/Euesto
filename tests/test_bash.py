@@ -45,7 +45,7 @@ def test_bash_supports_environment_and_stdin(tmp_path: Path) -> None:
 
 
 def test_bash_rejects_workspace_traversal_before_starting_shell(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="outside workspace"):
+    with pytest.raises(ValueError, match="Traversal"):
         asyncio.run(run_bash(tmp_path, {"command": "pwd", "working_directory": "../../"}))
 
 
@@ -59,8 +59,9 @@ def test_bash_cancellation_terminates_process_group(tmp_path: Path) -> None:
         task = asyncio.create_task(run_bash(tmp_path, {"command": "sleep 30"}))
         await asyncio.sleep(0.1)
         assert await cancel("test-request") is True
-        with pytest.raises((asyncio.CancelledError, TimeoutError)):
-            await task
+        result = await asyncio.wait_for(task, timeout=3)
+        assert result[1]["cancelled"] is True
+        assert result[1]["exit_code"] != 0
 
     asyncio.run(scenario())
 

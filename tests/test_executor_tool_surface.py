@@ -77,9 +77,12 @@ def test_mode_boundaries_are_enforced() -> None:
 
 
 def test_executor_dispatches_all_read_only_tools(tmp_path: Path) -> None:
-    (tmp_path / "one.txt").write_text("needle\n", encoding="utf-8")
-    (tmp_path / "two.txt").write_text("other\n", encoding="utf-8")
-    config = ExecutorConfig(source_root=tmp_path, work_root=tmp_path / "work", socket_path=tmp_path / "executor.sock", token="x" * 32, workspace_id="test")
+    source = tmp_path / "source"
+    work = tmp_path / "work"
+    source.mkdir()
+    (source / "one.txt").write_text("needle\n", encoding="utf-8")
+    (source / "two.txt").write_text("other\n", encoding="utf-8")
+    config = ExecutorConfig(source_root=source, work_root=work, socket_path=tmp_path / "executor.sock", token="x" * 32, workspace_id="test")
     service = ExecutorService(config)
     requests = (
         ToolRequest("read-1", "run", "read", "agent", {"path": "one.txt"}),

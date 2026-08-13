@@ -20,7 +20,10 @@ def read(root: Path, arguments: dict, *, max_bytes: int) -> tuple[str, dict]:
     if not isinstance(requested, int) or isinstance(requested, bool) or requested < 1:
         raise ValueError("max_bytes must be a positive integer")
     byte_limit = min(max_bytes, MAX_READ_BYTES, requested)
-    path = safe_path(root, relative, must_exist=True)
+    try:
+        path = safe_path(root, relative, must_exist=True)
+    except FileNotFoundError as exc:
+        raise ValueError(f"file not found: {relative}") from exc
     if path.is_symlink() or not path.is_file():
         raise ValueError("read requires a regular file")
     stat = path.stat()
