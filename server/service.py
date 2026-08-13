@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import uuid
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -10,7 +9,6 @@ from shared.events import EventEnvelope
 from shared.permissions import PermissionDecision
 from shared.requests import AgentRunRequest, ChatRequest
 from shared.responses import GatewayStatus
-from shared.tools import ToolRequest
 
 from .agent.approvals import ApprovalCoordinator
 from .agent.runtime import AgentRuntime
@@ -95,18 +93,7 @@ class GatewayService:
             and self.config.executor_socket.exists()
         )
         local_tools = (
-            (
-                "list_files",
-                "read_file",
-                "search_text",
-                "inspect_workspace",
-                "inspect_checkpoint",
-                "apply_patch",
-                "run_command",
-                "move_file",
-                "copy_file",
-                "restore_checkpoint",
-            )
+            ("read", "write", "edit", "bash", "grep", "find", "ls")
             if executor_ready
             else ()
         )
@@ -114,18 +101,8 @@ class GatewayService:
             {
                 "name": name,
                 "kind": "workspace_tool",
-                "modes": (
-                    ["plan", "agent"]
-                    if name in {"list_files", "read_file", "search_text", "inspect_workspace"}
-                    else ["agent"]
-                ),
-                "requires_approval": name in {
-                    "apply_patch",
-                    "run_command",
-                    "move_file",
-                    "copy_file",
-                    "restore_checkpoint",
-                },
+                "modes": ["plan", "agent"] if name in {"read", "grep", "find", "ls"} else ["agent"],
+                "requires_approval": name in {"write", "edit", "bash"},
                 "custom": False,
             }
             for name in local_tools
@@ -184,23 +161,30 @@ class GatewayService:
                 "The selected workspace is not the active isolated executor.",
                 status=409,
             )
-        result = await self.executor.execute(
-            ToolRequest(
-                str(uuid.uuid4()),
-                str(uuid.uuid4()),
-                "inspect_workspace",
-                "agent",
-                {"max_results": 500},
-            )
-        )
-        if not result.ok:
+        status = await self.executor.status()
+        environment = status.get("environment") if isinstance(status, dict) else {}
+        if not isinstance(environment, dict):
             raise GatewayServiceError(
-                result.error_code or "staging.inspect_failed",
-                result.output or "The executor could not inspect staged changes.",
+                "staging.inspect_failed",
+                "The executor returned invalid staging status.",
                 retryable=True,
                 status=409,
             )
-        return result.to_dict()
+        snapshot = environment.get("agent_snapshot")
+        if not isinstance(snapshot, dict):
+            snapshot = {}
+        return {
+            "request_id": "staging-status",
+            "ok": True,
+            "output": "Staging is dirty." if environment.get("unpublished_changes") else "Staging is clean.",
+            "data": {
+                "unpublished_changes": bool(environment.get("unpublished_changes")),
+                "total_known": int(snapshot.get("file_count") or 0),
+                "snapshot_id": snapshot.get("snapshot_id"),
+                "file_count": int(snapshot.get("file_count") or 0),
+                "total_bytes": int(snapshot.get("total_bytes") or 0),
+            },
+        }
 
     async def get_models(self, *, refresh: bool = False) -> tuple[list[dict[str, Any]], str]:
         return await self.catalog.models(self.openrouter_key, refresh=refresh)
@@ -212,7 +196,7 @@ class GatewayService:
                 "Configure an OpenRouter key before sending a message.",
                 status=409,
             )
-        run_id = str(uuid.uuid4())
+        run_id = str(__import__('uuid').uuid4())
         timestamp = utc_now()
         self.journal.create_run(run_id, "chat", timestamp)
         self._conditions[run_id] = asyncio.Condition()
@@ -229,19 +213,11 @@ class GatewayService:
             raise GatewayServiceError("workspace.invalid", "Recreate the executor for the selected workspace.", status=409)
         if request.approval_policy == "auto":
             assert self.executor is not None
-            inspection = await self.executor.execute(
-                ToolRequest(
-                    str(uuid.uuid4()),
-                    "auto-preflight",
-                    "inspect_workspace",
-                    "agent",
-                    {"max_results": 1},
-                )
-            )
-            total_changes = inspection.total_known
-            if total_changes is None:
-                total_changes = int(inspection.data.get("total_known") or 0)
-            if not inspection.ok or total_changes:
+            inspection = await self.executor.status()
+            environment = inspection.get("environment") if isinstance(inspection, dict) else {}
+            if not isinstance(environment, dict):
+                raise GatewayServiceError("staging.inspect_failed", "The executor returned invalid staging status.", retryable=True, status=409)
+            if environment.get("unpublished_changes"):
                 raise GatewayServiceError(
                     "staging.not_clean",
                     "Auto requires clean staging. Review, publish, or discard existing staged changes first.",
@@ -255,7 +231,7 @@ class GatewayService:
             data = request.to_dict()
             data["workspace_config"] = self.journal.load_workspace_config(request.workspace_id)
             request = AgentRunRequest.from_dict(data)
-        run_id = str(uuid.uuid4())
+        run_id = str(__import__('uuid').uuid4())
         timestamp = utc_now()
         self.journal.create_run(run_id, request.mode, timestamp)
         self._conditions[run_id] = asyncio.Condition()
@@ -383,8 +359,6 @@ class GatewayService:
             condition = self._conditions.setdefault(run_id, asyncio.Condition())
             try:
                 async with condition:
-                    # Recheck after taking the condition lock so an append between the first
-                    # query and wait cannot strand the stream until the keep-alive timeout.
                     if self.journal.events_after(run_id, cursor) or self.journal.is_terminal(run_id):
                         continue
                     await asyncio.wait_for(condition.wait(), timeout=15.0)
@@ -450,7 +424,6 @@ class GatewayService:
         finally:
             self._tasks.pop(run_id, None)
             self._cancel_events.pop(run_id, None)
-            self._pause_events.pop(run_id, None)
             self._pause_events.pop(run_id, None)
 
     async def _run_agent(
