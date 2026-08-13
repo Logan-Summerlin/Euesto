@@ -22,8 +22,15 @@ jobs:
           cache: pip
       - name: Install test dependencies
         run: pip install -r requirements-dev.txt
-      - name: Validate tooling contract
-        run: pytest -q tests/test_executor_tool_surface.py tests/test_narrow_tooling.py tests/test_tooling_regressions.py
+      - name: Validate tooling and completion regression suite
+        run: >-
+          pytest -q
+          tests/test_executor_tool_surface.py
+          tests/test_narrow_tooling.py
+          tests/test_tooling_regressions.py
+          tests/test_completion_publication.py
+          tests/test_agent_completion_flow.py
+          tests/test_gateway_completion_flow.py
       - name: Validate Python and tooling
         env:
           QT_QPA_PLATFORM: offscreen
