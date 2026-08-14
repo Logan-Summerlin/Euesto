@@ -14,6 +14,8 @@ from .gateway_client import GatewayClient, GatewayError
 from .models import ModelOption, RequestOptions, ServerToolOptions
 from .workspace_broker import BrokerError, WorkspaceBroker
 
+_last_gateway_client: GatewayClient | None = None
+
 
 class CatalogWorker(QThread):
     complete = Signal(object)
@@ -124,6 +126,8 @@ class AgentWorker(QThread):
         auto_approve: bool = False,
     ):
         super().__init__()
+        global _last_gateway_client
+        _last_gateway_client = client
         self.client = client
         self._stream = stream
         self.failure_context = failure_context
@@ -272,6 +276,7 @@ class PublicationWorker(QThread):
         self.reseed_client = reseed_client
 
     def run(self) -> None:
+        global _last_gateway_client
         try:
             broker = WorkspaceBroker(self.workspace_root, self.recovery_root)
             published = broker.publish(
@@ -284,11 +289,13 @@ class PublicationWorker(QThread):
             "completed_paths": list(published.completed_paths),
             "checkpoint_id": published.checkpoint_id,
         }
-        if self.reseed_client:
+        reseed_client = self.reseed_client or _last_gateway_client
+        if reseed_client:
             try:
-                self.reseed_client.discard_staging(self.manifest.workspace_id)
+                reseed_client.discard_staging(self.manifest.workspace_id)
                 result["reseeded"] = True
             except (GatewayError, KeyError, TypeError, ValueError) as exc:
                 result["reseeded"] = False
                 result["reseed_error"] = str(exc)
+        _last_gateway_client = None
         self.complete.emit(result)
