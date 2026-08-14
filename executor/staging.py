@@ -111,14 +111,34 @@ def seed_staging(config: ExecutorConfig) -> Snapshot:
             modes[relative] = stat.S_IMODE(mode)
     assert_unique_paths(relative_paths)
     snapshot = Snapshot(str(uuid.uuid4()), hashes, total, sizes, modes)
+    _write_snapshot(work, snapshot)
+    return snapshot
+
+
+def snapshot_current_staging(work_root: Path) -> Snapshot:
+    """Create a new publication baseline from the current staged workspace.
+
+    This does not copy or discard files. It records the exact executor state that
+    was just published, so those files remain available for subsequent agent turns
+    without being treated as new host changes.
+    """
+    current = visible_files(work_root)
+    hashes = {path: value[0] for path, value in current.items()}
+    sizes = {path: value[1] for path, value in current.items()}
+    modes = {path: value[2] for path, value in current.items()}
+    snapshot = Snapshot(str(uuid.uuid4()), hashes, sum(sizes.values()), sizes, modes)
+    _write_snapshot(work_root, snapshot)
+    return snapshot
+
+
+def _write_snapshot(work: Path, snapshot: Snapshot) -> None:
     (work / ".local-chat-snapshot.json").write_text(
         json.dumps(
-            {"snapshot_id": snapshot.snapshot_id, "hashes": hashes, "sizes": sizes, "modes": modes, "total_bytes": total},
+            {"snapshot_id": snapshot.snapshot_id, "hashes": snapshot.hashes, "sizes": snapshot.sizes, "modes": snapshot.modes, "total_bytes": snapshot.total_bytes},
             sort_keys=True,
         ),
         encoding="utf-8",
     )
-    return snapshot
 
 
 def load_snapshot(work_root: Path) -> Snapshot:
@@ -168,7 +188,7 @@ def _is_executor_metadata(relative: str) -> bool:
 
 
 def workspace_changes(snapshot: Snapshot, work_root: Path) -> list[WorkspaceChange]:
-    """Compare the immutable source snapshot with current staged files and modes."""
+    """Compare the current staged files with the last publication baseline."""
     current = visible_files(work_root)
     paths = sorted(set(snapshot.hashes) | set(current), key=str.casefold)
     changes: list[WorkspaceChange] = []
