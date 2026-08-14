@@ -17,7 +17,7 @@ from .checkpoints import discard_staging
 from .config import ExecutorConfig
 from .errors import classify_error
 from .permissions import enforce_capability
-from .staging import Snapshot, load_snapshot, seed_staging, workspace_changes
+from .staging import Snapshot, load_snapshot, seed_staging, snapshot_current_staging, workspace_changes
 from .tools import MAX_READ_BYTES, bash, edit, find, grep, ls, read, write
 from .tools.bash import cancel as cancel_bash
 from .tools.bash import events as bash_events
@@ -52,15 +52,15 @@ class ExecutorService:
             content = None
             if change.operation != "delete":
                 try:
-                    # Preserve exact line endings. Path.read_text() uses universal-newline
-                    # translation on Windows, which can make the published bytes differ from
-                    # the staged SHA-256 even though the text is otherwise unchanged.
                     with (self.config.work_root / change.path).open("r", encoding="utf-8", newline="") as handle:
                         content = handle.read()
                 except UnicodeError as exc: raise ValueError("Changed binary or invalid UTF-8 files cannot be published by the text broker") from exc
             operations.append(PublishOperation(change.path, change.operation, change.base_sha256, change.staged_sha256, content, change.base_mode, change.staged_mode))
         return PublishManifest(str(uuid.uuid4()), run_id, self.config.workspace_id, self.snapshot.snapshot_id, approval_id, tuple(operations))
     def discard(self) -> Snapshot: self.snapshot = discard_staging(self.config); return self.snapshot
+    def mark_published(self) -> Snapshot:
+        """Advance the publication baseline without changing the staged files."""
+        self.snapshot = snapshot_current_staging(self.config.work_root); return self.snapshot
 
 def _success_result(request_id: str, output: str, data: dict, elapsed: float) -> ToolResult:
     returned = data.get("returned") or data.get("count", data.get("matches_returned")); return ToolResult(request_id, True, output, data, truncated=bool(data.get("truncated")), elapsed_seconds=elapsed, returned=_nonnegative_int(returned), total_known=_nonnegative_int(data.get("total_known")), limit=_nonnegative_int(data.get("limit")), next_cursor=(str(data["next_cursor"]) if data.get("next_cursor") else None))
@@ -94,10 +94,16 @@ def create_app(config: ExecutorConfig | None = None, service: ExecutorService | 
         try: data = await _json(request); result = executor.manifest(str(data.get("run_id") or ""), str(data.get("approval_id") or ""))
         except (OSError, UnicodeError, ValueError) as exc: return _error("manifest.invalid", str(exc), 422)
         return JSONResponse(result.to_dict())
-    async def cancel(request: Request):
+    async def mark_published(request: Request):
         denied = await authenticate(request)
         if denied: return denied
-        return JSONResponse({"cancelled": await cancel_bash(request.path_params["request_id"])})
+        try:
+            snapshot = executor.mark_published()
+        except (OSError, ValueError, RuntimeError) as exc:
+            return _error("staging.mark_published_failed", str(exc), 409)
+        return JSONResponse({"snapshot_id": snapshot.snapshot_id, "file_count": snapshot.file_count})
+    async def cancel(request: Request):
+        denied = await authenticate(request); return denied or JSONResponse({"cancelled": await cancel_bash(request.path_params["request_id"])})
     async def command_events(request: Request):
         denied = await authenticate(request)
         if denied: return denied
@@ -110,7 +116,7 @@ def create_app(config: ExecutorConfig | None = None, service: ExecutorService | 
         try: snapshot = executor.discard()
         except (OSError, ValueError, RuntimeError) as exc: return _error("staging.discard_failed", str(exc), 409)
         return JSONResponse({"snapshot_id": snapshot.snapshot_id, "file_count": snapshot.file_count})
-    app = Starlette(routes=[Route("/v1/status", status, methods=["GET"]), Route("/v1/tools", tool, methods=["POST"]), Route("/v1/tools/{request_id:str}/events", command_events, methods=["GET"]), Route("/v1/manifest", manifest, methods=["POST"]), Route("/v1/staging/discard", discard, methods=["POST"]), Route("/v1/tools/{request_id:str}/cancel", cancel, methods=["POST"])])
+    app = Starlette(routes=[Route("/v1/status", status, methods=["GET"]), Route("/v1/tools", tool, methods=["POST"]), Route("/v1/tools/{request_id:str}/events", command_events, methods=["GET"]), Route("/v1/manifest", manifest, methods=["POST"]), Route("/v1/staging/mark-published", mark_published, methods=["POST"]), Route("/v1/staging/discard", discard, methods=["POST"]), Route("/v1/tools/{request_id:str}/cancel", cancel, methods=["POST"])])
     app.state.executor = executor; return app
 
 async def _json(request: Request) -> dict:
