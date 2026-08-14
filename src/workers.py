@@ -22,8 +22,7 @@ class CatalogWorker(QThread):
     failed = Signal(str)
 
     def __init__(self, gateway: GatewayClient):
-        super().__init__()
-        self.gateway = gateway
+        super().__init__(); self.gateway = gateway
 
     def run(self) -> None:
         try:
@@ -138,9 +137,6 @@ class PublicationWorker(QThread):
         reseed_client = self.reseed_client or _last_gateway_client
         if reseed_client:
             try:
-                # Publication succeeds on the host first. Advance the executor's
-                # baseline without deleting the staged files that the agent may
-                # legitimately continue using on its next turn.
                 reseed_client.mark_staging_published(); result["reseeded"] = True
             except (GatewayError, KeyError, TypeError, ValueError) as exc:
                 result["reseeded"] = False; result["reseed_error"] = str(exc)
