@@ -60,7 +60,7 @@ class ExecutorService:
     def discard(self) -> Snapshot: self.snapshot = discard_staging(self.config); return self.snapshot
     def mark_published(self) -> Snapshot:
         """Advance the publication baseline without changing the staged files."""
-        self.snapshot = snapshot_current_staging(self.config); return self.snapshot
+        self.snapshot = snapshot_current_staging(self.config.work_root); return self.snapshot
     def reconcile_published_host(self) -> bool:
         """Recover a missed publication-baseline update when host and staging match.
 
