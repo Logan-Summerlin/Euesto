@@ -52,6 +52,7 @@ def edit(
         raise ValueError("expected_sha256 must be a string when supplied")
     guard_shrink(relative, path, content)
 
+    diff = bounded_diff(path, original, content, fromfile=relative, tofile=relative)
     checkpoint_id = create_mutation_checkpoint(
         root,
         max_files=max_checkpoint_files,
@@ -63,8 +64,9 @@ def edit(
         rollback_mutation(root, checkpoint_id)
         raise
     new_hash = sha256(path)
-    diff = bounded_diff(path, None)
-    return f"Edited {relative}.", {
+    changed = int(diff["changed_lines"])
+    output = f"Edited {relative}. Changed {changed} line{'s' if changed != 1 else ''}."
+    return output, {
         "path": relative,
         "old_sha256": old_hash,
         "new_sha256": new_hash,

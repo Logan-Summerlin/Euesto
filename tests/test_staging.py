@@ -116,3 +116,83 @@ def test_staged_python_file_publishes_to_the_selected_workspace(tmp_path: Path) 
 
     assert result.completed_paths == ("blackjack.py",)
     assert (workspace / "blackjack.py").read_text(encoding="utf-8") == "print('ok')"
+
+
+def test_publication_chmod_does_not_require_follow_symlinks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = tmp_path / "projects" / "new-project"
+    workspace.mkdir(parents=True)
+    config = ExecutorConfig(
+        workspace,
+        tmp_path / "work",
+        tmp_path / "executor.sock",
+        "t" * 43,
+        workspace_id(workspace),
+    )
+    service = ExecutorService(config)
+    (config.work_root / "blackjack.py").write_text("print('ok')", encoding="utf-8")
+    manifest = service.manifest("run", "approval")
+
+    import src.workspace_broker as broker_module
+
+    real_chmod = broker_module.os.chmod
+
+    def chmod_without_follow_symlinks(path: Path, mode: int, **kwargs: object) -> None:
+        if kwargs:
+            raise TypeError("follow_symlinks unavailable on this platform")
+        real_chmod(path, mode)
+
+    monkeypatch.setattr(broker_module.os, "chmod", chmod_without_follow_symlinks)
+
+    result = WorkspaceBroker(workspace, tmp_path / "recovery").publish(
+        manifest, {item.path for item in manifest.operations}
+    )
+
+    assert result.completed_paths == ("blackjack.py",)
+
+
+def test_publication_preserves_crlf_bytes_and_does_not_report_post_write_mismatch(tmp_path: Path) -> None:
+    workspace = tmp_path / "projects" / "new-project"
+    workspace.mkdir(parents=True)
+    config = ExecutorConfig(
+        workspace,
+        tmp_path / "work",
+        tmp_path / "executor.sock",
+        "t" * 43,
+        workspace_id(workspace),
+    )
+    service = ExecutorService(config)
+    staged = b"first line\r\nsecond line\r\n"
+    (config.work_root / "example.py").write_bytes(staged)
+
+    manifest = service.manifest("run", "approval")
+    result = WorkspaceBroker(workspace, tmp_path / "recovery").publish(
+        manifest, {item.path for item in manifest.operations}
+    )
+
+    assert result.completed_paths == ("example.py",)
+    assert (workspace / "example.py").read_bytes() == staged
+
+
+def test_undo_preserves_recovery_file_bytes(tmp_path: Path) -> None:
+    workspace = tmp_path / "projects" / "new-project"
+    workspace.mkdir(parents=True)
+    original = b"old\r\ncontent\r\n"
+    target = workspace / "example.py"
+    target.write_bytes(original)
+    config = ExecutorConfig(
+        workspace,
+        tmp_path / "work",
+        tmp_path / "executor.sock",
+        "t" * 43,
+        workspace_id(workspace),
+    )
+    service = ExecutorService(config)
+    replacement = b"new\r\ncontent\r\n"
+    (config.work_root / "example.py").write_bytes(replacement)
+
+    manifest = service.manifest("run", "approval")
+    broker = WorkspaceBroker(workspace, tmp_path / "recovery")
+    result = broker.publish(manifest, {item.path for item in manifest.operations})
+    broker.undo(result.checkpoint_id)
+
+    assert target.read_bytes() == original

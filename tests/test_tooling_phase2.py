@@ -24,7 +24,7 @@ def test_read_preserves_hash_and_line_ranges(tmp_path: Path) -> None:
 
 def test_write_can_create_parents_without_hash(tmp_path: Path) -> None:
     output, data = write(tmp_path, {"path": "src/new.py", "content": "print('ok')\n", "create_parents": True}, max_bytes=64_000)
-    assert output == "Wrote src/new.py."
+    assert output == "Created src/new.py. Changed 1 line."
     assert (tmp_path / "src/new.py").read_text(encoding="utf-8") == "print('ok')\n"
     assert data["old_sha256"] is None
     assert data["new_sha256"] == hashlib.sha256(b"print('ok')\n").hexdigest()

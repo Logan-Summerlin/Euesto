@@ -11,8 +11,9 @@ from shared.tools import ToolResult
 
 
 class FakeExecutor:
-    def __init__(self, manifest=None) -> None:
+    def __init__(self, manifest=None, mutation_result=None) -> None:
         self.manifest_value = manifest
+        self.mutation_result = mutation_result
         self.executed = []
 
     async def status(self):
@@ -22,6 +23,8 @@ class FakeExecutor:
         self.executed.append(request)
         if request.tool == "read":
             return ToolResult(request.request_id, True, output="")
+        if self.mutation_result is not None:
+            return self.mutation_result
         raise AssertionError(f"unexpected executor call: {request.tool}")
 
     async def cancel(self, request_id):
@@ -82,8 +85,50 @@ def test_final_agent_turn_emits_response_before_completion_and_persists_it(monke
     assert saved[0][4][-1] == {"role": "assistant", "content": "Task complete."}
 
 
-def test_agent_completion_emits_desktop_publication_manifest(monkeypatch) -> None:
+def test_agent_completion_does_not_emit_publication_for_a_tool_free_turn_even_if_manifest_has_stale_changes(monkeypatch) -> None:
     async def fake_agent_turn(*args, **kwargs):
+        return AgentTurn(
+            content="No files need changing.",
+            tool_calls=(),
+            message={"role": "assistant", "content": "No files need changing."},
+            usage={"total_tokens": 8},
+        )
+
+    manifest = SimpleNamespace(
+        approval_id="approval-stale",
+        operations=(SimpleNamespace(path="blackjack.py"),),
+        to_dict=lambda: {"manifest_id": "stale", "operations": [{"path": "blackjack.py"}]},
+    )
+    monkeypatch.setattr(runtime_module, "agent_turn", fake_agent_turn)
+    events = []
+    runtime = AgentRuntime(
+        FakeExecutor(manifest),
+        FakeApprovals(),
+        lambda run_id, event_type, payload: record_event(events, run_id, event_type, payload),
+    )
+
+    asyncio.run(runtime.run("run-stale", request(mode="agent", approval_policy="prompt"), "api-key"))
+
+    assert not any(
+        kind == "checkpoint.created" and "publish_manifest" in payload
+        for kind, payload in events
+    )
+    assert "run.completed" in [kind for kind, _ in events]
+
+
+def test_agent_completion_emits_desktop_publication_manifest_after_a_successful_mutation(monkeypatch) -> None:
+    calls = 0
+
+    async def fake_agent_turn(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return AgentTurn(
+                content="",
+                tool_calls=({"id": "write-1", "function": {"name": "write", "arguments": '{"path":"created.txt","content":"hello"}'}},),
+                message={"role": "assistant", "content": ""},
+                usage={"total_tokens": 8},
+            )
         return AgentTurn(
             content="Implemented the change.",
             tool_calls=(),
@@ -96,10 +141,16 @@ def test_agent_completion_emits_desktop_publication_manifest(monkeypatch) -> Non
         operations=(SimpleNamespace(path="created.txt"),),
         to_dict=lambda: {"manifest_id": "manifest-1", "operations": [{"path": "created.txt"}]},
     )
+    mutation_result = ToolResult(
+        "write-1",
+        True,
+        output="created.txt written",
+        data={"workspace_status": {"staged": True, "created": ["created.txt"]}, "checkpoint_id": "tool-checkpoint"},
+    )
     monkeypatch.setattr(runtime_module, "agent_turn", fake_agent_turn)
     events = []
     runtime = AgentRuntime(
-        FakeExecutor(manifest),
+        FakeExecutor(manifest, mutation_result),
         FakeApprovals(),
         lambda run_id, event_type, payload: record_event(events, run_id, event_type, payload),
     )
