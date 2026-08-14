@@ -116,3 +116,35 @@ def test_staged_python_file_publishes_to_the_selected_workspace(tmp_path: Path) 
 
     assert result.completed_paths == ("blackjack.py",)
     assert (workspace / "blackjack.py").read_text(encoding="utf-8") == "print('ok')"
+
+
+def test_publication_chmod_does_not_require_follow_symlinks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = tmp_path / "projects" / "new-project"
+    workspace.mkdir(parents=True)
+    config = ExecutorConfig(
+        workspace,
+        tmp_path / "work",
+        tmp_path / "executor.sock",
+        "t" * 43,
+        workspace_id(workspace),
+    )
+    service = ExecutorService(config)
+    (config.work_root / "blackjack.py").write_text("print('ok')", encoding="utf-8")
+    manifest = service.manifest("run", "approval")
+
+    import src.workspace_broker as broker_module
+
+    real_chmod = broker_module.os.chmod
+
+    def chmod_without_follow_symlinks(path: Path, mode: int, **kwargs: object) -> None:
+        if kwargs:
+            raise TypeError("follow_symlinks unavailable on this platform")
+        real_chmod(path, mode)
+
+    monkeypatch.setattr(broker_module.os, "chmod", chmod_without_follow_symlinks)
+
+    result = WorkspaceBroker(workspace, tmp_path / "recovery").publish(
+        manifest, {item.path for item in manifest.operations}
+    )
+
+    assert result.completed_paths == ("blackjack.py",)
