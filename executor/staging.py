@@ -105,7 +105,7 @@ def seed_staging(config: ExecutorConfig) -> Snapshot:
             destination = work / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(path, destination, follow_symlinks=False)
-            os.chmod(destination, stat.S_IMODE(mode), follow_symlinks=False)
+            os.chmod(destination, stat.S_IMODE(mode))
             hashes[relative] = sha256_file(path)
             sizes[relative] = size
             modes[relative] = stat.S_IMODE(mode)
