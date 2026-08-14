@@ -110,7 +110,7 @@ class WorkspaceBroker:
             with os.fdopen(descriptor, "wb") as handle:
                 handle.write(content.encode("utf-8")); handle.flush(); os.fsync(handle.fileno())
             os.replace(name, target)
-            if mode is not None: os.chmod(target, mode, follow_symlinks=False)
+            if mode is not None: os.chmod(target, mode)
         finally:
             try: os.unlink(name)
             except FileNotFoundError: pass
