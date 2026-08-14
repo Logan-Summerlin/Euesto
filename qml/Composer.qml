@@ -67,21 +67,9 @@ Rectangle {
         RowLayout {
             spacing: 14
             Label { text: "Tools"; color: root.mutedColor; font.pixelSize: 12 }
-            ToolCheckBox {
-                text: "Web Search"
-                checked: backend.serverTools.web_search
-                onToggled: backend.setServerTool("web_search", checked)
-            }
-            ToolCheckBox {
-                text: "Web Fetch"
-                checked: backend.serverTools.web_fetch
-                onToggled: backend.setServerTool("web_fetch", checked)
-            }
-            ToolCheckBox {
-                text: "DateTime"
-                checked: backend.serverTools.datetime
-                onToggled: backend.setServerTool("datetime", checked)
-            }
+            ToolCheckBox { text: "Web Search"; checked: backend.serverTools.web_search; onToggled: backend.setServerTool("web_search", checked) }
+            ToolCheckBox { text: "Web Fetch"; checked: backend.serverTools.web_fetch; onToggled: backend.setServerTool("web_fetch", checked) }
+            ToolCheckBox { text: "DateTime"; checked: backend.serverTools.datetime; onToggled: backend.setServerTool("datetime", checked) }
             Item { Layout.fillWidth: true }
         }
 
@@ -89,16 +77,16 @@ Rectangle {
             id: prompt
             Layout.fillWidth: true
             Layout.preferredHeight: Math.min(110, Math.max(48, contentHeight + 18))
-            placeholderText: backend.generating
-                ? "Queue message · Ctrl+Shift+Enter steers"
-                : "Message…  Ctrl+Enter to send"
+            placeholderText: backend.generating ? "Queue message · Ctrl+Shift+Enter steers" : "Message…  Enter to send · Shift+Enter for newline"
             color: root.textColor
             wrapMode: TextEdit.Wrap
             selectByMouse: true
             Keys.onPressed: event => {
-                if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
-                        && (event.modifiers & Qt.ControlModifier)) {
-                    root.sendRequested(prompt.text, Boolean(event.modifiers & Qt.ShiftModifier))
+                if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                    if (event.modifiers & Qt.ShiftModifier) {
+                        return
+                    }
+                    root.sendRequested(prompt.text, Boolean(event.modifiers & Qt.ControlModifier))
                     prompt.clear()
                     event.accepted = true
                 }
@@ -106,31 +94,11 @@ Rectangle {
         }
 
         RowLayout {
-            Label {
-                Layout.fillWidth: true
-                text: backend.statusText
-                color: root.mutedColor
-                elide: Text.ElideRight
-            }
-            Button {
-                visible: backend.generating
-                text: "Stop"
-                onClicked: root.stopRequested()
-            }
-            Button {
-                text: backend.generating ? "Queue" : "Send"
-                highlighted: true
-                enabled: prompt.text.trim().length > 0
-                onClicked: {
-                    root.sendRequested(prompt.text, false)
-                    prompt.clear()
-                }
-            }
+            Label { Layout.fillWidth: true; text: backend.statusText; color: root.mutedColor; elide: Text.ElideRight }
+            Button { visible: backend.generating; text: "Stop"; onClicked: root.stopRequested() }
+            Button { text: backend.generating ? "Queue" : "Send"; highlighted: true; enabled: prompt.text.trim().length > 0; onClicked: { root.sendRequested(prompt.text, false); prompt.clear() } }
         }
     }
 
-    Connections {
-        target: backend
-        function onFocusComposerRequested() { prompt.forceActiveFocus() }
-    }
+    Connections { target: backend; function onFocusComposerRequested() { prompt.forceActiveFocus() } }
 }
