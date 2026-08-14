@@ -135,13 +135,16 @@ class PublicationWorker(QThread):
         except (BrokerError, OSError, TypeError, ValueError) as exc:
             self.failed.emit(str(exc)); return
         result: dict[str, Any] = {"completed_paths": list(published.completed_paths), "checkpoint_id": published.checkpoint_id}
-        # The baseline update is part of a successful publication handoff. Prefer
-        # the worker's explicit client, but retain the AgentWorker client fallback
-        # for existing callers that construct PublicationWorker directly.
+        # Publication must reconcile the executor baseline before the handoff is
+        # considered complete. The existing staging-inspect endpoint asks the
+        # executor to reconcile a host publication and then reports its state.
         reseed_client = self.reseed_client or _last_gateway_client
         if reseed_client:
             try:
-                reseed_client.mark_staging_published()
+                inspection = reseed_client.inspect_staging(self.manifest.workspace_id)
+                data = inspection.get("data") if isinstance(inspection, dict) else None
+                if not isinstance(data, dict) or bool(data.get("unpublished_changes")):
+                    raise GatewayError("Published workspace still has unpublished staging changes.")
                 result["reseeded"] = True
             except (GatewayError, KeyError, TypeError, ValueError) as exc:
                 result["reseeded"] = False
