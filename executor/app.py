@@ -51,7 +51,12 @@ class ExecutorService:
         for change in workspace_changes(self.snapshot, self.config.work_root):
             content = None
             if change.operation != "delete":
-                try: content = (self.config.work_root / change.path).read_text(encoding="utf-8")
+                try:
+                    # Preserve exact line endings. Path.read_text() uses universal-newline
+                    # translation on Windows, which can make the published bytes differ from
+                    # the staged SHA-256 even though the text is otherwise unchanged.
+                    with (self.config.work_root / change.path).open("r", encoding="utf-8", newline="") as handle:
+                        content = handle.read()
                 except UnicodeError as exc: raise ValueError("Changed binary or invalid UTF-8 files cannot be published by the text broker") from exc
             operations.append(PublishOperation(change.path, change.operation, change.base_sha256, change.staged_sha256, content, change.base_mode, change.staged_mode))
         return PublishManifest(str(uuid.uuid4()), run_id, self.config.workspace_id, self.snapshot.snapshot_id, approval_id, tuple(operations))
