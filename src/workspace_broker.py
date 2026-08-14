@@ -56,18 +56,20 @@ class WorkspaceBroker:
             for operation in manifest.operations:
                 relative = normalize_relative(operation.path); target = self._target(relative, may_not_exist=operation.operation == "create")
                 current_hash = _hash_file(target) if target.exists() else None
-                current_mode = stat.S_IMODE(target.stat().st_mode) if target.exists() else None
+                current_mode = _mode(target) if target.exists() else None
                 if current_hash != operation.base_sha256: raise BrokerError(f"Host file changed after review: {relative}")
-                if current_mode != operation.base_mode: raise BrokerError(f"Host file permissions changed after review: {relative}")
+                if not _modes_equivalent(current_mode, operation.base_mode): raise BrokerError(f"Host file permissions changed after review: {relative}")
                 metadata[relative] = {"existed": target.exists(), "base_sha256": current_hash, "base_mode": current_mode, "published_sha256": operation.staged_sha256, "published_mode": operation.staged_mode}
                 if target.exists():
                     recovery_file = checkpoint / "files" / relative; recovery_file.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(target, recovery_file, follow_symlinks=False)
                 if operation.operation == "delete":
                     target.unlink()
                 else:
-                    self._atomic_write(target, operation.content or "", operation.staged_mode)
-                    if _hash_file(target) != operation.staged_sha256: raise BrokerError(f"Post-write hash mismatch: {relative}")
-                    if operation.staged_mode is not None and stat.S_IMODE(target.stat().st_mode) != operation.staged_mode: raise BrokerError(f"Post-write permission mismatch: {relative}")
+                    if operation.content is None: raise BrokerError(f"Publication content is missing: {relative}")
+                    self._atomic_write(target, operation.content.encode("utf-8"), operation.staged_mode)
+                    actual_hash = _hash_file(target)
+                    if actual_hash != operation.staged_sha256: raise BrokerError(f"Post-write publication mismatch: {relative}")
+                    if operation.staged_mode is not None and not _modes_equivalent(_mode(target), operation.staged_mode): raise BrokerError(f"Post-write permission mismatch: {relative}")
                 completed.append(relative)
             (checkpoint / "manifest.json").write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
             return PublishResult(checkpoint_id, tuple(completed))
@@ -84,7 +86,7 @@ class WorkspaceBroker:
             if current != item["published_sha256"]: raise BrokerError(f"Undo conflict: {relative} changed after publication")
             recovery = checkpoint / "files" / relative
             if item["existed"]:
-                self._atomic_write(target, recovery.read_text(encoding="utf-8"), int(item["base_mode"]) if item.get("base_mode") is not None else None)
+                self._atomic_write(target, recovery.read_bytes(), int(item["base_mode"]) if item.get("base_mode") is not None else None)
             elif target.exists(): target.unlink()
             completed.append(relative)
         return PublishResult(checkpoint_id, tuple(completed))
@@ -104,16 +106,27 @@ class WorkspaceBroker:
         if not may_not_exist and not target.is_file(): raise BrokerError(f"Expected host file is missing: {relative}")
         return target
 
-    def _atomic_write(self, target: Path, content: str, mode: int | None = None) -> None:
+    def _atomic_write(self, target: Path, content: bytes, mode: int | None = None) -> None:
         target.parent.mkdir(parents=True, exist_ok=True); descriptor, name = tempfile.mkstemp(prefix=".local-chat-", dir=target.parent)
         try:
             with os.fdopen(descriptor, "wb") as handle:
-                handle.write(content.encode("utf-8")); handle.flush(); os.fsync(handle.fileno())
+                handle.write(content); handle.flush(); os.fsync(handle.fileno())
             os.replace(name, target)
             if mode is not None: os.chmod(target, mode)
         finally:
             try: os.unlink(name)
             except FileNotFoundError: pass
+
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
+
+def _modes_equivalent(actual: int | None, expected: int | None) -> bool:
+    if actual is None or expected is None: return actual == expected
+    # Windows chmod/stat only has meaningful read-only semantics. Comparing the full
+    # POSIX mode causes false publication failures for otherwise identical files.
+    if os.name == "nt":
+        return bool(actual & 0o200) == bool(expected & 0o200)
+    return actual == expected
 
 def _hash_file(path: Path) -> str:
     if not path.is_file() or path.is_symlink() or path.stat().st_nlink > 1: raise BrokerError("Publish target is not a safe regular file")
