@@ -30,6 +30,7 @@ class AgentRuntime:
         budget = RunBudget(request.max_iterations, request.max_wall_seconds, request.max_cost, request.max_tool_calls)
         if budget_state: budget.restore(budget_state)
         messages = [dict(x) for x in (initial_messages or request.messages)]; visible = [dict(x) for x in (visible_messages or request.messages)]; self._tool_result_bytes[run_id] = 0
+        run_mutated = False
         try:
             status = await self.executor.status()
             if status.get("workspace_id") != request.workspace_id: raise RuntimeError("executor workspace identity mismatch")
@@ -51,9 +52,11 @@ class AgentRuntime:
                     await self.append(run_id, "usage.updated", dict(turn.usage or {})); final = [*visible, {"role": "assistant", "content": content}]
                     if request.session_id and self.session_saver: self.session_saver(request.session_id, request.workspace_id, request.mode, messages, final)
                     self._save_snapshot(run_id, request, messages, final, budget, False)
-                    if request.mode == "agent": await self._offer_publish(run_id, request.approval_policy)
+                    if request.mode == "agent" and run_mutated: await self._offer_publish(run_id, request.approval_policy)
                     await self.append(run_id, "run.completed", {"iterations": budget.iterations, **budget.usage()}); return
-                for raw_call in turn.tool_calls: budget.consume_tool_call(); await self._execute_tool_call(run_id, request, raw_call, messages)
+                for raw_call in turn.tool_calls:
+                    budget.consume_tool_call()
+                    run_mutated = (await self._execute_tool_call(run_id, request, raw_call, messages)) or run_mutated
                 partial = [*visible, {"role": "assistant", "content": str(turn.content or "")}]
                 if request.session_id and self.session_saver: self.session_saver(request.session_id, request.workspace_id, request.mode, messages, partial)
                 self._save_snapshot(run_id, request, messages, partial, budget, True)
@@ -61,14 +64,14 @@ class AgentRuntime:
         except Exception as exc: await self.append(run_id, "run.failed", {"code": "agent.failed", "message": str(exc)[:2000], "retryable": False})
         finally: self.active_request.pop(run_id, None); self._run_rules.pop(run_id, None); self._tool_result_bytes.pop(run_id, None)
 
-    async def _execute_tool_call(self, run_id: str, request: AgentRunRequest, raw_call: dict[str, Any], messages: list[dict[str, Any]]) -> None:
+    async def _execute_tool_call(self, run_id: str, request: AgentRunRequest, raw_call: dict[str, Any], messages: list[dict[str, Any]]) -> bool:
         function = raw_call.get("function") if isinstance(raw_call.get("function"), dict) else {}; request_id = str(raw_call.get("id") or uuid.uuid4()); name = str(function.get("name") or "")
         try:
             arguments = json.loads(str(function.get("arguments") or "{}"));
             if not isinstance(arguments, dict): raise ValueError("tool arguments must be an object")
             tool_request = ToolRequest(request_id, run_id, name, request.mode, arguments)
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
-            messages.append({"role": "tool", "tool_call_id": request_id, "content": json.dumps({"ok": False, "error_code": "tool.invalid_request", "output": str(exc)})}); return
+            messages.append({"role": "tool", "tool_call_id": request_id, "content": json.dumps({"ok": False, "error_code": "tool.invalid_request", "output": str(exc)})}); return False
         await self.append(run_id, "tool.requested", tool_request.to_dict()); rules = (*self.rules_loader(request.workspace_id), *self._run_rules.get(run_id, ())); decision = resolve_permission(tool_request, request.workspace_id, rules)
         if decision == PermissionDecision.ASK and request.approval_policy == "auto": decision = PermissionDecision.ALLOW_RUN
         if decision == PermissionDecision.ASK:
@@ -80,6 +83,9 @@ class AgentRuntime:
         await self.append(run_id, "tool.output", result.to_dict())
         if result.data.get("checkpoint_id"): await self.append(run_id, "checkpoint.created", {"checkpoint_id": str(result.data["checkpoint_id"]), "request_id": request_id, "tool": name})
         messages.append({"role": "tool", "tool_call_id": request_id, "content": self._model_tool_result(run_id, name, result)})
+        if name not in MUTATION_TOOLS or not result.ok: return False
+        workspace_status = result.data.get("workspace_status")
+        return isinstance(workspace_status, dict) and bool(workspace_status.get("staged"))
 
     def _model_tool_result(self, run_id: str, name: str, result: ToolResult) -> str:
         payload = result.to_dict(); data = dict(payload.get("data") or {})
