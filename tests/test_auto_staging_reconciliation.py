@@ -5,7 +5,7 @@ from pathlib import Path
 from executor.app import ExecutorService
 from executor.config import ExecutorConfig
 from executor.staging import workspace_changes
-from src.workspace_broker import WorkspaceBroker
+from src.workspace_broker import WorkspaceBroker, workspace_id
 
 
 def make_config(source: Path, work: Path) -> ExecutorConfig:
@@ -14,7 +14,7 @@ def make_config(source: Path, work: Path) -> ExecutorConfig:
         work_root=work,
         socket_path=work.parent / "executor.sock",
         token="t" * 43,
-        workspace_id="workspace",
+        workspace_id=workspace_id(source),
     )
 
 
