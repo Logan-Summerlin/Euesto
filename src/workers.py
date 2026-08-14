@@ -135,14 +135,19 @@ class PublicationWorker(QThread):
         except (BrokerError, OSError, TypeError, ValueError) as exc:
             self.failed.emit(str(exc)); return
         result: dict[str, Any] = {"completed_paths": list(published.completed_paths), "checkpoint_id": published.checkpoint_id}
+        # The baseline update is part of a successful publication handoff. Prefer
+        # the worker's explicit client, but retain the AgentWorker client fallback
+        # for existing callers that construct PublicationWorker directly.
         reseed_client = self.reseed_client or _last_gateway_client
         if reseed_client:
             try:
-                # Publication succeeds on the host first. Advance the executor's
-                # baseline without deleting the staged files that the agent may
-                # legitimately continue using on its next turn.
-                reseed_client.mark_staging_published(); result["reseeded"] = True
+                reseed_client.mark_staging_published()
+                result["reseeded"] = True
             except (GatewayError, KeyError, TypeError, ValueError) as exc:
-                result["reseeded"] = False; result["reseed_error"] = str(exc)
+                result["reseeded"] = False
+                result["reseed_error"] = str(exc)
+        else:
+            result["reseeded"] = False
+            result["reseed_error"] = "No gateway client available to advance the staging baseline."
         _last_gateway_client = None
         self.complete.emit(result)
