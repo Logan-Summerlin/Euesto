@@ -47,6 +47,12 @@ class ExecutorClient:
             response.raise_for_status()
             return PublishManifest.from_dict(response.json())
 
+    async def mark_staging_published(self) -> dict:
+        async with httpx.AsyncClient(transport=self._transport(), base_url="http://executor", timeout=30, follow_redirects=False) as client:
+            response = await client.post("/v1/staging/mark-published", headers=self._headers())
+            response.raise_for_status()
+            return dict(response.json())
+
     async def cancel(self, request_id: str) -> None:
         async with httpx.AsyncClient(transport=self._transport(), base_url="http://executor", timeout=3, follow_redirects=False) as client:
             await client.post(f"/v1/tools/{request_id}/cancel", headers=self._headers())
