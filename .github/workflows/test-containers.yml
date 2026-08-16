@@ -1,13 +1,11 @@
-# Branch tooling validation intentionally runs on the overhaul branch.
+# Validate gateway and executor behavior on every branch update.
 name: Validate local gateway
 
 on:
   pull_request:
   push:
     branches:
-      - main
-      - tooling-overhaul-phase-1
-      - tooling-reporting-hardening
+      - '**'
 
 permissions:
   contents: read
