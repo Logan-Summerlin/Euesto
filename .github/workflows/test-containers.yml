@@ -42,14 +42,16 @@ jobs:
             tests/test_tooling_regressions.py \
             tests/test_tooling_reporting_hardening.py \
             tests/test_narrow_tooling.py
-      - name: Full repository checks
+      - name: Full pytest suite
         env:
           QT_QPA_PLATFORM: offscreen
-        run: |
-          pytest
-          ruff check .
-          python -m compileall -q app.py src server shared executor tests scripts
-          pyside6-qmllint qml/Main.qml qml/Sidebar.qml qml/Transcript.qml qml/Composer.qml
+        run: pytest
+      - name: Ruff
+        run: ruff check .
+      - name: Python compile check
+        run: python -m compileall -q app.py src server shared executor tests scripts
+      - name: QML lint
+        run: pyside6-qmllint qml/Main.qml qml/Sidebar.qml qml/Transcript.qml qml/Composer.qml
       - name: Render hardened Compose profile
         shell: bash
         run: |
