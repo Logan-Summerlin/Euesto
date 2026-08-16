@@ -15,7 +15,7 @@ MAX_EVENT_COUNT = 128
 MAX_EVENT_BYTES = 64_000
 MAX_EVENT_REQUESTS = 64
 MAX_STDIN_BYTES = 8_000_000
-MAX_COMMAND_BYTES = 512_000
+MAX_COMMAND_BYTES = 1_000_000
 MAX_ENV_VARS = 64
 MAX_ENV_VALUE_BYTES = 16_384
 BASE_ENVIRONMENT = {
@@ -39,19 +39,7 @@ class BashRunner:
         self._event_order: deque[str] = deque()
         self._cancelled: set[str] = set()
 
-    async def run(
-        self,
-        request_id: str,
-        root: Path,
-        arguments: dict,
-        *,
-        max_seconds: int,
-        max_output: int,
-        max_command_bytes: int = MAX_COMMAND_BYTES,
-        max_stdin_bytes: int = MAX_STDIN_BYTES,
-        max_checkpoint_files: int = 300_000,
-        max_checkpoint_bytes: int = 2_000_000_000,
-    ) -> tuple[str, dict]:
+    async def run(self, request_id: str, root: Path, arguments: dict, *, max_seconds: int, max_output: int, max_command_bytes: int = MAX_COMMAND_BYTES, max_stdin_bytes: int = MAX_STDIN_BYTES, max_checkpoint_files: int = 300_000, max_checkpoint_bytes: int = 2_000_000_000) -> tuple[str, dict]:
         command = arguments.get("command")
         if not isinstance(command, str) or not command.strip() or "\x00" in command:
             raise ValueError("bash requires a non-empty command")
@@ -89,25 +77,13 @@ class BashRunner:
         stdout_task = stderr_task = stdin_task = None
         process: asyncio.subprocess.Process | None = None
         try:
-            process = await asyncio.create_subprocess_exec(
-                "/bin/bash",
-                "-lc",
-                command,
-                cwd=cwd,
-                env=environment,
-                stdin=asyncio.subprocess.PIPE if stdin_text is not None else None,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                start_new_session=True,
-            )
+            process = await asyncio.create_subprocess_exec("/bin/bash", "-lc", command, cwd=cwd, env=environment, stdin=asyncio.subprocess.PIPE if stdin_text is not None else None, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True)
             self._processes[request_id] = process
             stdout_task = asyncio.create_task(self._read_stream(request_id, "stdout", process.stdout, max_output))
             stderr_task = asyncio.create_task(self._read_stream(request_id, "stderr", process.stderr, max_output))
             stdin_task = asyncio.create_task(self._write_stdin(process, stdin_text))
             try:
-                stdout_result, stderr_result, _ = await asyncio.wait_for(
-                    asyncio.gather(stdout_task, stderr_task, stdin_task), timeout=timeout
-                )
+                stdout_result, stderr_result, _ = await asyncio.wait_for(asyncio.gather(stdout_task, stderr_task, stdin_task), timeout=timeout)
                 await process.wait()
             except TimeoutError as exc:
                 await self.cancel(request_id)
@@ -130,21 +106,7 @@ class BashRunner:
             combined_bytes = stdout + (b"\n" if stdout and stderr else b"") + stderr
             combined_truncated = len(combined_bytes) > max_output
             combined = combined_bytes[:max_output].decode("utf-8", errors="replace")
-            return combined, {
-                "exit_code": process.returncode,
-                "checkpoint_id": checkpoint_id,
-                "elapsed_seconds": time.perf_counter() - started,
-                "stdout": stdout.decode("utf-8", errors="replace"),
-                "stderr": stderr.decode("utf-8", errors="replace"),
-                "stdout_bytes": stdout_bytes,
-                "stderr_bytes": stderr_bytes,
-                "stdout_truncated": stdout_truncated,
-                "stderr_truncated": stderr_truncated,
-                "stdin_bytes": len(stdin_text.encode("utf-8")) if stdin_text is not None else 0,
-                "truncated": stdout_truncated or stderr_truncated or combined_truncated,
-                "cancelled": request_id in self._cancelled,
-                "rolled_back": rolled_back,
-            }
+            return combined, {"exit_code": process.returncode, "checkpoint_id": checkpoint_id, "elapsed_seconds": time.perf_counter() - started, "stdout": stdout.decode("utf-8", errors="replace"), "stderr": stderr.decode("utf-8", errors="replace"), "stdout_bytes": stdout_bytes, "stderr_bytes": stderr_bytes, "stdout_truncated": stdout_truncated, "stderr_truncated": stderr_truncated, "stdin_bytes": len(stdin_text.encode("utf-8")) if stdin_text is not None else 0, "truncated": stdout_truncated or stderr_truncated or combined_truncated, "cancelled": request_id in self._cancelled, "rolled_back": rolled_back}
         except Exception:
             if process is None:
                 rollback_mutation(root, checkpoint_id)
