@@ -28,7 +28,7 @@ class ExecutorConfig:
     max_edit_result_bytes: int = 2_000_000
     max_bash_output_bytes: int = 1_000_000
     max_bash_stdin_bytes: int = 1_000_000
-    max_command_bytes: int = 512_000
+    max_command_bytes: int = 1_000_000
     max_checkpoint_bytes: int = 256_000_000
     max_staging_bytes: int = 1_500_000_000
     max_staged_files: int = 300_000
@@ -38,8 +38,6 @@ class ExecutorConfig:
     max_ls_results: int = 500
     max_grep_scan_bytes: int = 64_000_000
 
-    # Hard implementation ceilings. These are intentionally separate from
-    # defaults so raising a configured value cannot silently remove a safety cap.
     HARD_CEILINGS: ClassVar[dict[str, int]] = {
         "max_read_bytes": 8_000_000,
         "max_write_bytes": 8_000_000,
@@ -47,7 +45,7 @@ class ExecutorConfig:
         "max_edit_result_bytes": 16_000_000,
         "max_bash_output_bytes": 8_000_000,
         "max_bash_stdin_bytes": 8_000_000,
-        "max_command_bytes": 512_000,
+        "max_command_bytes": 1_000_000,
         "max_checkpoint_bytes": 1_000_000_000,
         "max_staging_bytes": 8_000_000_000,
         "max_staged_files": 1_000_000,
@@ -66,7 +64,6 @@ class ExecutorConfig:
             raise ValueError("Executor token must contain at least 256 bits")
         if not self.workspace_id:
             raise ValueError("Executor workspace identity is required")
-
         values = {name: getattr(self, name) for name in self._LIMIT_FIELDS}
         invalid = [name for name, value in values.items() if not isinstance(value, int) or isinstance(value, bool) or value < 1]
         if invalid:
@@ -86,7 +83,6 @@ class ExecutorConfig:
         profiles = cls._profiles()
         if profile not in profiles:
             raise ValueError(f"Unknown executor profile: {profile}")
-
         values = dict(profiles[profile])
         sources = {name: f"profile:{profile}" for name in values}
         for name in cls._LIMIT_FIELDS:
@@ -100,7 +96,6 @@ class ExecutorConfig:
                 raise ValueError(f"{env_name} must be a positive integer") from exc
             values[name] = value
             sources[name] = f"environment:{env_name}"
-
         return cls(
             source_root=Path(os.environ.get("LOCAL_CHAT_SOURCE_ROOT", "/source")),
             work_root=Path(os.environ.get("LOCAL_CHAT_WORK_ROOT", "/work")),
@@ -120,7 +115,7 @@ class ExecutorConfig:
             "max_edit_result_bytes": 2_000_000,
             "max_bash_output_bytes": 1_000_000,
             "max_bash_stdin_bytes": 1_000_000,
-            "max_command_bytes": 512_000,
+            "max_command_bytes": 1_000_000,
             "max_checkpoint_bytes": 256_000_000,
             "max_staging_bytes": 1_500_000_000,
             "max_staged_files": 300_000,
@@ -131,7 +126,7 @@ class ExecutorConfig:
             "max_grep_scan_bytes": 64_000_000,
         }
         return {
-            "small": {**base, "max_read_bytes": 256_000, "max_write_bytes": 256_000, "max_edit_target_bytes": 512_000, "max_edit_result_bytes": 512_000, "max_bash_output_bytes": 256_000, "max_bash_stdin_bytes": 256_000, "max_staging_bytes": 512_000_000, "max_checkpoint_bytes": 64_000_000, "max_search_results": 250, "max_find_results": 250, "max_ls_results": 250, "max_grep_scan_bytes": 16_000_000},
+            "small": {**base, "max_read_bytes": 256_000, "max_write_bytes": 256_000, "max_edit_target_bytes": 512_000, "max_edit_result_bytes": 512_000, "max_bash_output_bytes": 256_000, "max_bash_stdin_bytes": 256_000, "max_command_bytes": 256_000, "max_staging_bytes": 512_000_000, "max_checkpoint_bytes": 64_000_000, "max_search_results": 250, "max_find_results": 250, "max_ls_results": 250, "max_grep_scan_bytes": 16_000_000},
             "coding": base,
             "large-workspace": {**base, "max_read_bytes": 2_000_000, "max_write_bytes": 2_000_000, "max_edit_target_bytes": 4_000_000, "max_edit_result_bytes": 4_000_000, "max_bash_output_bytes": 2_000_000, "max_bash_stdin_bytes": 2_000_000, "max_staging_bytes": 6_000_000_000, "max_checkpoint_bytes": 1_000_000_000, "max_staged_files": 750_000, "max_search_results": 1_000, "max_find_results": 1_000, "max_ls_results": 1_000, "max_grep_scan_bytes": 128_000_000},
         }
@@ -150,13 +145,7 @@ class ExecutorConfig:
         if name not in self._LIMIT_FIELDS:
             raise KeyError(f"Unknown executor limit: {name}")
         configured = getattr(self, name)
-        return {
-            "requested": requested,
-            "configured": configured,
-            "hard_ceiling": self.HARD_CEILINGS[name],
-            "effective": self.effective_limit(name, requested),
-            "source": self.sources.get(name, "constructor"),
-        }
+        return {"requested": requested, "configured": configured, "hard_ceiling": self.HARD_CEILINGS[name], "effective": self.effective_limit(name, requested), "source": self.sources.get(name, "constructor")}
 
     def limits_status(self) -> dict[str, dict[str, object]]:
         return {name: self.limit_status(name) for name in self._LIMIT_FIELDS}
