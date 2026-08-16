@@ -13,6 +13,7 @@ from shared.coercion import optional_string
 from shared.events import EVENT_TYPES, EventEnvelope
 from shared.protocol import protocol_is_compatible
 from shared.responses import GatewayStatus
+from shared.tools import PublishManifest
 
 from .models import RequestOptions, ServerToolOptions
 
@@ -113,6 +114,19 @@ class GatewayClient:
             data = response.json()
         if not isinstance(data, dict) or not isinstance(data.get("data"), dict):
             raise GatewayError("Gateway returned invalid staging inspection data.", code="protocol.invalid_staging")
+        return dict(data)
+
+    def mark_staging_published(self, manifest: PublishManifest) -> dict[str, Any]:
+        with self._client(timeout=30.0) as client:
+            response = client.post(
+                f"/v1/workspaces/{manifest.workspace_id}/staging/mark-published",
+                headers={**self.headers, "Content-Type": "application/json"},
+                json=manifest.to_dict(),
+            )
+            self._raise_for_error(response)
+            data = response.json()
+        if not isinstance(data, dict):
+            raise GatewayError("Gateway returned invalid staging baseline data.", code="protocol.invalid_staging")
         return dict(data)
 
     def discard_staging(self, workspace_id: str) -> dict[str, Any]:
