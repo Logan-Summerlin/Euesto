@@ -8,8 +8,6 @@ from executor.config import ExecutorConfig
 
 
 def _config(tmp_path: Path, **overrides: int) -> ExecutorConfig:
-    token_path = tmp_path / "token"
-    token_path.write_text("x" * 32, encoding="utf-8")
     values = {
         "source_root": tmp_path / "source",
         "work_root": tmp_path / "work",
@@ -53,7 +51,7 @@ def test_checkpoint_and_staging_limits_are_consistent(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="smaller than staging"):
         _config(tmp_path, max_checkpoint_bytes=500, max_staging_bytes=500)
     with pytest.raises(ValueError, match="hard staging ceiling"):
-        _config(tmp_path, max_checkpoint_bytes=3_000_000_000, max_staging_bytes=6_000_000_000)
+        _config(tmp_path, max_checkpoint_bytes=1_000_000_000, max_staging_bytes=7_500_000_000)
 
 
 def test_effective_limit_reports_requested_configured_and_hard_values(tmp_path: Path) -> None:
