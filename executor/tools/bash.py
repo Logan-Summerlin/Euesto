@@ -14,7 +14,8 @@ from ..paths import safe_path
 MAX_EVENT_COUNT = 128
 MAX_EVENT_BYTES = 64_000
 MAX_EVENT_REQUESTS = 64
-MAX_STDIN_BYTES = 256_000
+MAX_STDIN_BYTES = 8_000_000
+MAX_COMMAND_BYTES = 512_000
 MAX_ENV_VARS = 64
 MAX_ENV_VALUE_BYTES = 16_384
 BASE_ENVIRONMENT = {
@@ -46,14 +47,17 @@ class BashRunner:
         *,
         max_seconds: int,
         max_output: int,
+        max_command_bytes: int = MAX_COMMAND_BYTES,
+        max_stdin_bytes: int = MAX_STDIN_BYTES,
         max_checkpoint_files: int = 300_000,
         max_checkpoint_bytes: int = 2_000_000_000,
     ) -> tuple[str, dict]:
         command = arguments.get("command")
         if not isinstance(command, str) or not command.strip() or "\x00" in command:
             raise ValueError("bash requires a non-empty command")
-        if len(command.encode("utf-8")) > 512_000:
-            raise ValueError("bash command is too large")
+        command_limit = min(max_command_bytes, MAX_COMMAND_BYTES)
+        if len(command.encode("utf-8")) > command_limit:
+            raise ValueError(f"bash command exceeds the configured limit of {command_limit} bytes")
 
         working_directory = arguments.get("working_directory", ".")
         if not isinstance(working_directory, str):
@@ -68,12 +72,13 @@ class BashRunner:
         timeout = min(max_seconds, max(1, raw_timeout))
 
         stdin_text = arguments.get("stdin")
+        stdin_limit = min(max_stdin_bytes, MAX_STDIN_BYTES)
         if stdin_text is not None and (
             not isinstance(stdin_text, str)
             or "\x00" in stdin_text
-            or len(stdin_text.encode("utf-8")) > MAX_STDIN_BYTES
+            or len(stdin_text.encode("utf-8")) > stdin_limit
         ):
-            raise ValueError("bash stdin must be bounded UTF-8 text")
+            raise ValueError(f"bash stdin exceeds the configured limit of {stdin_limit} bytes")
 
         requested_env = arguments.get("env", {})
         environment = self._environment(requested_env)
@@ -193,12 +198,7 @@ class BashRunner:
     def events(self, request_id: str, after: int = 0) -> dict[str, object]:
         values = list(self._events.get(request_id, ()))
         first = int(values[0]["sequence"]) if values else self._sequence.get(request_id, 0) + 1
-        return {
-            "events": [item for item in values if int(item["sequence"]) > max(0, after)],
-            "next_cursor": self._sequence.get(request_id, 0),
-            "truncated": bool(values and after < first - 1),
-            "active": request_id in self._processes,
-        }
+        return {"events": [item for item in values if int(item["sequence"]) > max(0, after)], "next_cursor": self._sequence.get(request_id, 0), "truncated": bool(values and after < first - 1), "active": request_id in self._processes}
 
     async def cancel(self, request_id: str) -> bool:
         process = self._processes.get(request_id)
@@ -213,13 +213,7 @@ class BashRunner:
             await process.wait()
         return True
 
-    async def _read_stream(
-        self,
-        request_id: str,
-        name: str,
-        stream: asyncio.StreamReader | None,
-        max_output: int,
-    ) -> tuple[bytes, int, bool]:
+    async def _read_stream(self, request_id: str, name: str, stream: asyncio.StreamReader | None, max_output: int) -> tuple[bytes, int, bool]:
         if stream is None:
             return b"", 0, False
         retained = bytearray()
@@ -232,11 +226,7 @@ class BashRunner:
         return bytes(retained), total, total > max_output
 
     def _append_event(self, request_id: str, stream: str, chunk: bytes) -> None:
-        event = {
-            "sequence": self._sequence.get(request_id, 0) + 1,
-            "stream": stream,
-            "text": chunk[:4_096].decode("utf-8", errors="replace"),
-        }
+        event = {"sequence": self._sequence.get(request_id, 0) + 1, "stream": stream, "text": chunk[:4_096].decode("utf-8", errors="replace")}
         event_bytes = len(json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
         self._sequence[request_id] = int(event["sequence"])
         queue = self._events.setdefault(request_id, deque(maxlen=MAX_EVENT_COUNT))
@@ -251,8 +241,8 @@ class BashRunner:
 _runner = BashRunner()
 
 
-async def bash(request_id: str, root: Path, arguments: dict, *, max_seconds: int, max_output: int, max_checkpoint_files: int = 300_000, max_checkpoint_bytes: int = 2_000_000_000) -> tuple[str, dict]:
-    return await _runner.run(request_id, root, arguments, max_seconds=max_seconds, max_output=max_output, max_checkpoint_files=max_checkpoint_files, max_checkpoint_bytes=max_checkpoint_bytes)
+async def bash(request_id: str, root: Path, arguments: dict, *, max_seconds: int, max_output: int, max_command_bytes: int = MAX_COMMAND_BYTES, max_stdin_bytes: int = MAX_STDIN_BYTES, max_checkpoint_files: int = 300_000, max_checkpoint_bytes: int = 2_000_000_000) -> tuple[str, dict]:
+    return await _runner.run(request_id, root, arguments, max_seconds=max_seconds, max_output=max_output, max_command_bytes=max_command_bytes, max_stdin_bytes=max_stdin_bytes, max_checkpoint_files=max_checkpoint_files, max_checkpoint_bytes=max_checkpoint_bytes)
 
 
 async def cancel(request_id: str) -> bool:
