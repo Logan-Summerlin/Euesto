@@ -59,7 +59,6 @@ def test_model_schema_hard_maxima_match_configuration_ceilings() -> None:
 
 def test_dispatch_passes_only_operation_specific_effective_limits(tmp_path: Path, monkeypatch) -> None:
     source = tmp_path / "source"
-    work = tmp_path / "work"
     source.mkdir()
     config = _config(tmp_path)
     service = ExecutorService(config)
