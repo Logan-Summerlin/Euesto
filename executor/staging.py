@@ -134,7 +134,7 @@ def snapshot_current_staging(work_root: Path) -> Snapshot:
 def _write_snapshot(work: Path, snapshot: Snapshot) -> None:
     (work / ".local-chat-snapshot.json").write_text(
         json.dumps(
-            {"snapshot_id": snapshot.snapshot_id, "hashes": snapshot.hashes, "sizes": snapshot.sizes, "modes": snapshot.modes, "total_bytes": snapshot.total_bytes},
+            {"snapshot_id": snapshot.snapshot_id, "hashes": snapshot.hashes, "modes": snapshot.modes, "total_bytes": snapshot.total_bytes, "sizes": snapshot.sizes},
             sort_keys=True,
         ),
         encoding="utf-8",
@@ -153,7 +153,7 @@ def load_snapshot(work_root: Path) -> Snapshot:
 
 
 def visible_files(root: Path) -> dict[str, tuple[str, int, int]]:
-    """Return staged files eligible for review/publication, including POSIX mode."""
+    """Return files eligible for staging, review, and publication, including mode."""
     result: dict[str, tuple[str, int, int]] = {}
     for current, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
         current_path = Path(current)
@@ -164,7 +164,7 @@ def visible_files(root: Path) -> dict[str, tuple[str, int, int]]:
             mode = path.lstat().st_mode
             if stat.S_ISLNK(mode):
                 raise UnsafePath(f"Staging link is forbidden: {relative}")
-            if is_staging_excluded(relative) or _is_executor_metadata(relative):
+            if is_secret_path(relative) or is_staging_excluded(relative) or _is_executor_metadata(relative):
                 continue
             retained_dirs.append(dirname)
         dirnames[:] = retained_dirs
@@ -172,7 +172,7 @@ def visible_files(root: Path) -> dict[str, tuple[str, int, int]]:
         for filename in sorted(filenames):
             path = current_path / filename
             relative = path.relative_to(root).as_posix()
-            if is_staging_excluded(relative) or _is_executor_metadata(relative):
+            if is_secret_path(relative) or is_staging_excluded(relative) or _is_executor_metadata(relative):
                 continue
             mode = path.lstat().st_mode
             if stat.S_ISLNK(mode):
