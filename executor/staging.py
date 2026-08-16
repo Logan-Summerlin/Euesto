@@ -60,6 +60,8 @@ def seed_staging(config: ExecutorConfig) -> Snapshot:
     source = config.source_root.resolve(strict=True)
     work = config.work_root
     work.mkdir(parents=True, exist_ok=True)
+    actual_capacity = shutil.disk_usage(work).total
+    config.validate_storage_capacity(actual_capacity)
     if any(work.iterdir()):
         raise RuntimeError("Staging volume must be empty and fresh")
     hashes: dict[str, str] = {}

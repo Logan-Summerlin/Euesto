@@ -25,7 +25,9 @@ def test_default_staging_limits_support_large_projects(tmp_path: Path) -> None:
     config = make_config(tmp_path / "source", tmp_path / "work")
 
     assert config.max_staged_files == 300_000
-    assert config.max_staging_bytes == 1_500_000_000
+    assert config.max_staging_bytes == 2_500_000_000
+    assert config.max_checkpoint_bytes == 2_500_000_000
+    assert config.required_capacity_bytes < config.work_capacity_bytes
 
 
 def test_seed_staging_skips_dependency_metadata_and_cache_directories(tmp_path: Path) -> None:

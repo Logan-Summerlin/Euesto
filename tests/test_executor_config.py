@@ -29,8 +29,10 @@ def test_coding_profile_defaults_are_explicit(tmp_path: Path) -> None:
     assert config.max_bash_stdin_bytes == 1_000_000
     assert config.max_command_seconds == 300
     assert config.max_search_results == 500
-    assert config.max_staging_bytes == 1_500_000_000
-    assert config.max_checkpoint_bytes == 256_000_000
+    assert config.max_staging_bytes == 2_500_000_000
+    assert config.max_checkpoint_bytes == 2_500_000_000
+    assert config.work_capacity_bytes == 8_000_000_000
+    assert config.required_capacity_bytes == 6_000_000_000
 
 
 def test_every_limit_is_a_positive_integer(tmp_path: Path) -> None:
@@ -48,10 +50,14 @@ def test_limits_cannot_exceed_hard_ceilings(tmp_path: Path) -> None:
 
 
 def test_checkpoint_and_staging_limits_are_consistent(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="smaller than staging"):
-        _config(tmp_path, max_checkpoint_bytes=500, max_staging_bytes=500)
-    with pytest.raises(ValueError, match="hard staging ceiling"):
-        _config(tmp_path, max_checkpoint_bytes=1_000_000_000, max_staging_bytes=7_500_000_000)
+    with pytest.raises(ValueError, match="cover the maximum staged content"):
+        _config(tmp_path, max_checkpoint_bytes=500, max_staging_bytes=501)
+    with pytest.raises(ValueError, match="fit strictly below"):
+        _config(
+            tmp_path,
+            max_checkpoint_bytes=3_500_000_000,
+            max_staging_bytes=3_500_000_000,
+        )
 
 
 def test_effective_limit_reports_requested_configured_and_hard_values(tmp_path: Path) -> None:
@@ -79,6 +85,8 @@ def test_environment_profile_and_overrides(monkeypatch: pytest.MonkeyPatch, tmp_
     assert config.workspace_id == "env-workspace"
     assert config.max_read_bytes == 123_456
     assert config.max_write_bytes == 256_000
+    assert config.max_staging_bytes == 512_000_000
+    assert config.max_checkpoint_bytes == 512_000_000
     assert config.sources["max_read_bytes"] == "environment:LOCAL_CHAT_MAX_READ_BYTES"
     assert config.sources["max_write_bytes"] == "profile:small"
 
@@ -106,9 +114,11 @@ def test_unknown_profile_is_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: 
 def test_runtime_limit_status_contains_all_limit_sources(tmp_path: Path) -> None:
     config = _config(tmp_path)
     status = config.limits_status()
-    assert set(status) == set(ExecutorConfig.HARD_CEILINGS)
-    for name, values in status.items():
+    assert set(ExecutorConfig.HARD_CEILINGS).issubset(status)
+    for name in ExecutorConfig.HARD_CEILINGS:
+        values = status[name]
         assert values["configured"] == getattr(config, name)
         assert values["hard_ceiling"] == ExecutorConfig.HARD_CEILINGS[name]
         assert values["effective"] == getattr(config, name)
         assert values["source"] == "constructor"
+    assert status["required_temp_headroom_bytes"]["configured"] == 1_000_000_000

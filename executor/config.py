@@ -10,10 +10,9 @@ from typing import ClassVar
 class ExecutorConfig:
     """Authoritative executor resource configuration.
 
-    Each limit has four distinct meanings: a caller may request a smaller value,
-    this object stores the configured value, a hard implementation ceiling bounds
-    the configured value, and ``effective_limit`` computes the value actually
-    usable for a particular operation.
+    The work volume is a shared resource: staged content, recovery checkpoints,
+    and temporary build/command files must fit together.  The configured staging
+    limit is therefore deliberately below the configured work-volume capacity.
     """
 
     source_root: Path
@@ -29,15 +28,17 @@ class ExecutorConfig:
     max_bash_output_bytes: int = 1_000_000
     max_bash_stdin_bytes: int = 1_000_000
     max_command_bytes: int = 1_000_000
-    max_checkpoint_bytes: int = 256_000_000
-    max_staging_bytes: int = 1_500_000_000
+    max_checkpoint_bytes: int = 2_500_000_000
+    max_staging_bytes: int = 2_500_000_000
     max_staged_files: int = 300_000
     max_command_seconds: int = 300
     max_search_results: int = 500
     max_find_results: int = 500
     max_ls_results: int = 500
     max_grep_scan_bytes: int = 64_000_000
+    work_capacity_bytes: int = 8_000_000_000
 
+    REQUIRED_TEMP_HEADROOM_BYTES: ClassVar[int] = 1_000_000_000
     HARD_CEILINGS: ClassVar[dict[str, int]] = {
         "max_read_bytes": 8_000_000,
         "max_write_bytes": 8_000_000,
@@ -46,18 +47,43 @@ class ExecutorConfig:
         "max_bash_output_bytes": 8_000_000,
         "max_bash_stdin_bytes": 8_000_000,
         "max_command_bytes": 1_000_000,
-        "max_checkpoint_bytes": 1_000_000_000,
-        "max_staging_bytes": 8_000_000_000,
+        "max_checkpoint_bytes": 3_500_000_000,
+        "max_staging_bytes": 4_000_000_000,
         "max_staged_files": 1_000_000,
         "max_command_seconds": 900,
         "max_search_results": 5_000,
         "max_find_results": 2_000,
         "max_ls_results": 2_000,
         "max_grep_scan_bytes": 256_000_000,
+        "work_capacity_bytes": 8_000_000_000,
     }
     _LIMIT_FIELDS: ClassVar[tuple[str, ...]] = tuple(HARD_CEILINGS)
     _ENV_PREFIX: ClassVar[str] = "LOCAL_CHAT_"
     sources: dict[str, str] = field(default_factory=dict, compare=False, repr=False)
+
+    @property
+    def required_capacity_bytes(self) -> int:
+        """Worst-case capacity reserved for staging + one checkpoint + temp work."""
+        return (
+            self.max_staging_bytes
+            + self.max_checkpoint_bytes
+            + self.REQUIRED_TEMP_HEADROOM_BYTES
+        )
+
+    def validate_storage_capacity(self, actual_capacity_bytes: int) -> None:
+        if actual_capacity_bytes < 1:
+            raise ValueError("Actual work-volume capacity must be positive")
+        if actual_capacity_bytes < self.work_capacity_bytes:
+            raise ValueError(
+                "Configured work capacity exceeds the actual /work capacity: "
+                f"configured={self.work_capacity_bytes}, actual={actual_capacity_bytes}"
+            )
+        if actual_capacity_bytes <= self.required_capacity_bytes:
+            raise ValueError(
+                "Executor resource model requires strict work-volume headroom: "
+                f"staging={self.max_staging_bytes}, checkpoint={self.max_checkpoint_bytes}, "
+                f"temporary={self.REQUIRED_TEMP_HEADROOM_BYTES}, capacity={actual_capacity_bytes}"
+            )
 
     def __post_init__(self) -> None:
         if len(self.token.encode("utf-8")) < 32:
@@ -65,21 +91,40 @@ class ExecutorConfig:
         if not self.workspace_id:
             raise ValueError("Executor workspace identity is required")
         values = {name: getattr(self, name) for name in self._LIMIT_FIELDS}
-        invalid = [name for name, value in values.items() if not isinstance(value, int) or isinstance(value, bool) or value < 1]
+        invalid = [
+            name
+            for name, value in values.items()
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1
+        ]
         if invalid:
-            raise ValueError(f"Executor limits must be positive integers: {', '.join(invalid)}")
-        over = [name for name, value in values.items() if value > self.HARD_CEILINGS[name]]
+            raise ValueError(
+                "Executor limits must be positive integers: " + ", ".join(invalid)
+            )
+        over = [
+            name for name, value in values.items() if value > self.HARD_CEILINGS[name]
+        ]
         if over:
             raise ValueError("Configured limits exceed hard ceilings: " + ", ".join(over))
-        if self.max_checkpoint_bytes >= self.max_staging_bytes:
-            raise ValueError("Checkpoint capacity must be smaller than staging capacity")
-        if self.max_checkpoint_bytes + self.max_staging_bytes > self.HARD_CEILINGS["max_staging_bytes"]:
-            raise ValueError("Staging content and checkpoint capacity exceed the hard staging ceiling")
+        if self.max_checkpoint_bytes < self.max_staging_bytes:
+            raise ValueError(
+                "Checkpoint capacity must cover the maximum staged content so a full "
+                "staging snapshot can be recovered"
+            )
+        if self.required_capacity_bytes >= self.work_capacity_bytes:
+            raise ValueError(
+                "Staging capacity, checkpoint capacity, and required temporary headroom "
+                "must fit strictly below /work capacity"
+            )
 
     @classmethod
     def from_environment(cls) -> ExecutorConfig:
-        token_path = Path(os.environ.get("LOCAL_CHAT_EXECUTOR_TOKEN_FILE", "/run/ipc/executor_token"))
-        profile = os.environ.get("LOCAL_CHAT_EXECUTOR_PROFILE", "coding").strip().casefold() or "coding"
+        token_path = Path(
+            os.environ.get("LOCAL_CHAT_EXECUTOR_TOKEN_FILE", "/run/ipc/executor_token")
+        )
+        profile = (
+            os.environ.get("LOCAL_CHAT_EXECUTOR_PROFILE", "coding").strip().casefold()
+            or "coding"
+        )
         profiles = cls._profiles()
         if profile not in profiles:
             raise ValueError(f"Unknown executor profile: {profile}")
@@ -99,7 +144,9 @@ class ExecutorConfig:
         return cls(
             source_root=Path(os.environ.get("LOCAL_CHAT_SOURCE_ROOT", "/source")),
             work_root=Path(os.environ.get("LOCAL_CHAT_WORK_ROOT", "/work")),
-            socket_path=Path(os.environ.get("LOCAL_CHAT_EXECUTOR_SOCKET", "/run/ipc/executor.sock")),
+            socket_path=Path(
+                os.environ.get("LOCAL_CHAT_EXECUTOR_SOCKET", "/run/ipc/executor.sock")
+            ),
             token=token_path.read_text(encoding="utf-8").strip(),
             workspace_id=os.environ.get("LOCAL_CHAT_WORKSPACE_ID", "").strip(),
             sources=sources,
@@ -116,19 +163,50 @@ class ExecutorConfig:
             "max_bash_output_bytes": 1_000_000,
             "max_bash_stdin_bytes": 1_000_000,
             "max_command_bytes": 1_000_000,
-            "max_checkpoint_bytes": 256_000_000,
-            "max_staging_bytes": 1_500_000_000,
+            "max_checkpoint_bytes": 2_500_000_000,
+            "max_staging_bytes": 2_500_000_000,
             "max_staged_files": 300_000,
             "max_command_seconds": 300,
             "max_search_results": 500,
             "max_find_results": 500,
             "max_ls_results": 500,
             "max_grep_scan_bytes": 64_000_000,
+            "work_capacity_bytes": 8_000_000_000,
         }
         return {
-            "small": {**base, "max_read_bytes": 256_000, "max_write_bytes": 256_000, "max_edit_target_bytes": 512_000, "max_edit_result_bytes": 512_000, "max_bash_output_bytes": 256_000, "max_bash_stdin_bytes": 256_000, "max_command_bytes": 256_000, "max_staging_bytes": 512_000_000, "max_checkpoint_bytes": 64_000_000, "max_search_results": 250, "max_find_results": 250, "max_ls_results": 250, "max_grep_scan_bytes": 16_000_000},
+            "small": {
+                **base,
+                "max_read_bytes": 256_000,
+                "max_write_bytes": 256_000,
+                "max_edit_target_bytes": 512_000,
+                "max_edit_result_bytes": 512_000,
+                "max_bash_output_bytes": 256_000,
+                "max_bash_stdin_bytes": 256_000,
+                "max_command_bytes": 256_000,
+                "max_checkpoint_bytes": 512_000_000,
+                "max_staging_bytes": 512_000_000,
+                "max_search_results": 250,
+                "max_find_results": 250,
+                "max_ls_results": 250,
+                "max_grep_scan_bytes": 16_000_000,
+            },
             "coding": base,
-            "large-workspace": {**base, "max_read_bytes": 2_000_000, "max_write_bytes": 2_000_000, "max_edit_target_bytes": 4_000_000, "max_edit_result_bytes": 4_000_000, "max_bash_output_bytes": 2_000_000, "max_bash_stdin_bytes": 2_000_000, "max_staging_bytes": 6_000_000_000, "max_checkpoint_bytes": 1_000_000_000, "max_staged_files": 750_000, "max_search_results": 1_000, "max_find_results": 1_000, "max_ls_results": 1_000, "max_grep_scan_bytes": 128_000_000},
+            "large-workspace": {
+                **base,
+                "max_read_bytes": 2_000_000,
+                "max_write_bytes": 2_000_000,
+                "max_edit_target_bytes": 4_000_000,
+                "max_edit_result_bytes": 4_000_000,
+                "max_bash_output_bytes": 2_000_000,
+                "max_bash_stdin_bytes": 2_000_000,
+                "max_staging_bytes": 3_000_000_000,
+                "max_checkpoint_bytes": 3_000_000_000,
+                "max_staged_files": 750_000,
+                "max_search_results": 1_000,
+                "max_find_results": 1_000,
+                "max_ls_results": 1_000,
+                "max_grep_scan_bytes": 128_000_000,
+            },
         }
 
     def effective_limit(self, name: str, requested: int | None = None) -> int:
@@ -145,7 +223,24 @@ class ExecutorConfig:
         if name not in self._LIMIT_FIELDS:
             raise KeyError(f"Unknown executor limit: {name}")
         configured = getattr(self, name)
-        return {"requested": requested, "configured": configured, "hard_ceiling": self.HARD_CEILINGS[name], "effective": self.effective_limit(name, requested), "source": self.sources.get(name, "constructor")}
+        return {
+            "requested": requested,
+            "configured": configured,
+            "hard_ceiling": self.HARD_CEILINGS[name],
+            "effective": self.effective_limit(name, requested),
+            "source": self.sources.get(name, "constructor"),
+        }
 
     def limits_status(self) -> dict[str, dict[str, object]]:
-        return {name: self.limit_status(name) for name in self._LIMIT_FIELDS}
+        status = {name: self.limit_status(name) for name in self._LIMIT_FIELDS}
+        status["required_temp_headroom_bytes"] = {
+            "configured": self.REQUIRED_TEMP_HEADROOM_BYTES,
+            "effective": self.REQUIRED_TEMP_HEADROOM_BYTES,
+            "source": "resource-model",
+        }
+        status["required_capacity_bytes"] = {
+            "configured": self.required_capacity_bytes,
+            "effective": self.required_capacity_bytes,
+            "source": "resource-model",
+        }
+        return status
