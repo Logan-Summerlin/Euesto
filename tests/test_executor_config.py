@@ -51,7 +51,7 @@ def test_limits_cannot_exceed_hard_ceilings(tmp_path: Path) -> None:
 
 def test_staging_checkpoint_and_headroom_must_fit_together(tmp_path: Path) -> None:
     config = _config(tmp_path, max_checkpoint_bytes=500, max_staging_bytes=501)
-    assert config.required_capacity_bytes == 1_000_000_001
+    assert config.required_capacity_bytes == 1_000_001_001
     with pytest.raises(ValueError, match="fit strictly below"):
         _config(tmp_path, max_checkpoint_bytes=3_500_000_000, max_staging_bytes=3_500_000_000)
 
