@@ -16,13 +16,12 @@ class FakeBroker:
 
 
 class FakeGateway:
-    def __init__(self, inspection: dict) -> None:
-        self.inspection = inspection
-        self.workspace_ids: list[str] = []
+    def __init__(self) -> None:
+        self.manifests: list[object] = []
 
-    def inspect_staging(self, workspace_id: str) -> dict:
-        self.workspace_ids.append(workspace_id)
-        return self.inspection
+    def mark_staging_published(self, manifest) -> dict:
+        self.manifests.append(manifest)
+        return {"snapshot_id": "snapshot-2", "file_count": 1}
 
 
 def _manifest() -> SimpleNamespace:
@@ -32,9 +31,9 @@ def _manifest() -> SimpleNamespace:
     )
 
 
-def test_publication_handoff_reconciles_baseline_before_completion(monkeypatch, tmp_path: Path) -> None:
+def test_publication_handoff_marks_manifest_published_before_completion(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("src.workers.WorkspaceBroker", FakeBroker)
-    gateway = FakeGateway({"data": {"unpublished_changes": False}})
+    gateway = FakeGateway()
     completed: list[dict] = []
 
     worker = PublicationWorker(
@@ -43,7 +42,8 @@ def test_publication_handoff_reconciles_baseline_before_completion(monkeypatch, 
     worker.complete.connect(completed.append)
     worker.run()
 
-    assert gateway.workspace_ids == ["workspace-1"]
+    assert len(gateway.manifests) == 1
+    assert gateway.manifests[0].workspace_id == "workspace-1"
     assert completed == [
         {
             "completed_paths": ["created.txt"],
@@ -55,7 +55,10 @@ def test_publication_handoff_reconciles_baseline_before_completion(monkeypatch, 
 
 def test_publication_handoff_reports_baseline_failure_instead_of_claiming_clean(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("src.workers.WorkspaceBroker", FakeBroker)
-    gateway = FakeGateway({"data": {"unpublished_changes": True}})
+    gateway = FakeGateway()
+    gateway.mark_staging_published = lambda _manifest: (_ for _ in ()).throw(
+        RuntimeError("Published staging no longer matches the manifest: created.txt")
+    )
     completed: list[dict] = []
 
     worker = PublicationWorker(
@@ -65,4 +68,4 @@ def test_publication_handoff_reports_baseline_failure_instead_of_claiming_clean(
     worker.run()
 
     assert completed[0]["reseeded"] is False
-    assert "unpublished staging changes" in completed[0]["reseed_error"]
+    assert "no longer matches the manifest" in completed[0]["reseed_error"]

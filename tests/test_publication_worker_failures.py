@@ -16,14 +16,18 @@ class FakeBroker:
 
 
 class BrokenGateway:
-    def inspect_staging(self, _workspace_id: str) -> dict:
-        raise AttributeError("inspect_staging is unavailable")
+    def mark_staging_published(self, _manifest) -> dict:
+        raise AttributeError("mark_staging_published is unavailable")
 
 
 class CleanGateway:
-    def inspect_staging(self, workspace_id: str) -> dict:
-        assert workspace_id == "workspace-1"
-        return {"data": {"unpublished_changes": False}}
+    def __init__(self) -> None:
+        self.manifests: list[object] = []
+
+    def mark_staging_published(self, manifest) -> dict:
+        assert manifest.workspace_id == "workspace-1"
+        self.manifests.append(manifest)
+        return {"snapshot_id": "snapshot-2", "file_count": 1}
 
 
 def _manifest() -> SimpleNamespace:
@@ -53,22 +57,24 @@ def test_publication_reports_unexpected_baseline_error_instead_of_leaking_from_t
             "completed_paths": ["created.txt"],
             "checkpoint_id": "checkpoint-1",
             "reseeded": False,
-            "reseed_error": "Unexpected staging baseline error: inspect_staging is unavailable",
+            "reseed_error": "Unexpected staging baseline error: mark_staging_published is unavailable",
         }
     ]
 
 
-def test_publication_marks_handoff_safe_only_after_clean_reconciliation(
+def test_publication_marks_handoff_safe_only_after_manifest_baseline_update(
     monkeypatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr("src.workers.WorkspaceBroker", FakeBroker)
+    gateway = CleanGateway()
     completed: list[dict] = []
 
     worker = PublicationWorker(
-        _manifest(), tmp_path / "workspace", tmp_path / "recovery", reseed_client=CleanGateway()
+        _manifest(), tmp_path / "workspace", tmp_path / "recovery", reseed_client=gateway
     )
     worker.complete.connect(completed.append)
     worker.run()
 
+    assert len(gateway.manifests) == 1
     assert completed[0]["reseeded"] is True
     assert "reseed_error" not in completed[0]
