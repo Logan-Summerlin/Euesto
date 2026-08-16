@@ -59,7 +59,7 @@ def test_seed_staging_keeps_limits_for_materialized_files(tmp_path: Path) -> Non
     (source / "a.txt").write_text("a", encoding="utf-8")
     (source / "b.txt").write_text("b", encoding="utf-8")
 
-    with pytest.raises(RuntimeError, match="snapshot limits"):
+    with pytest.raises(RuntimeError, match="staging limits"):
         seed_staging(make_config(source, tmp_path / "work", max_staged_files=1))
 
 
