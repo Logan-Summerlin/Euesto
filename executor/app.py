@@ -39,21 +39,9 @@ class ExecutorService:
                 requested = request.arguments.get("max_bytes")
                 output, data = read(root, request.arguments, max_bytes=self.config.effective_limit("max_read_bytes", requested))
             elif request.tool == "write":
-                output, data = write(
-                    root,
-                    request.arguments,
-                    max_bytes=self.config.max_write_bytes,
-                    max_checkpoint_files=self.config.max_staged_files,
-                    max_checkpoint_bytes=self.config.max_checkpoint_bytes,
-                )
+                output, data = write(root, request.arguments, max_bytes=self.config.max_write_bytes, max_checkpoint_files=self.config.max_staged_files, max_checkpoint_bytes=self.config.max_checkpoint_bytes)
             elif request.tool == "edit":
-                output, data = edit(
-                    root,
-                    request.arguments,
-                    max_bytes=min(self.config.max_edit_target_bytes, self.config.max_edit_result_bytes),
-                    max_checkpoint_files=self.config.max_staged_files,
-                    max_checkpoint_bytes=self.config.max_checkpoint_bytes,
-                )
+                output, data = edit(root, request.arguments, max_bytes=min(self.config.max_edit_target_bytes, self.config.max_edit_result_bytes), max_checkpoint_files=self.config.max_staged_files, max_checkpoint_bytes=self.config.max_checkpoint_bytes)
             elif request.tool == "bash":
                 output, data = await bash(
                     request.request_id,
@@ -61,6 +49,8 @@ class ExecutorService:
                     request.arguments,
                     max_seconds=self.config.max_command_seconds,
                     max_output=self.config.max_bash_output_bytes,
+                    max_command_bytes=self.config.max_command_bytes,
+                    max_stdin_bytes=self.config.max_bash_stdin_bytes,
                     max_checkpoint_files=self.config.max_staged_files,
                     max_checkpoint_bytes=self.config.max_checkpoint_bytes,
                 )
