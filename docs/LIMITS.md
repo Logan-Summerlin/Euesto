@@ -18,8 +18,8 @@ Limits below describe the current `coding` executor profile. `executor/config.py
 | `ls` results | 500 | 2,000 | Immediate directory only. |
 | Tool arguments | 512 KiB | 512 KiB | Shared protocol-level request bound. |
 | Staged files | 300,000 | 1,000,000 | Shared staging resource. |
-| Staging bytes | 2.5 GB | 4 GB | Must fit the work-volume resource model. |
-| Checkpoint bytes | 2.5 GB | 3.5 GB | Shares work-volume capacity with staging/temp headroom. |
+| Staging bytes | 2.5 GB (2,500,000,000 bytes) | 4 GB | Must fit the work-volume resource model. |
+| Checkpoint bytes | 2.5 GB (2,500,000,000 bytes) | 3.5 GB | Shares work-volume capacity with staging/temp headroom. |
 | Work capacity | 8 GB configured | 8 GB configured ceiling | Actual container capacity must be greater than configured capacity and required headroom. |
 | Temporary headroom | 1 GB | 1 GB | Reserved by the resource model. |
 
