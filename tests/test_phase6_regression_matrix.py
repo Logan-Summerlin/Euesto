@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import stat
 from pathlib import Path
 
 import pytest
@@ -15,6 +14,7 @@ from executor.tools.edit import edit
 from executor.tools.find import find
 from executor.tools.ls import ls
 from executor.tools.read import read
+from executor.tools.search_text import search_text
 from executor.tools.write import write
 from server.agent.budgets import BudgetExceededError, RunBudget
 
@@ -81,6 +81,19 @@ def test_configuration_rejects_unknown_profile_and_malformed_override(tmp_path: 
         ExecutorConfig.from_environment()
 
 
+@pytest.mark.parametrize("size", (16, 70_000, 200_000))
+def test_read_small_medium_large_and_incremental_boundaries(tmp_path: Path, size: int) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    path = root / "text.txt"
+    path.write_text("x" * size, encoding="utf-8")
+    text, metadata = read(root, {"path": "text.txt", "max_bytes": 1_000}, max_bytes=1_000)
+    assert len(text.encode()) == 1_000
+    assert metadata["truncated"] is (size > 1_000)
+    if size > 1_000:
+        assert metadata["next_offset"] == 1_000
+
+
 def test_read_line_range_byte_cursor_hash_and_utf8_boundary(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
@@ -136,6 +149,18 @@ def test_large_edit_and_shrink_detection_are_bounded(tmp_path: Path) -> None:
         guard_shrink("large.txt", path, "tiny\n")
     with pytest.raises(ValueError, match="mutation limit"):
         edit(root, {"path": "large.txt", "old_str": "line", "new_str": "x" * 200, "expected_occurrences": 1}, max_target_bytes=10_000, max_result_bytes=100)
+
+
+def test_search_enforces_scan_budget_skips_oversized_files_and_reports_metadata(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "small.txt").write_text("needle\n", encoding="utf-8")
+    (root / "large.txt").write_text("needle\n" * 20, encoding="utf-8")
+    output, metadata = search_text(root, {"path": ".", "query": "needle", "max_results": 10, "include_metadata": True}, max_bytes=20, max_results=10)
+    assert "small.txt:1:needle" in output
+    assert metadata["files_skipped_too_large"] == 1
+    assert metadata["files_searched"] == 1
+    assert metadata["scan_scope_complete"] is False
 
 
 def test_find_pagination_skips_secret_and_staging_paths(tmp_path: Path) -> None:
@@ -286,6 +311,7 @@ def test_reparse_point_detection_contract_is_preserved(monkeypatch: pytest.Monke
     target.write_text("x", encoding="utf-8")
 
     class FakeStat:
+        st_mode = 0o100644
         st_file_attributes = 0x400
 
     class FakeStatResult:
@@ -301,7 +327,7 @@ def test_shrink_guard_only_blocks_material_whole_file_loss(tmp_path: Path) -> No
     root = tmp_path / "root"
     root.mkdir()
     path = root / "file.txt"
-    path.write_text("line\n" * 30, encoding="utf-8")
-    guard_shrink("file.txt", path, "line\n" * 20)
+    path.write_text("line\n" * 50, encoding="utf-8")
+    guard_shrink("file.txt", path, "line\n" * 30)
     with pytest.raises(Exception, match="shrink"):
-        guard_shrink("file.txt", path, "line\n")
+        guard_shrink("file.txt", path, "line\n" * 20)
