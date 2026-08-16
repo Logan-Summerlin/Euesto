@@ -52,29 +52,10 @@ class AgentRuntime:
                 session_key = request.session_id or f"run:{run_id}"
                 if session_key not in self._approved_budget_sessions:
                     approval_id = str(uuid.uuid4())
-                    await self.append(
-                        run_id,
-                        "approval.required",
-                        {
-                            "approval_id": approval_id,
-                            "kind": "budget",
-                            "budget_profile": profile.name,
-                            "standard_profile": "coding",
-                            "budgets": {
-                                "max_iterations": profile.max_iterations,
-                                "max_tool_calls": profile.max_tool_calls,
-                                "max_wall_seconds": profile.max_wall_seconds,
-                                "max_cost": profile.max_cost,
-                            },
-                            "approval_reason": "This profile exceeds the standard coding profile by more than 2x on at least one approved resource budget.",
-                            "available_decisions": ["deny", "allow_run"],
-                        },
-                    )
+                    await self.append(run_id, "approval.required", {"approval_id": approval_id, "kind": "budget", "budget_profile": profile.name, "standard_profile": "coding", "budgets": {"max_iterations": profile.max_iterations, "max_tool_calls": profile.max_tool_calls, "max_wall_seconds": profile.max_wall_seconds, "max_cost": profile.max_cost}, "approval_reason": "This profile exceeds the standard coding profile by more than 2x on at least one approved resource budget.", "available_decisions": ["deny", "allow_run"]})
                     decision = await self.approvals.wait(run_id, approval_id)
                     if decision != PermissionDecision.ALLOW_RUN:
-                        raise RuntimeError(
-                            f"Budget profile '{profile.name}' requires explicit user approval before the session can run."
-                        )
+                        raise RuntimeError(f"Budget profile '{profile.name}' requires explicit user approval before the session can run.")
                     self._approved_budget_sessions.add(session_key)
 
             status = await self.executor.status()
@@ -101,15 +82,14 @@ class AgentRuntime:
                     return
                 messages, _ = compact_agent_context(messages, max(4_000, int(request.context_limit_tokens * 0.8)))
                 budget.consume_iteration()
-                await self.append(run_id, "usage.updated", {"budget": budget.snapshot(), **budget.usage()})
                 turn = await agent_turn(request.model, messages, api_key, request.mode, request.provider_preferences)
                 budget.add_usage(turn.usage)
                 messages.append(turn.message)
-                await self.append(run_id, "usage.updated", {**turn.usage, "budget": budget.snapshot(), **budget.usage()})
                 if not turn.tool_calls:
                     content = str(turn.content or "")
                     if content:
                         await self.append(run_id, "model.delta", {"text": content})
+                    await self.append(run_id, "usage.updated", {**turn.usage, "budget": budget.snapshot(), **budget.usage()})
                     final = [*visible, {"role": "assistant", "content": content}]
                     if request.session_id and self.session_saver:
                         self.session_saver(request.session_id, request.workspace_id, request.mode, messages, final)
@@ -120,8 +100,8 @@ class AgentRuntime:
                     return
                 for raw_call in turn.tool_calls:
                     budget.consume_tool_call()
-                    await self.append(run_id, "usage.updated", {"budget": budget.snapshot(), **budget.usage()})
                     run_mutated = (await self._execute_tool_call(run_id, request, raw_call, messages, budget)) or run_mutated
+                await self.append(run_id, "usage.updated", {"budget": budget.snapshot(), **budget.usage()})
                 partial = [*visible, {"role": "assistant", "content": str(turn.content or "")}]
                 if request.session_id and self.session_saver:
                     self.session_saver(request.session_id, request.workspace_id, request.mode, messages, partial)
@@ -129,7 +109,8 @@ class AgentRuntime:
         except ProviderError as exc:
             await self.append(run_id, "run.failed", {"code": exc.code, "message": str(exc), "retryable": exc.retryable, "budget": budget.snapshot()})
         except Exception as exc:
-            await self.append(run_id, "run.failed", {"code": getattr(exc, "budget", "agent.failed"), "message": str(exc)[:2000], "retryable": False, "budget": budget.snapshot()})
+            code = f"budget.{getattr(exc, 'budget', '')}" if getattr(exc, "budget", None) else "agent.failed"
+            await self.append(run_id, "run.failed", {"code": code, "message": str(exc)[:2000], "retryable": False, "budget": budget.snapshot()})
         finally:
             self.active_request.pop(run_id, None)
             self._run_rules.pop(run_id, None)
@@ -247,10 +228,7 @@ def _render_executor_context(status: dict[str, Any], mode: str, approval_policy:
     environment = status.get("environment")
     if not isinstance(environment, dict):
         return ""
-    lines = [
-        "LOCAL EXECUTOR CONTEXT (application-generated runtime facts):",
-        f"- Workspace root is {str(environment.get('workspace_root') or '.')[:20]}; use relative POSIX paths.",
-    ]
+    lines = ["LOCAL EXECUTOR CONTEXT (application-generated runtime facts):", f"- Workspace root is {str(environment.get('workspace_root') or '.')[:20]}; use relative POSIX paths."]
     if mode == "agent":
         lines.append("- Tools write an ephemeral staged copy; host publication is pending review unless session Auto is active.")
         lines.append("- After mutations, the tool reports created/modified/deleted files and permission changes; checkpoint hashes are audit metadata.")
