@@ -97,11 +97,11 @@ def seed_staging(config: ExecutorConfig) -> Snapshot:
             size = path.stat().st_size
             total += size
             files += 1
-            if files > config.max_files or total > config.max_total_bytes:
+            if files > config.max_staged_files or total > config.max_staging_bytes:
                 raise RuntimeError(
-                    "Workspace exceeds executor snapshot limits: "
+                    "Workspace exceeds executor staging limits: "
                     f"{files} files/{total} bytes; limits are "
-                    f"{config.max_files} files/{config.max_total_bytes} bytes."
+                    f"{config.max_staged_files} files/{config.max_staging_bytes} bytes."
                 )
             destination = work / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -153,39 +153,24 @@ def advance_published_staging(
         value = current.get(operation.path)
         if operation.operation == "delete":
             if value is not None:
-                raise RuntimeError(
-                    f"Published delete no longer matches staging: {operation.path}"
-                )
+                raise RuntimeError(f"Published delete no longer matches staging: {operation.path}")
             hashes.pop(operation.path, None)
             sizes.pop(operation.path, None)
             modes.pop(operation.path, None)
             continue
-        if value is None or value[0] != operation.staged_sha256 or (
-            operation.staged_mode is not None and value[2] != operation.staged_mode
-        ):
-            raise RuntimeError(
-                f"Published staging no longer matches the manifest: {operation.path}"
-            )
+        if value is None or value[0] != operation.staged_sha256 or (operation.staged_mode is not None and value[2] != operation.staged_mode):
+            raise RuntimeError(f"Published staging no longer matches the manifest: {operation.path}")
         hashes[operation.path] = value[0]
         sizes[operation.path] = value[1]
         modes[operation.path] = value[2]
-    updated = Snapshot(
-        str(uuid.uuid4()),
-        hashes,
-        sum(sizes.values()),
-        sizes,
-        modes,
-    )
+    updated = Snapshot(str(uuid.uuid4()), hashes, sum(sizes.values()), sizes, modes)
     _write_snapshot(work_root, updated)
     return updated
 
 
 def _write_snapshot(work: Path, snapshot: Snapshot) -> None:
     (work / ".local-chat-snapshot.json").write_text(
-        json.dumps(
-            {"snapshot_id": snapshot.snapshot_id, "hashes": snapshot.hashes, "sizes": snapshot.sizes, "modes": snapshot.modes, "total_bytes": snapshot.total_bytes},
-            sort_keys=True,
-        ),
+        json.dumps({"snapshot_id": snapshot.snapshot_id, "hashes": snapshot.hashes, "sizes": snapshot.sizes, "modes": snapshot.modes, "total_bytes": snapshot.total_bytes}, sort_keys=True),
         encoding="utf-8",
     )
 
@@ -202,12 +187,7 @@ def load_snapshot(work_root: Path) -> Snapshot:
 
 
 def visible_files(root: Path) -> dict[str, tuple[str, int, int]]:
-    """Return files eligible for staging/reconciliation/publication.
-
-    This must use the same eligibility rules as ``seed_staging``. In particular,
-    secret-like files and staging-excluded directories are outside the logical
-    staged workspace even when they physically exist in the host workspace.
-    """
+    """Return files eligible for staging/reconciliation/publication."""
     result: dict[str, tuple[str, int, int]] = {}
     for current, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
         current_path = Path(current)
