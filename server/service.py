@@ -9,6 +9,7 @@ from shared.events import EventEnvelope
 from shared.permissions import PermissionDecision
 from shared.requests import AgentRunRequest, ChatRequest
 from shared.responses import GatewayStatus
+from shared.tools import PublishManifest
 
 from .agent.approvals import ApprovalCoordinator
 from .agent.runtime import AgentRuntime
@@ -150,6 +151,29 @@ class GatewayService:
             raise GatewayServiceError(
                 "staging.discard_failed",
                 "The executor could not reseed the staging workspace.",
+                retryable=True,
+                status=409,
+            ) from exc
+
+    async def mark_staging_published(self, workspace_id: str, manifest: PublishManifest) -> dict[str, Any]:
+        if not self.executor or workspace_id != self.config.workspace_id:
+            raise GatewayServiceError(
+                "workspace.invalid",
+                "The selected workspace is not the active isolated executor.",
+                status=409,
+            )
+        if manifest.workspace_id != workspace_id:
+            raise GatewayServiceError(
+                "workspace.invalid",
+                "The publication manifest belongs to a different workspace.",
+                status=409,
+            )
+        try:
+            return await self.executor.mark_staging_published(manifest)
+        except Exception as exc:
+            raise GatewayServiceError(
+                "staging.baseline_failed",
+                "The executor could not advance the staging baseline.",
                 retryable=True,
                 status=409,
             ) from exc
