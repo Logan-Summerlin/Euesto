@@ -11,11 +11,14 @@ from pathlib import Path
 from ..mutations import create_mutation_checkpoint, rollback_mutation
 from ..paths import safe_path
 
-MAX_EVENT_COUNT = 128
-MAX_EVENT_BYTES = 64_000
+MAX_EVENT_COUNT = 512
+MAX_EVENT_BYTES = 512_000
 MAX_EVENT_REQUESTS = 64
+MAX_RETAINED_OUTPUT_BYTES = 512_000
+MAX_STREAM_PREVIEW_BYTES = MAX_RETAINED_OUTPUT_BYTES // 2
 MAX_STDIN_BYTES = 8_000_000
 MAX_COMMAND_BYTES = 1_000_000
+MAX_COMMAND_SECONDS = 900
 MAX_ENV_VARS = 64
 MAX_ENV_VALUE_BYTES = 16_384
 BASE_ENVIRONMENT = {
@@ -28,8 +31,53 @@ BASE_ENVIRONMENT = {
 }
 
 
+class _OutputBuffer:
+    def __init__(self, limit: int) -> None:
+        self.limit = max(1, min(limit, MAX_RETAINED_OUTPUT_BYTES))
+        self._full = bytearray()
+        self.head = bytearray()
+        self.tail: deque[bytes] = deque()
+        self.tail_bytes = 0
+        self.total = 0
+        self._truncated = False
+
+    def append(self, chunk: bytes) -> None:
+        self.total += len(chunk)
+        if not self._truncated:
+            self._full.extend(chunk)
+            if len(self._full) <= self.limit:
+                return
+            self._truncated = True
+            self.head = self._full[:MAX_STREAM_PREVIEW_BYTES]
+            self.tail.clear()
+            self.tail.append(self._full[-MAX_STREAM_PREVIEW_BYTES:])
+            self.tail_bytes = len(self.tail[0])
+            self._full.clear()
+            return
+        self.tail.append(chunk)
+        self.tail_bytes += len(chunk)
+        while self.tail and self.tail_bytes > MAX_STREAM_PREVIEW_BYTES:
+            excess = self.tail_bytes - MAX_STREAM_PREVIEW_BYTES
+            first = self.tail[0]
+            if len(first) <= excess:
+                self.tail.popleft()
+                self.tail_bytes -= len(first)
+            else:
+                self.tail[0] = first[excess:]
+                self.tail_bytes -= excess
+
+    def bytes(self) -> bytes:
+        if not self._truncated:
+            return bytes(self._full)
+        return bytes(self.head) + b"\n... [output truncated] ...\n" + b"".join(self.tail)
+
+    @property
+    def truncated(self) -> bool:
+        return self._truncated
+
+
 class BashRunner:
-    """Track shell processes and their bounded output/event streams."""
+    """Track shell processes and bounded output/event streams."""
 
     def __init__(self) -> None:
         self._processes: dict[str, asyncio.subprocess.Process] = {}
@@ -57,21 +105,15 @@ class BashRunner:
         raw_timeout = arguments.get("timeout_seconds", 60)
         if not isinstance(raw_timeout, int) or isinstance(raw_timeout, bool):
             raise ValueError("timeout_seconds must be an integer")
-        timeout = min(max_seconds, max(1, raw_timeout))
+        timeout = min(MAX_COMMAND_SECONDS, max_seconds, max(1, raw_timeout))
 
         stdin_text = arguments.get("stdin")
         stdin_limit = min(max_stdin_bytes, MAX_STDIN_BYTES)
-        if stdin_text is not None and (
-            not isinstance(stdin_text, str)
-            or "\x00" in stdin_text
-            or len(stdin_text.encode("utf-8")) > stdin_limit
-        ):
+        if stdin_text is not None and (not isinstance(stdin_text, str) or "\x00" in stdin_text or len(stdin_text.encode("utf-8")) > stdin_limit):
             raise ValueError(f"bash stdin exceeds the configured limit of {stdin_limit} bytes")
 
-        requested_env = arguments.get("env", {})
-        environment = self._environment(requested_env)
+        environment = self._environment(arguments.get("env", {}))
         checkpoint_id = create_mutation_checkpoint(root, max_files=max_checkpoint_files, max_total_bytes=max_checkpoint_bytes)
-
         started = time.perf_counter()
         self._start_events(request_id)
         stdout_task = stderr_task = stdin_task = None
@@ -98,19 +140,45 @@ class BashRunner:
             finally:
                 self._processes.pop(request_id, None)
 
-            stdout, stdout_bytes, stdout_truncated = stdout_result
-            stderr, stderr_bytes, stderr_truncated = stderr_result
+            stdout = stdout_result[0]
+            stderr = stderr_result[0]
             rolled_back = process.returncode != 0
             if rolled_back:
                 rollback_mutation(root, checkpoint_id)
-            combined_bytes = stdout + (b"\n" if stdout and stderr else b"") + stderr
-            combined_truncated = len(combined_bytes) > max_output
-            combined = combined_bytes[:max_output].decode("utf-8", errors="replace")
-            return combined, {"exit_code": process.returncode, "checkpoint_id": checkpoint_id, "elapsed_seconds": time.perf_counter() - started, "stdout": stdout.decode("utf-8", errors="replace"), "stderr": stderr.decode("utf-8", errors="replace"), "stdout_bytes": stdout_bytes, "stderr_bytes": stderr_bytes, "stdout_truncated": stdout_truncated, "stderr_truncated": stderr_truncated, "stdin_bytes": len(stdin_text.encode("utf-8")) if stdin_text is not None else 0, "truncated": stdout_truncated or stderr_truncated or combined_truncated, "cancelled": request_id in self._cancelled, "rolled_back": rolled_back}
+            combined = self._model_output(stdout, stderr, max_output)
+            return combined, {
+                "exit_code": process.returncode,
+                "checkpoint_id": checkpoint_id,
+                "elapsed_seconds": time.perf_counter() - started,
+                "stdout": stdout.bytes().decode("utf-8", errors="replace"),
+                "stderr": stderr.bytes().decode("utf-8", errors="replace"),
+                "stdout_bytes": stdout.total,
+                "stderr_bytes": stderr.total,
+                "retained_output_bytes": len(stdout.bytes()) + len(stderr.bytes()),
+                "model_output_bytes": len(combined.encode("utf-8")),
+                "stdout_truncated": stdout.truncated,
+                "stderr_truncated": stderr.truncated,
+                "stdin_bytes": len(stdin_text.encode("utf-8")) if stdin_text is not None else 0,
+                "truncated": stdout.truncated or stderr.truncated,
+                "cancelled": request_id in self._cancelled,
+                "rolled_back": rolled_back,
+            }
         except Exception:
             if process is None:
                 rollback_mutation(root, checkpoint_id)
             raise
+
+    @staticmethod
+    def _model_output(stdout: _OutputBuffer, stderr: _OutputBuffer, max_output: int) -> str:
+        if not stdout.truncated and not stderr.truncated:
+            combined = stdout.bytes() + (b"\n" if stdout.bytes() and stderr.bytes() else b"") + stderr.bytes()
+            return combined[:max_output].decode("utf-8", errors="replace")
+        sections = []
+        if stdout.total:
+            sections.append(f"[stdout: {stdout.total} bytes]\n{stdout.bytes().decode('utf-8', errors='replace')}")
+        if stderr.total:
+            sections.append(f"[stderr: {stderr.total} bytes]\n{stderr.bytes().decode('utf-8', errors='replace')}")
+        return "\n".join(sections).encode("utf-8")[:max_output].decode("utf-8", errors="replace")
 
     @staticmethod
     def _environment(requested: object) -> dict[str, str]:
@@ -120,9 +188,7 @@ class BashRunner:
             raise ValueError("env contains too many variables")
         environment = dict(BASE_ENVIRONMENT)
         for key, value in requested.items():
-            if not isinstance(key, str) or not key or len(key) > 128 or "\x00" in key:
-                raise ValueError("env variable names must be bounded strings")
-            if not key.replace("_", "").isalnum() or key[0].isdigit():
+            if not isinstance(key, str) or not key or len(key) > 128 or "\x00" in key or not key.replace("_", "").isalnum() or key[0].isdigit():
                 raise ValueError("env variable names must be POSIX identifiers")
             if key in {"PATH", "HOME", "LD_PRELOAD", "LD_LIBRARY_PATH"} or key.startswith("BASH_ENV"):
                 raise ValueError(f"env variable is restricted: {key}")
@@ -160,7 +226,8 @@ class BashRunner:
     def events(self, request_id: str, after: int = 0) -> dict[str, object]:
         values = list(self._events.get(request_id, ()))
         first = int(values[0]["sequence"]) if values else self._sequence.get(request_id, 0) + 1
-        return {"events": [item for item in values if int(item["sequence"]) > max(0, after)], "next_cursor": self._sequence.get(request_id, 0), "truncated": bool(values and after < first - 1), "active": request_id in self._processes}
+        cursor = max(0, after)
+        return {"events": [item for item in values if int(item["sequence"]) > cursor], "next_cursor": self._sequence.get(request_id, 0), "first_cursor": first, "truncated": bool(values and cursor < first - 1), "active": request_id in self._processes}
 
     async def cancel(self, request_id: str) -> bool:
         process = self._processes.get(request_id)
@@ -175,17 +242,14 @@ class BashRunner:
             await process.wait()
         return True
 
-    async def _read_stream(self, request_id: str, name: str, stream: asyncio.StreamReader | None, max_output: int) -> tuple[bytes, int, bool]:
+    async def _read_stream(self, request_id: str, name: str, stream: asyncio.StreamReader | None, max_output: int) -> tuple[_OutputBuffer]:
+        retained = _OutputBuffer(max_output)
         if stream is None:
-            return b"", 0, False
-        retained = bytearray()
-        total = 0
+            return (retained,)
         while chunk := await stream.read(16_384):
-            total += len(chunk)
-            if len(retained) < max_output:
-                retained.extend(chunk[: max_output - len(retained)])
+            retained.append(chunk)
             self._append_event(request_id, name, chunk)
-        return bytes(retained), total, total > max_output
+        return (retained,)
 
     def _append_event(self, request_id: str, stream: str, chunk: bytes) -> None:
         event = {"sequence": self._sequence.get(request_id, 0) + 1, "stream": stream, "text": chunk[:4_096].decode("utf-8", errors="replace")}
