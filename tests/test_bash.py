@@ -86,7 +86,7 @@ def test_bash_large_stdout_retains_bounded_head_and_tail(tmp_path: Path) -> None
 
 def test_bash_large_stderr_and_mixed_streams_are_accounted_separately(tmp_path: Path) -> None:
     command = "python -c 'import sys; print(\"OUT\" * 400000); print(\"ERR\" * 400000, file=sys.stderr)'"
-    output, data = asyncio.run(run_bash(tmp_path, {"command": command}, max_output=100_000))
+    _, data = asyncio.run(run_bash(tmp_path, {"command": command}, max_output=100_000))
     assert data["stdout_bytes"] > 1_000_000
     assert data["stderr_bytes"] > 1_000_000
     assert data["stdout_truncated"] is True
@@ -94,7 +94,8 @@ def test_bash_large_stderr_and_mixed_streams_are_accounted_separately(tmp_path: 
     assert data["truncated"] is True
     assert data["retained_output_bytes"] <= 1_000_200
     assert data["model_output_bytes"] <= 100_000
-    assert "stdout:" in output and "stderr:" in output
+    assert "OUT" in data["stdout"]
+    assert "ERR" in data["stderr"]
 
 
 def test_bash_event_retention_and_cursors_are_bounded(tmp_path: Path) -> None:
