@@ -69,7 +69,7 @@ def test_read_small_medium_large_and_utf8_metadata(tmp_path: Path, size: int) ->
     unicode_path = root / "unicode.txt"
     unicode_path.write_text("a\n€uro\n", encoding="utf-8")
     with pytest.raises(ValueError, match="UTF-8 character boundary"):
-        read(root, {"path": "unicode.txt", "offset": 2}, max_bytes=100)
+        read(root, {"path": "unicode.txt", "offset": 3}, max_bytes=100)
 
 
 def test_read_binary_invalid_utf8_and_ranges_are_rejected(tmp_path: Path) -> None:
