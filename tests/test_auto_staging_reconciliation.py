@@ -4,8 +4,7 @@ from pathlib import Path
 
 from executor.app import ExecutorService
 from executor.config import ExecutorConfig
-from executor.staging import advance_published_staging, sha256_file, workspace_changes
-from shared.tools import PublishOperation
+from executor.staging import sha256_file, workspace_changes
 from src.workspace_broker import WorkspaceBroker, workspace_id
 
 
@@ -68,7 +67,6 @@ def test_published_baseline_rejects_stale_manifest_content(tmp_path: Path) -> No
     staged = work / "created.txt"
     staged.write_text("published", encoding="utf-8")
     manifest = service.manifest("run-1", "approval-1")
-    operation = manifest.operations[0]
     staged.write_text("newer staged change", encoding="utf-8")
 
     try:

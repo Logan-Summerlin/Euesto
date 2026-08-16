@@ -24,8 +24,10 @@ def make_config(source: Path, work: Path, **limits: int) -> ExecutorConfig:
 def test_default_staging_limits_support_large_projects(tmp_path: Path) -> None:
     config = make_config(tmp_path / "source", tmp_path / "work")
 
-    assert config.max_files == 300_000
-    assert config.max_total_bytes == 2_000_000_000
+    assert config.max_staged_files == 300_000
+    assert config.max_staging_bytes == 2_500_000_000
+    assert config.max_checkpoint_bytes == 2_500_000_000
+    assert config.required_capacity_bytes < config.work_capacity_bytes
 
 
 def test_seed_staging_skips_dependency_metadata_and_cache_directories(tmp_path: Path) -> None:
@@ -59,8 +61,8 @@ def test_seed_staging_keeps_limits_for_materialized_files(tmp_path: Path) -> Non
     (source / "a.txt").write_text("a", encoding="utf-8")
     (source / "b.txt").write_text("b", encoding="utf-8")
 
-    with pytest.raises(RuntimeError, match="snapshot limits"):
-        seed_staging(make_config(source, tmp_path / "work", max_files=1))
+    with pytest.raises(RuntimeError, match="staging limits"):
+        seed_staging(make_config(source, tmp_path / "work", max_staged_files=1))
 
 
 def test_generated_runtime_caches_are_not_publication_changes(tmp_path: Path) -> None:

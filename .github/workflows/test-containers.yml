@@ -21,23 +21,37 @@ jobs:
           cache: pip
       - name: Install test dependencies
         run: pip install -r requirements-dev.txt
-      - name: Validate tooling and completion regression suite
-        run: >-
-          pytest -q
-          tests/test_executor_tool_surface.py
-          tests/test_narrow_tooling.py
-          tests/test_tooling_regressions.py
-          tests/test_completion_publication.py
-          tests/test_agent_completion_flow.py
-          tests/test_gateway_completion_flow.py
-          tests/test_tooling_reporting_hardening.py
-      - name: Validate Python and tooling
+      - name: Phase 6 regression matrix
+        run: |
+          pytest -q \
+            tests/test_phase6_regression_matrix.py \
+            tests/test_executor_config.py \
+            tests/test_executor_limit_enforcement.py \
+            tests/test_phase5_resources.py \
+            tests/test_bash.py \
+            tests/test_staging.py \
+            tests/test_publication_baseline.py \
+            tests/test_publication_baseline_handoff.py \
+            tests/test_publication_worker_failures.py \
+            tests/test_auto_staging_reconciliation.py
+      - name: Phase 6 security regression suite
+        run: |
+          pytest -q \
+            tests/test_container_policy.py \
+            tests/test_v10_qml_privacy.py \
+            tests/test_tooling_regressions.py \
+            tests/test_tooling_reporting_hardening.py \
+            tests/test_narrow_tooling.py
+      - name: Full pytest suite
         env:
           QT_QPA_PLATFORM: offscreen
-        run: |
-          pytest
-          python -m compileall -q app.py src server shared executor tests scripts
-          pyside6-qmllint qml/Main.qml qml/Sidebar.qml qml/Transcript.qml qml/Composer.qml
+        run: pytest
+      - name: Ruff
+        run: ruff check . --output-format=github
+      - name: Python compile check
+        run: python -m compileall -q app.py src server shared executor tests scripts
+      - name: QML lint
+        run: pyside6-qmllint qml/Main.qml qml/Sidebar.qml qml/Transcript.qml qml/Composer.qml
       - name: Render hardened Compose profile
         shell: bash
         run: |
@@ -50,7 +64,10 @@ jobs:
           grep -F '127.0.0.1:8765' /tmp/local-chatbot-compose.yaml
           grep -F 'cap_drop:' /tmp/local-chatbot-compose.yaml
           grep -F 'no-new-privileges:true' /tmp/local-chatbot-compose.yaml
+          grep -F 'read_only: true' /tmp/local-chatbot-compose.yaml
           if grep -Fq '/var/run/docker.sock' /tmp/local-chatbot-compose.yaml; then exit 1; fi
+          if grep -Fq 'privileged: true' /tmp/local-chatbot-compose.yaml; then exit 1; fi
+          if grep -Fq 'network_mode: host' /tmp/local-chatbot-compose.yaml; then exit 1; fi
       - name: Build and boot gateway
         shell: bash
         run: |

@@ -52,14 +52,8 @@ class ChatRequest:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ChatRequest:
         expected = {
-            "model",
-            "messages",
-            "options",
-            "server_tools",
-            "supported_parameters",
-            "client_request_id",
-            "provider_preferences",
-            "mode",
+            "model", "messages", "options", "server_tools", "supported_parameters",
+            "client_request_id", "provider_preferences", "mode",
         }
         unknown = set(data) - expected
         if unknown:
@@ -75,15 +69,9 @@ class ChatRequest:
                 if isinstance(item, dict)
             ),
             options=_object(data.get("options")),
-            server_tools={
-                key: bool(value) for key, value in _object(data.get("server_tools")).items()
-            },
-            supported_parameters=tuple(
-                str(item) for item in data.get("supported_parameters") or ()
-            ),
-            client_request_id=(
-                str(data["client_request_id"]) if data.get("client_request_id") else None
-            ),
+            server_tools={key: bool(value) for key, value in _object(data.get("server_tools")).items()},
+            supported_parameters=tuple(str(item) for item in data.get("supported_parameters") or ()),
+            client_request_id=str(data["client_request_id"]) if data.get("client_request_id") else None,
             provider_preferences=_object(data.get("provider_preferences")),
             mode=str(data.get("mode") or "chat"),
         )
@@ -111,24 +99,23 @@ class AgentRunRequest:
     max_tool_calls: int = 100
     max_wall_seconds: int = 900
     max_cost: float = 1.0
+    budget_profile: str = "coding"
     provider_preferences: dict[str, Any] = field(default_factory=dict)
     approval_policy: Literal["prompt", "auto"] = "prompt"
 
     def __post_init__(self) -> None:
-        if (
-            self.mode not in {"plan", "agent"}
-            or not self.model.strip()
-            or not self.workspace_id
-        ):
+        if self.mode not in {"plan", "agent"} or not self.model.strip() or not self.workspace_id:
             raise ValueError("Plan/Agent mode, model, and workspace identity are required")
+        if not self.budget_profile.strip():
+            raise ValueError("Agent budget profile is required")
         if self.approval_policy not in {"prompt", "auto"}:
             raise ValueError("Unknown agent approval policy")
         if self.mode != "agent" and self.approval_policy != "prompt":
             raise ValueError("Automatic approval is available only in Agent mode")
         if (
-            not 1 <= self.max_iterations <= 101
-            or not 1 <= self.max_tool_calls <= 100
-            or not 10 <= self.max_wall_seconds <= 3600
+            not 1 <= self.max_iterations <= 1000
+            or not 1 <= self.max_tool_calls <= 2000
+            or not 10 <= self.max_wall_seconds <= 7200
             or not 0 < self.max_cost <= 100
         ):
             raise ValueError("Agent budget is outside safe limits")
@@ -151,14 +138,7 @@ class AgentRunRequest:
             raise ValueError("Too many active skills")
         if any(not isinstance(item, dict) for item in self.skills):
             raise ValueError("Skills must be objects")
-        allowed_skill_fields = {
-            "name",
-            "description",
-            "instructions",
-            "required_tools",
-            "references",
-            "scope",
-        }
+        allowed_skill_fields = {"name", "description", "instructions", "required_tools", "references", "scope"}
         if any(set(item) - allowed_skill_fields for item in self.skills):
             raise ValueError("Skills contain unknown fields")
         if len(repr(self.workspace_config).encode("utf-8")) > 128_000:
@@ -180,33 +160,22 @@ class AgentRunRequest:
             "max_tool_calls": self.max_tool_calls,
             "max_wall_seconds": self.max_wall_seconds,
             "max_cost": self.max_cost,
+            "budget_profile": self.budget_profile,
             "provider_preferences": dict(self.provider_preferences),
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> AgentRunRequest:
         expected = {
-            "model",
-            "messages",
-            "mode",
-            "workspace_id",
-            "approval_policy",
-            "session_id",
-            "context_limit_tokens",
-            "skills",
-            "workspace_config",
-            "max_iterations",
-            "max_tool_calls",
-            "max_wall_seconds",
-            "max_cost",
+            "model", "messages", "mode", "workspace_id", "approval_policy", "session_id",
+            "context_limit_tokens", "skills", "workspace_config", "max_iterations",
+            "max_tool_calls", "max_wall_seconds", "max_cost", "budget_profile",
             "provider_preferences",
         }
         if set(data) - expected:
             raise ValueError("Unknown agent run fields")
         messages = data.get("messages")
-        if not isinstance(messages, list) or any(
-            not isinstance(item, dict) for item in messages
-        ):
+        if not isinstance(messages, list) or any(not isinstance(item, dict) for item in messages):
             raise ValueError("messages must be an object array")
         return cls(
             model=str(data.get("model") or ""),
@@ -216,14 +185,13 @@ class AgentRunRequest:
             approval_policy=str(data.get("approval_policy") or "prompt"),
             session_id=str(data["session_id"]) if data.get("session_id") else None,
             context_limit_tokens=int(data.get("context_limit_tokens") or 100_000),
-            skills=tuple(
-                dict(item) for item in data.get("skills") or () if isinstance(item, dict)
-            ),
+            skills=tuple(dict(item) for item in data.get("skills") or () if isinstance(item, dict)),
             workspace_config=_object(data.get("workspace_config")),
             max_iterations=int(data.get("max_iterations") or 101),
             max_tool_calls=int(data.get("max_tool_calls") or 100),
             max_wall_seconds=int(data.get("max_wall_seconds") or 900),
             max_cost=float(data.get("max_cost") or 1.0),
+            budget_profile=str(data.get("budget_profile") or "coding"),
             provider_preferences=_object(data.get("provider_preferences")),
         )
 

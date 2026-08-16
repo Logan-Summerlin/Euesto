@@ -18,61 +18,83 @@ from .config import ExecutorConfig
 from .errors import classify_error
 from .permissions import enforce_capability
 from .staging import Snapshot, advance_published_staging, load_snapshot, seed_staging, workspace_changes
-from .tools import MAX_READ_BYTES, bash, edit, find, grep, ls, read, write
+from .tools import bash, edit, find, grep, ls, read, write
 from .tools.bash import cancel as cancel_bash
 from .tools.bash import events as bash_events
 
 DEVELOPER_EXECUTABLE_CANDIDATES = ("python", "python3", "pytest", "ruff", "node", "npm", "pnpm", "yarn", "make", "gcc", "g++", "clang", "go", "cargo", "rustc", "java", "javac")
 
+
 class ExecutorService:
-    def __init__(self, config: ExecutorConfig, *, seed: bool = True): self.config = config; self.snapshot = seed_staging(config) if seed else load_snapshot(config.work_root)
+    def __init__(self, config: ExecutorConfig, *, seed: bool = True):
+        self.config = config
+        self.snapshot = seed_staging(config) if seed else load_snapshot(config.work_root)
+
     async def execute(self, request: ToolRequest) -> ToolResult:
         started = time.perf_counter()
         try:
-            enforce_capability(request); root = self.config.source_root if request.mode == "plan" else self.config.work_root
-            if request.tool == "read": output, data = read(root, request.arguments, max_bytes=self.config.max_file_bytes)
-            elif request.tool == "write": output, data = write(root, request.arguments, max_bytes=self.config.max_output_bytes, max_checkpoint_files=self.config.max_files, max_checkpoint_bytes=self.config.max_total_bytes)
-            elif request.tool == "edit": output, data = edit(root, request.arguments, max_bytes=self.config.max_output_bytes, max_checkpoint_files=self.config.max_files, max_checkpoint_bytes=self.config.max_total_bytes)
-            elif request.tool == "bash": output, data = await bash(request.request_id, root, request.arguments, max_seconds=self.config.max_command_seconds, max_output=self.config.max_output_bytes, max_checkpoint_files=self.config.max_files, max_checkpoint_bytes=self.config.max_total_bytes)
-            elif request.tool == "grep": output, data = grep(root, request.arguments, max_bytes=self.config.max_file_bytes)
-            elif request.tool == "find": output, data = find(root, request.arguments)
-            elif request.tool == "ls": output, data = ls(root, request.arguments)
+            enforce_capability(request)
+            root = self.config.source_root if request.mode == "plan" else self.config.work_root
+            if request.tool == "read":
+                requested = request.arguments.get("max_bytes")
+                output, data = read(root, request.arguments, max_bytes=self.config.effective_limit("max_read_bytes", requested))
+            elif request.tool == "write":
+                output, data = write(root, request.arguments, max_bytes=self.config.effective_limit("max_write_bytes"), max_checkpoint_files=self.config.max_staged_files, max_checkpoint_bytes=self.config.max_checkpoint_bytes, max_staging_bytes=self.config.max_staging_bytes)
+            elif request.tool == "edit":
+                output, data = edit(root, request.arguments, max_target_bytes=self.config.effective_limit("max_edit_target_bytes"), max_result_bytes=self.config.effective_limit("max_edit_result_bytes"), max_checkpoint_files=self.config.max_staged_files, max_checkpoint_bytes=self.config.max_checkpoint_bytes,)
+            elif request.tool == "bash":
+                output, data = await bash(request.request_id, root, request.arguments, max_seconds=self.config.effective_limit("max_command_seconds"), max_output=self.config.effective_limit("max_bash_output_bytes"), max_command_bytes=self.config.effective_limit("max_command_bytes"), max_stdin_bytes=self.config.effective_limit("max_bash_stdin_bytes"), max_checkpoint_files=self.config.max_staged_files, max_checkpoint_bytes=self.config.max_checkpoint_bytes)
+            elif request.tool == "grep":
+                requested_results = request.arguments.get("max_results")
+                output, data = grep(root, request.arguments, max_bytes=self.config.effective_limit("max_grep_scan_bytes"), max_results=self.config.effective_limit("max_search_results", requested_results))
+            elif request.tool == "find":
+                requested_results = request.arguments.get("max_results")
+                output, data = find(root, request.arguments, max_results=self.config.effective_limit("max_find_results", requested_results))
+            elif request.tool == "ls":
+                requested_results = request.arguments.get("max_results")
+                output, data = ls(root, request.arguments, max_results=self.config.effective_limit("max_ls_results", requested_results))
             else: raise ValueError(f"Unknown tool: {request.tool}")
             if request.mode == "agent" and request.tool in {"write", "edit", "bash"}:
                 data["workspace_status"] = self.workspace_status(); output = f"{output} {data['workspace_status']['summary']}"
             return _success_result(request.request_id, output, data, time.perf_counter() - started)
         except Exception as exc:
-            classified = classify_error(exc); return ToolResult(request.request_id, False, output=classified.message, error_code=classified.code, elapsed_seconds=time.perf_counter() - started)
+            classified = classify_error(exc)
+            return ToolResult(request.request_id, False, output=classified.message, error_code=classified.code, elapsed_seconds=time.perf_counter() - started)
+
     def workspace_status(self) -> dict[str, object]:
         changes = workspace_changes(self.snapshot, self.config.work_root); created = [x.path for x in changes if x.operation == "create"]; modified = [x.path for x in changes if x.operation == "update"]; deleted = [x.path for x in changes if x.operation == "delete"]; permissions = [x.path for x in changes if x.mode_changed and x.operation != "delete"]
         return {"created": created, "modified": modified, "deleted": deleted, "permission_changes": permissions, "staged": bool(changes), "publication": "pending_review" if changes else "no_changes", "summary": f"Created {len(created)}, modified {len(modified)}, deleted {len(deleted)}; host publication pending review."}
+
     def manifest(self, run_id: str, approval_id: str) -> PublishManifest:
         operations: list[PublishOperation] = []
         for change in workspace_changes(self.snapshot, self.config.work_root):
             content = None
             if change.operation != "delete":
                 try:
-                    with (self.config.work_root / change.path).open("r", encoding="utf-8", newline="") as handle:
-                        content = handle.read()
+                    with (self.config.work_root / change.path).open("r", encoding="utf-8", newline="") as handle: content = handle.read()
                 except UnicodeError as exc: raise ValueError("Changed binary or invalid UTF-8 files cannot be published by the text broker") from exc
             operations.append(PublishOperation(change.path, change.operation, change.base_sha256, change.staged_sha256, content, change.base_mode, change.staged_mode))
         return PublishManifest(str(uuid.uuid4()), run_id, self.config.workspace_id, self.snapshot.snapshot_id, approval_id, tuple(operations))
-    def discard(self) -> Snapshot: self.snapshot = discard_staging(self.config); return self.snapshot
+
+    def discard(self) -> Snapshot:
+        self.snapshot = discard_staging(self.config); return self.snapshot
+
     def mark_published(self, manifest: PublishManifest) -> Snapshot:
-        if manifest.workspace_id != self.config.workspace_id:
-            raise ValueError("Publication manifest belongs to another workspace")
-        if manifest.source_snapshot_id != self.snapshot.snapshot_id:
-            raise ValueError("Publication manifest is stale for the current staging baseline")
-        self.snapshot = advance_published_staging(self.config.work_root, self.snapshot, manifest.operations)
-        return self.snapshot
+        if manifest.workspace_id != self.config.workspace_id: raise ValueError("Publication manifest belongs to another workspace")
+        if manifest.source_snapshot_id != self.snapshot.snapshot_id: raise ValueError("Publication manifest is stale for the current staging baseline")
+        self.snapshot = advance_published_staging(self.config.work_root, self.snapshot, manifest.operations); return self.snapshot
+
 
 def _success_result(request_id: str, output: str, data: dict, elapsed: float) -> ToolResult:
-    returned = data.get("returned") or data.get("count", data.get("matches_returned")); return ToolResult(request_id, True, output, data, truncated=bool(data.get("truncated")), elapsed_seconds=elapsed, returned=_nonnegative_int(returned), total_known=_nonnegative_int(data.get("total_known")), limit=_nonnegative_int(data.get("limit")), next_cursor=(str(data["next_cursor"]) if data.get("next_cursor") else None))
+    returned = data.get("returned") or data.get("count", data.get("matches_returned"))
+    return ToolResult(request_id, True, output, data, truncated=bool(data.get("truncated")), elapsed_seconds=elapsed, returned=_nonnegative_int(returned), total_known=_nonnegative_int(data.get("total_known")), limit=_nonnegative_int(data.get("limit")), next_cursor=(str(data["next_cursor"]) if data.get("next_cursor") else None))
+
 
 def _nonnegative_int(value: object) -> int | None:
     if value is None: return None
     try: return max(0, int(value))
     except (TypeError, ValueError): return None
+
 
 def create_app(config: ExecutorConfig | None = None, service: ExecutorService | None = None) -> Starlette:
     resolved = config or ExecutorConfig.from_environment(); executor = service or ExecutorService(resolved); nonces: dict[str, float] = {}
@@ -103,12 +125,8 @@ def create_app(config: ExecutorConfig | None = None, service: ExecutorService | 
     async def mark_published(request: Request):
         denied = await authenticate(request)
         if denied: return denied
-        try:
-            data = await _json(request)
-            manifest = PublishManifest.from_dict(data)
-            snapshot = executor.mark_published(manifest)
-        except (OSError, UnicodeError, TypeError, ValueError, RuntimeError) as exc:
-            return _error("staging.mark_published_failed", str(exc), 409)
+        try: data = await _json(request); manifest = PublishManifest.from_dict(data); snapshot = executor.mark_published(manifest)
+        except (OSError, UnicodeError, TypeError, ValueError, RuntimeError) as exc: return _error("staging.mark_published_failed", str(exc), 409)
         return JSONResponse({"snapshot_id": snapshot.snapshot_id, "file_count": snapshot.file_count})
     async def cancel(request: Request):
         denied = await authenticate(request); return denied or JSONResponse({"cancelled": await cancel_bash(request.path_params["request_id"])})
@@ -127,12 +145,15 @@ def create_app(config: ExecutorConfig | None = None, service: ExecutorService | 
     app = Starlette(routes=[Route("/v1/status", status, methods=["GET"]), Route("/v1/tools", tool, methods=["POST"]), Route("/v1/tools/{request_id:str}/events", command_events, methods=["GET"]), Route("/v1/manifest", manifest, methods=["POST"]), Route("/v1/staging/mark-published", mark_published, methods=["POST"]), Route("/v1/staging/discard", discard, methods=["POST"]), Route("/v1/tools/{request_id:str}/cancel", cancel, methods=["POST"])])
     app.state.executor = executor; return app
 
+
 async def _json(request: Request) -> dict:
     data = await request.json()
     if not isinstance(data, dict): raise ValueError("Request body must be an object")
     return data
 
+
 def _error(code: str, message: str, status: int) -> JSONResponse: return JSONResponse({"error": {"code": code, "message": message, "retryable": False, "details": {}}}, status_code=status)
+
 
 def _environment_context(config: ExecutorConfig, snapshot: Snapshot) -> dict[str, object]:
     available = [name for name in DEVELOPER_EXECUTABLE_CANDIDATES if shutil.which(name, path="/usr/local/bin:/usr/bin:/bin") is not None]
@@ -140,4 +161,4 @@ def _environment_context(config: ExecutorConfig, snapshot: Snapshot) -> dict[str
     except (OSError, ValueError): unpublished_changes = True
     try: headroom = shutil.disk_usage(config.work_root).free
     except OSError: headroom = None
-    return {"capability_schema_version": 2, "mode": "plan_reads_source_agent_uses_ephemeral_staging", "workspace_root": ".", "platform": platform.system().casefold(), "python_version": platform.python_version(), "network_access": False, "gpu_access": False, "command_style": "bash -lc", "developer_executables": available, "agent_snapshot": {"snapshot_id": snapshot.snapshot_id, "file_count": len(snapshot.hashes), "total_bytes": snapshot.total_bytes}, "workspace_empty": snapshot.empty, "source_snapshot_id": snapshot.snapshot_id, "staging_lifetime": "same_executor_instance", "unpublished_changes": unpublished_changes, "publication_status": "host_publication_pending_review" if unpublished_changes else "no_unpublished_changes", "storage_headroom_bytes": headroom, "limits": {"max_read_bytes": min(config.max_file_bytes, MAX_READ_BYTES), "max_output_bytes": config.max_output_bytes, "max_command_seconds": config.max_command_seconds, "max_files": config.max_files, "max_total_bytes": config.max_total_bytes}}
+    return {"capability_schema_version": 2, "mode": "plan_reads_source_agent_uses_ephemeral_staging", "workspace_root": ".", "platform": platform.system().casefold(), "python_version": platform.python_version(), "network_access": False, "gpu_access": False, "command_style": "bash -lc", "developer_executables": available, "agent_snapshot": {"snapshot_id": snapshot.snapshot_id, "file_count": len(snapshot.hashes), "total_bytes": snapshot.total_bytes}, "workspace_empty": snapshot.empty, "source_snapshot_id": snapshot.snapshot_id, "staging_lifetime": "same_executor_instance", "unpublished_changes": unpublished_changes, "publication_status": "host_publication_pending_review" if unpublished_changes else "no_unpublished_changes", "storage_headroom_bytes": headroom, "limits": config.limits_status()}

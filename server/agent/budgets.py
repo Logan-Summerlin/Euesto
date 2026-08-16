@@ -6,12 +6,86 @@ from dataclasses import dataclass
 from shared.coercion import optional_float, optional_int
 
 
+@dataclass(frozen=True, slots=True)
+class BudgetProfile:
+    name: str
+    max_iterations: int
+    max_tool_calls: int
+    max_wall_seconds: int
+    max_cost: float
+
+
+STANDARD_CODING_PROFILE = BudgetProfile(
+    "coding",
+    max_iterations=200,
+    max_tool_calls=300,
+    max_wall_seconds=1_800,
+    max_cost=2.0,
+)
+EXTENDED_CODING_PROFILE = BudgetProfile(
+    "extended-coding",
+    max_iterations=400,
+    max_tool_calls=600,
+    max_wall_seconds=3_600,
+    max_cost=4.0,
+)
+LARGE_CODING_PROFILE = BudgetProfile(
+    "large-coding",
+    max_iterations=600,
+    max_tool_calls=900,
+    max_wall_seconds=5_400,
+    max_cost=8.0,
+)
+
+BUDGET_PROFILES = {
+    profile.name: profile
+    for profile in (
+        STANDARD_CODING_PROFILE,
+        EXTENDED_CODING_PROFILE,
+        LARGE_CODING_PROFILE,
+    )
+}
+
+
+def resolve_budget_profile(name: str) -> BudgetProfile:
+    try:
+        return BUDGET_PROFILES[name]
+    except KeyError as exc:
+        raise ValueError(f"Unknown agent budget profile: {name}") from exc
+
+
+def requires_budget_approval(profile: BudgetProfile) -> bool:
+    """Return whether the profile exceeds the standard profile by more than 2x.
+
+    Iteration count is intentionally not part of the approval threshold: the
+    approval rule is specifically about tool calls, wall time, and cost.
+    """
+    standard = STANDARD_CODING_PROFILE
+    return (
+        profile.max_tool_calls > standard.max_tool_calls * 2
+        or profile.max_wall_seconds > standard.max_wall_seconds * 2
+        or profile.max_cost > standard.max_cost * 2
+    )
+
+
+class BudgetExceededError(RuntimeError):
+    def __init__(self, budget: str, used: float, limit: float, unit: str):
+        self.budget = budget
+        self.used = used
+        self.limit = limit
+        self.unit = unit
+        super().__init__(
+            f"{budget} budget exhausted: {used:g}/{limit:g} {unit} used; 0 remaining."
+        )
+
+
 @dataclass(slots=True)
 class RunBudget:
     max_iterations: int
     max_wall_seconds: int
     max_cost: float
     max_tool_calls: int = 100
+    profile_name: str = "custom"
     started: float = 0
     iterations: int = 0
     tool_calls: int = 0
@@ -24,6 +98,17 @@ class RunBudget:
 
     def __post_init__(self) -> None:
         self.started = time.monotonic()
+
+    @classmethod
+    def from_profile(cls, name: str) -> "RunBudget":
+        profile = resolve_budget_profile(name)
+        return cls(
+            profile.max_iterations,
+            profile.max_wall_seconds,
+            profile.max_cost,
+            profile.max_tool_calls,
+            profile.name,
+        )
 
     def consume_iteration(self) -> None:
         self.iterations += 1
@@ -46,7 +131,10 @@ class RunBudget:
         cached = max(0, optional_int(usage.get("cached_tokens")) or 0)
         reasoning = max(0, optional_int(usage.get("reasoning_tokens")) or 0)
         reported_total = optional_int(usage.get("total_tokens"))
-        total = max(0, reported_total if reported_total is not None else prompt + completion)
+        total = max(
+            0,
+            reported_total if reported_total is not None else prompt + completion,
+        )
         cost = max(0.0, optional_float(usage.get("cost")) or 0.0)
 
         self.prompt_tokens += prompt
@@ -73,23 +161,57 @@ class RunBudget:
 
     def check(self) -> None:
         if self.iterations > self.max_iterations:
-            raise RuntimeError("iteration budget exhausted")
+            raise BudgetExceededError(
+                "iteration", self.iterations, self.max_iterations, "iterations"
+            )
         if self.tool_calls > self.max_tool_calls:
-            raise RuntimeError("tool-call budget exhausted")
-        if time.monotonic() - self.started > self.max_wall_seconds:
-            raise RuntimeError("wall-time budget exhausted")
+            raise BudgetExceededError(
+                "tool-call", self.tool_calls, self.max_tool_calls, "tool calls"
+            )
+        elapsed = self.elapsed_seconds
+        if elapsed > self.max_wall_seconds:
+            raise BudgetExceededError(
+                "wall-time", elapsed, self.max_wall_seconds, "seconds"
+            )
         if self.cost > self.max_cost:
-            raise RuntimeError("cost budget exhausted")
+            raise BudgetExceededError("cost", self.cost, self.max_cost, "USD")
 
     @property
     def elapsed_seconds(self) -> float:
         return max(0.0, time.monotonic() - self.started)
 
-    def snapshot(self) -> dict[str, float | int]:
+    @property
+    def remaining_iterations(self) -> int:
+        return max(0, self.max_iterations - self.iterations)
+
+    @property
+    def remaining_tool_calls(self) -> int:
+        return max(0, self.max_tool_calls - self.tool_calls)
+
+    @property
+    def remaining_wall_seconds(self) -> float:
+        return max(0.0, self.max_wall_seconds - self.elapsed_seconds)
+
+    @property
+    def remaining_cost(self) -> float:
+        return max(0.0, self.max_cost - self.cost)
+
+    def snapshot(self) -> dict[str, float | int | str | dict[str, float | int]]:
         return {
+            "profile": self.profile_name,
             "iterations": self.iterations,
             "tool_calls": self.tool_calls,
             "elapsed_seconds": self.elapsed_seconds,
+            "remaining_iterations": self.remaining_iterations,
+            "remaining_tool_calls": self.remaining_tool_calls,
+            "remaining_wall_seconds": self.remaining_wall_seconds,
+            "remaining_cost": self.remaining_cost,
+            "limits": {
+                "max_iterations": self.max_iterations,
+                "max_tool_calls": self.max_tool_calls,
+                "max_wall_seconds": self.max_wall_seconds,
+                "max_cost": self.max_cost,
+            },
             **self.usage(),
         }
 
