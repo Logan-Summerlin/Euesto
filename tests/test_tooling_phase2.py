@@ -41,30 +41,52 @@ def test_edit_defaults_to_one_occurrence_and_reports_actual_count(tmp_path: Path
     path = tmp_path / "x.py"
     path.write_text("value\nvalue\n", encoding="utf-8")
     with pytest.raises(ValueError, match="expected 1, found 2"):
-        edit(tmp_path, {"path": "x.py", "old_str": "value", "new_str": "changed"}, max_bytes=64_000)
+        edit(tmp_path, {"path": "x.py", "old_str": "value", "new_str": "changed"}, max_target_bytes=64_000, max_result_bytes=64_000)
     assert path.read_text(encoding="utf-8") == "value\nvalue\n"
 
 
 def test_edit_succeeds_without_hash(tmp_path: Path) -> None:
     path = tmp_path / "x.py"
     path.write_text("before", encoding="utf-8")
-    _, data = edit(tmp_path, {"path": "x.py", "old_str": "before", "new_str": "after"}, max_bytes=64_000)
+    _, data = edit(tmp_path, {"path": "x.py", "old_str": "before", "new_str": "after"}, max_target_bytes=64_000, max_result_bytes=64_000)
     assert path.read_text(encoding="utf-8") == "after"
     assert data["actual_occurrences"] == 1
     assert data["old_sha256"] != data["new_sha256"]
+
+
+def test_edit_has_independent_target_and_result_limits(tmp_path: Path) -> None:
+    path = tmp_path / "x.py"
+    path.write_text("small", encoding="utf-8")
+    with pytest.raises(ValueError, match="Edited content exceeds"):
+        edit(tmp_path, {"path": "x.py", "old_str": "small", "new_str": "this result is too large"}, max_target_bytes=100, max_result_bytes=10)
+    assert path.read_text(encoding="utf-8") == "small"
 
 
 def test_ls_is_not_recursive_and_find_is_recursive(tmp_path: Path) -> None:
     (tmp_path / "top.py").write_text("top", encoding="utf-8")
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "nested.py").write_text("nested", encoding="utf-8")
-    ls_output, ls_data = ls(tmp_path, {"path": ".", "details": False},)
+    ls_output, ls_data = ls(tmp_path, {"path": ".", "details": False})
     find_output, find_data = find(tmp_path, {"path": ".", "glob": "*.py", "max_depth": 10, "max_results": 500, "details": False})
     assert "top.py" in ls_output
     assert "nested.py" not in ls_output
     assert "top.py" in find_output and "src/nested.py" in find_output
     assert ls_data["recursive"] is False
     assert find_data["recursive"] is True
+
+
+def test_result_limits_are_authoritative(tmp_path: Path) -> None:
+    for index in range(4):
+        (tmp_path / f"{index}.py").write_text("needle\n", encoding="utf-8")
+    ls_output, ls_data = ls(tmp_path, {"path": ".", "max_results": 4}, max_results=2)
+    find_output, find_data = find(tmp_path, {"path": ".", "glob": "*.py", "max_results": 4}, max_results=2)
+    grep_output, grep_data = grep(tmp_path, {"path": ".", "query": "needle", "max_results": 4}, max_bytes=64_000, max_results=2)
+    assert ls_data["limit"] == 2 and ls_data["returned"] == 2 and ls_data["truncated"]
+    assert find_data["limit"] == 2 and find_data["returned"] == 2 and find_data["truncated"]
+    assert grep_data["matches_returned"] == 2 and grep_data["truncated"]
+    assert len(ls_output.splitlines()) == 2
+    assert len(find_output.splitlines()) == 2
+    assert len(grep_output.splitlines()) == 2
 
 
 def test_grep_preserves_literal_matching_and_case_sensitivity(tmp_path: Path) -> None:

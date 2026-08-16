@@ -10,7 +10,8 @@ def edit(
     root: Path,
     arguments: dict,
     *,
-    max_bytes: int,
+    max_target_bytes: int,
+    max_result_bytes: int,
     max_checkpoint_files: int = 300_000,
     max_checkpoint_bytes: int = 2_000_000_000,
 ) -> tuple[str, dict]:
@@ -30,7 +31,7 @@ def edit(
     path = safe_path(root, relative, must_exist=True)
     if path.is_symlink() or not path.is_file() or path.stat().st_nlink > 1:
         raise ValueError("edit target must be a regular, non-hard-linked file")
-    if path.stat().st_size > max_bytes:
+    if path.stat().st_size > max_target_bytes:
         raise ValueError("Edit target exceeds the mutation limit")
     try:
         original = path.read_text(encoding="utf-8")
@@ -41,7 +42,7 @@ def edit(
         raise ValueError(f"Edit occurrence conflict: expected {expected_occurrences}, found {actual}")
     content = original.replace(old, new)
     content_bytes = content.encode("utf-8")
-    if len(content_bytes) > max_bytes:
+    if len(content_bytes) > max_result_bytes:
         raise ValueError("Edited content exceeds the mutation limit")
     old_hash = sha256(path)
     expected = arguments.get("expected_sha256")

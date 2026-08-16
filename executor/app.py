@@ -39,27 +39,30 @@ class ExecutorService:
                 requested = request.arguments.get("max_bytes")
                 output, data = read(root, request.arguments, max_bytes=self.config.effective_limit("max_read_bytes", requested))
             elif request.tool == "write":
-                output, data = write(root, request.arguments, max_bytes=self.config.max_write_bytes, max_checkpoint_files=self.config.max_staged_files, max_checkpoint_bytes=self.config.max_checkpoint_bytes)
+                output, data = write(root, request.arguments, max_bytes=self.config.effective_limit("max_write_bytes"), max_checkpoint_files=self.config.max_staged_files, max_checkpoint_bytes=self.config.max_checkpoint_bytes)
             elif request.tool == "edit":
-                output, data = edit(root, request.arguments, max_bytes=min(self.config.max_edit_target_bytes, self.config.max_edit_result_bytes), max_checkpoint_files=self.config.max_staged_files, max_checkpoint_bytes=self.config.max_checkpoint_bytes)
+                output, data = edit(root, request.arguments, max_target_bytes=self.config.effective_limit("max_edit_target_bytes"), max_result_bytes=self.config.effective_limit("max_edit_result_bytes"), max_checkpoint_files=self.config.max_staged_files, max_checkpoint_bytes=self.config.max_checkpoint_bytes)
             elif request.tool == "bash":
                 output, data = await bash(
                     request.request_id,
                     root,
                     request.arguments,
-                    max_seconds=self.config.max_command_seconds,
-                    max_output=self.config.max_bash_output_bytes,
-                    max_command_bytes=self.config.max_command_bytes,
-                    max_stdin_bytes=self.config.max_bash_stdin_bytes,
+                    max_seconds=self.config.effective_limit("max_command_seconds"),
+                    max_output=self.config.effective_limit("max_bash_output_bytes"),
+                    max_command_bytes=self.config.effective_limit("max_command_bytes"),
+                    max_stdin_bytes=self.config.effective_limit("max_bash_stdin_bytes"),
                     max_checkpoint_files=self.config.max_staged_files,
                     max_checkpoint_bytes=self.config.max_checkpoint_bytes,
                 )
             elif request.tool == "grep":
-                output, data = grep(root, request.arguments, max_bytes=self.config.max_grep_scan_bytes)
+                requested_results = request.arguments.get("max_results")
+                output, data = grep(root, request.arguments, max_bytes=self.config.effective_limit("max_grep_scan_bytes"), max_results=self.config.effective_limit("max_search_results", requested_results))
             elif request.tool == "find":
-                output, data = find(root, request.arguments)
+                requested_results = request.arguments.get("max_results")
+                output, data = find(root, request.arguments, max_results=self.config.effective_limit("max_find_results", requested_results))
             elif request.tool == "ls":
-                output, data = ls(root, request.arguments)
+                requested_results = request.arguments.get("max_results")
+                output, data = ls(root, request.arguments, max_results=self.config.effective_limit("max_ls_results", requested_results))
             else:
                 raise ValueError(f"Unknown tool: {request.tool}")
             if request.mode == "agent" and request.tool in {"write", "edit", "bash"}:

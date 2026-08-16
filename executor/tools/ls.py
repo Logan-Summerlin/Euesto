@@ -5,7 +5,7 @@ from pathlib import Path
 from ..paths import is_secret_path, safe_path
 
 
-def ls(root: Path, arguments: dict) -> tuple[str, dict]:
+def ls(root: Path, arguments: dict, *, max_results: int = 500) -> tuple[str, dict]:
     allowed = {"path", "max_results", "details"}
     if set(arguments) - allowed:
         raise ValueError("Unknown ls arguments")
@@ -15,9 +15,10 @@ def ls(root: Path, arguments: dict) -> tuple[str, dict]:
     directory = safe_path(root, relative, must_exist=True)
     if not directory.is_dir():
         raise ValueError("ls target is not a directory")
-    maximum = arguments.get("max_results", 200)
-    if not isinstance(maximum, int) or isinstance(maximum, bool) or not 1 <= maximum <= 2000:
+    requested = arguments.get("max_results", 200)
+    if not isinstance(requested, int) or isinstance(requested, bool) or not 1 <= requested <= 2000:
         raise ValueError("max_results must be an integer from 1 to 2000")
+    maximum = min(requested, max_results)
     details = bool(arguments.get("details", True))
     children = []
     for path in sorted(directory.iterdir(), key=lambda item: item.name.casefold()):

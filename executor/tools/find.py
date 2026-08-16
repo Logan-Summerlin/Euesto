@@ -6,7 +6,7 @@ from pathlib import Path
 from ..paths import is_secret_path, safe_path
 
 
-def find(root: Path, arguments: dict) -> tuple[str, dict]:
+def find(root: Path, arguments: dict, *, max_results: int = 500) -> tuple[str, dict]:
     allowed = {"path", "glob", "max_depth", "max_results", "details"}
     if set(arguments) - allowed:
         raise ValueError("Unknown find arguments")
@@ -20,14 +20,15 @@ def find(root: Path, arguments: dict) -> tuple[str, dict]:
     if not isinstance(pattern, str) or not pattern or len(pattern) > 500:
         raise ValueError("find glob must be a bounded non-empty string")
     max_depth = arguments.get("max_depth", 10)
-    max_results = arguments.get("max_results", 500)
+    requested = arguments.get("max_results", 500)
     if not isinstance(max_depth, int) or isinstance(max_depth, bool) or not 0 <= max_depth <= 20:
         raise ValueError("max_depth must be an integer from 0 to 20")
-    if not isinstance(max_results, int) or isinstance(max_results, bool) or not 1 <= max_results <= 2000:
+    if not isinstance(requested, int) or isinstance(requested, bool) or not 1 <= requested <= 2000:
         raise ValueError("max_results must be an integer from 1 to 2000")
+    maximum = min(requested, max_results)
     details = bool(arguments.get("details", False))
     matches: list[Path] = []
-    _walk(root, scope, scope, 0, max_depth, pattern, matches, max_results)
+    _walk(root, scope, scope, 0, max_depth, pattern, matches, maximum)
     lines = []
     for path in matches:
         display = path.relative_to(root).as_posix()
@@ -37,11 +38,11 @@ def find(root: Path, arguments: dict) -> tuple[str, dict]:
         kind = "directory" if path.is_dir() else "file"
         size = "-" if path.is_dir() else str(path.stat().st_size)
         lines.append(f"{kind}\t{size}\t{display}")
-    truncated = len(matches) >= max_results and _has_more(root, scope, scope, 0, max_depth, pattern, max_results)
+    truncated = len(matches) >= maximum and _has_more(root, scope, scope, 0, max_depth, pattern, maximum)
     return "\n".join(lines), {
         "count": len(lines),
         "returned": len(lines),
-        "limit": max_results,
+        "limit": maximum,
         "truncated": truncated,
         "details": details,
         "recursive": True,
@@ -69,7 +70,6 @@ def _walk(root: Path, directory: Path, scope: Path, depth: int, max_depth: int, 
 
 
 def _has_more(root: Path, directory: Path, scope: Path, depth: int, max_depth: int, pattern: str, limit: int) -> bool:
-    # A bounded second walk determines whether the result limit actually truncated the query.
     count = 0
     stack = [(directory, depth)]
     while stack and count <= limit:
