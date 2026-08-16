@@ -134,7 +134,7 @@ def snapshot_current_staging(work_root: Path) -> Snapshot:
 def _write_snapshot(work: Path, snapshot: Snapshot) -> None:
     (work / ".local-chat-snapshot.json").write_text(
         json.dumps(
-            {"snapshot_id": snapshot.snapshot_id, "hashes": snapshot.hashes, "modes": snapshot.modes, "total_bytes": snapshot.total_bytes, "sizes": snapshot.sizes},
+            {"snapshot_id": snapshot.snapshot_id, "hashes": snapshot.hashes, "sizes": snapshot.sizes, "modes": snapshot.modes, "total_bytes": snapshot.total_bytes},
             sort_keys=True,
         ),
         encoding="utf-8",
@@ -153,7 +153,12 @@ def load_snapshot(work_root: Path) -> Snapshot:
 
 
 def visible_files(root: Path) -> dict[str, tuple[str, int, int]]:
-    """Return files eligible for staging, review, and publication, including mode."""
+    """Return files eligible for staging/reconciliation/publication.
+
+    This must use the same eligibility rules as ``seed_staging``. In particular,
+    secret-like files and staging-excluded directories are outside the logical
+    staged workspace even when they physically exist in the host workspace.
+    """
     result: dict[str, tuple[str, int, int]] = {}
     for current, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
         current_path = Path(current)
