@@ -11,6 +11,7 @@ from starlette.routing import Route
 
 from shared.requests import AgentRunRequest, ChatRequest
 from shared.responses import ErrorResponse
+from shared.tools import PublishManifest
 
 from .auth import GatewaySecurityMiddleware
 from .config import GatewayConfig
@@ -49,6 +50,7 @@ def create_app(config: GatewayConfig | None = None, service: GatewayService | No
         Route("/v1/workspaces/{workspace_id:str}/config", _workspace_config, methods=["GET", "PUT"]),
         Route("/v1/workspaces/{workspace_id:str}/staging/inspect", _inspect_staging, methods=["GET"]),
         Route("/v1/workspaces/{workspace_id:str}/staging/discard", _discard_staging, methods=["POST"]),
+        Route("/v1/workspaces/{workspace_id:str}/staging/mark-published", _mark_staging_published, methods=["POST"]),
     ]
     app = Starlette(routes=routes, lifespan=lifespan)
     app.state.gateway = resolved_service
@@ -234,6 +236,18 @@ async def _workspace_config(request: Request) -> Response:
 async def _discard_staging(request: Request) -> Response:
     try:
         result = await _service(request).discard_staging(request.path_params["workspace_id"])
+    except GatewayServiceError as exc:
+        return _service_error(exc)
+    return JSONResponse(result)
+
+
+async def _mark_staging_published(request: Request) -> Response:
+    workspace_id = request.path_params["workspace_id"]
+    try:
+        manifest = PublishManifest.from_dict(await _json(request))
+        result = await _service(request).mark_staging_published(workspace_id, manifest)
+    except (KeyError, TypeError, ValueError) as exc:
+        return _error("request.invalid_staging_manifest", str(exc), status=422)
     except GatewayServiceError as exc:
         return _service_error(exc)
     return JSONResponse(result)

@@ -111,8 +111,9 @@ class StagingDiscardWorker(QThread):
     complete = Signal(dict); failed = Signal(str)
     def __init__(self, client: GatewayClient, workspace_id: str): super().__init__(); self.client = client; self.workspace_id = workspace_id
     def run(self) -> None:
-        try: self.complete.emit(self.client.discard_staging())
+        try: self.complete.emit(self.client.discard_staging(self.workspace_id))
         except (GatewayError, KeyError, TypeError, ValueError) as exc: self.failed.emit(str(exc))
+        except Exception as exc: self.failed.emit(f"Unexpected staging discard error: {exc}")
 
 
 class StagingInspectWorker(QThread):
@@ -121,6 +122,7 @@ class StagingInspectWorker(QThread):
     def run(self) -> None:
         try: self.complete.emit(self.client.inspect_staging(self.workspace_id))
         except (GatewayError, KeyError, TypeError, ValueError) as exc: self.failed.emit(str(exc))
+        except Exception as exc: self.failed.emit(f"Unexpected staging inspection error: {exc}")
 
 
 class PublicationWorker(QThread):
@@ -134,15 +136,23 @@ class PublicationWorker(QThread):
             published = broker.publish(self.manifest, {item.path for item in self.manifest.operations})
         except (BrokerError, OSError, TypeError, ValueError) as exc:
             self.failed.emit(str(exc)); return
+        except Exception as exc:
+            self.failed.emit(f"Unexpected publication error: {exc}"); return
         result: dict[str, Any] = {"completed_paths": list(published.completed_paths), "checkpoint_id": published.checkpoint_id}
         reseed_client = self.reseed_client or _last_gateway_client
-        if reseed_client:
-            try:
-                # Publication succeeds on the host first. Advance the executor's
-                # baseline without deleting the staged files that the agent may
-                # legitimately continue using on its next turn.
-                reseed_client.mark_staging_published(); result["reseeded"] = True
-            except (GatewayError, KeyError, TypeError, ValueError) as exc:
-                result["reseeded"] = False; result["reseed_error"] = str(exc)
-        _last_gateway_client = None
+        try:
+            if reseed_client:
+                reseed_client.mark_staging_published(self.manifest)
+                result["reseeded"] = True
+            else:
+                result["reseeded"] = False
+                result["reseed_error"] = "No gateway client available to advance the staging baseline."
+        except (GatewayError, KeyError, TypeError, ValueError) as exc:
+            result["reseeded"] = False
+            result["reseed_error"] = str(exc)
+        except Exception as exc:
+            result["reseeded"] = False
+            result["reseed_error"] = f"Unexpected staging baseline error: {exc}"
+        finally:
+            _last_gateway_client = None
         self.complete.emit(result)

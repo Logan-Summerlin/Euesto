@@ -91,14 +91,16 @@ Rectangle {
             Layout.preferredHeight: Math.min(110, Math.max(48, contentHeight + 18))
             placeholderText: backend.generating
                 ? "Queue message · Ctrl+Shift+Enter steers"
-                : "Message…  Ctrl+Enter to send"
+                : "Message…  Enter to send · Shift+Enter for newline"
             color: root.textColor
             wrapMode: TextEdit.Wrap
             selectByMouse: true
             Keys.onPressed: event => {
-                if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
-                        && (event.modifiers & Qt.ControlModifier)) {
-                    root.sendRequested(prompt.text, Boolean(event.modifiers & Qt.ShiftModifier))
+                if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                    if (event.modifiers & Qt.ShiftModifier) {
+                        return
+                    }
+                    root.sendRequested(prompt.text, Boolean(event.modifiers & Qt.ControlModifier))
                     prompt.clear()
                     event.accepted = true
                 }

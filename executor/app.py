@@ -17,7 +17,7 @@ from .checkpoints import discard_staging
 from .config import ExecutorConfig
 from .errors import classify_error
 from .permissions import enforce_capability
-from .staging import Snapshot, load_snapshot, seed_staging, snapshot_current_staging, workspace_changes
+from .staging import Snapshot, advance_published_staging, load_snapshot, seed_staging, workspace_changes
 from .tools import MAX_READ_BYTES, bash, edit, find, grep, ls, read, write
 from .tools.bash import cancel as cancel_bash
 from .tools.bash import events as bash_events
@@ -58,9 +58,13 @@ class ExecutorService:
             operations.append(PublishOperation(change.path, change.operation, change.base_sha256, change.staged_sha256, content, change.base_mode, change.staged_mode))
         return PublishManifest(str(uuid.uuid4()), run_id, self.config.workspace_id, self.snapshot.snapshot_id, approval_id, tuple(operations))
     def discard(self) -> Snapshot: self.snapshot = discard_staging(self.config); return self.snapshot
-    def mark_published(self) -> Snapshot:
-        """Advance the publication baseline without changing the staged files."""
-        self.snapshot = snapshot_current_staging(self.config.work_root); return self.snapshot
+    def mark_published(self, manifest: PublishManifest) -> Snapshot:
+        if manifest.workspace_id != self.config.workspace_id:
+            raise ValueError("Publication manifest belongs to another workspace")
+        if manifest.source_snapshot_id != self.snapshot.snapshot_id:
+            raise ValueError("Publication manifest is stale for the current staging baseline")
+        self.snapshot = advance_published_staging(self.config.work_root, self.snapshot, manifest.operations)
+        return self.snapshot
 
 def _success_result(request_id: str, output: str, data: dict, elapsed: float) -> ToolResult:
     returned = data.get("returned") or data.get("count", data.get("matches_returned")); return ToolResult(request_id, True, output, data, truncated=bool(data.get("truncated")), elapsed_seconds=elapsed, returned=_nonnegative_int(returned), total_known=_nonnegative_int(data.get("total_known")), limit=_nonnegative_int(data.get("limit")), next_cursor=(str(data["next_cursor"]) if data.get("next_cursor") else None))
@@ -81,7 +85,9 @@ def create_app(config: ExecutorConfig | None = None, service: ExecutorService | 
             if now - created > 300: nonces.pop(value, None)
         return None
     async def status(request: Request):
-        denied = await authenticate(request); return denied or JSONResponse({"ready": True, "workspace_id": resolved.workspace_id, "snapshot_id": executor.snapshot.snapshot_id, "tools": sorted(("bash", "edit", "find", "grep", "ls", "read", "write")), "environment": _environment_context(resolved, executor.snapshot), "workspace_status": executor.workspace_status()})
+        denied = await authenticate(request)
+        if denied: return denied
+        return JSONResponse({"ready": True, "workspace_id": resolved.workspace_id, "snapshot_id": executor.snapshot.snapshot_id, "tools": sorted(("bash", "edit", "find", "grep", "ls", "read", "write")), "environment": _environment_context(resolved, executor.snapshot), "workspace_status": executor.workspace_status()})
     async def tool(request: Request):
         denied = await authenticate(request)
         if denied: return denied
@@ -98,8 +104,10 @@ def create_app(config: ExecutorConfig | None = None, service: ExecutorService | 
         denied = await authenticate(request)
         if denied: return denied
         try:
-            snapshot = executor.mark_published()
-        except (OSError, ValueError, RuntimeError) as exc:
+            data = await _json(request)
+            manifest = PublishManifest.from_dict(data)
+            snapshot = executor.mark_published(manifest)
+        except (OSError, UnicodeError, TypeError, ValueError, RuntimeError) as exc:
             return _error("staging.mark_published_failed", str(exc), 409)
         return JSONResponse({"snapshot_id": snapshot.snapshot_id, "file_count": snapshot.file_count})
     async def cancel(request: Request):
