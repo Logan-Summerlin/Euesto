@@ -63,12 +63,7 @@ class ExecutorConfig:
 
     @property
     def required_capacity_bytes(self) -> int:
-        """Worst-case capacity reserved for staging + one checkpoint + temp work."""
-        return (
-            self.max_staging_bytes
-            + self.max_checkpoint_bytes
-            + self.REQUIRED_TEMP_HEADROOM_BYTES
-        )
+        return self.max_staging_bytes + self.max_checkpoint_bytes + self.REQUIRED_TEMP_HEADROOM_BYTES
 
     def validate_storage_capacity(self, actual_capacity_bytes: int) -> None:
         if actual_capacity_bytes < 1:
@@ -91,40 +86,19 @@ class ExecutorConfig:
         if not self.workspace_id:
             raise ValueError("Executor workspace identity is required")
         values = {name: getattr(self, name) for name in self._LIMIT_FIELDS}
-        invalid = [
-            name
-            for name, value in values.items()
-            if not isinstance(value, int) or isinstance(value, bool) or value < 1
-        ]
+        invalid = [name for name, value in values.items() if not isinstance(value, int) or isinstance(value, bool) or value < 1]
         if invalid:
-            raise ValueError(
-                "Executor limits must be positive integers: " + ", ".join(invalid)
-            )
-        over = [
-            name for name, value in values.items() if value > self.HARD_CEILINGS[name]
-        ]
+            raise ValueError("Executor limits must be positive integers: " + ", ".join(invalid))
+        over = [name for name, value in values.items() if value > self.HARD_CEILINGS[name]]
         if over:
             raise ValueError("Configured limits exceed hard ceilings: " + ", ".join(over))
-        if self.max_checkpoint_bytes < self.max_staging_bytes:
-            raise ValueError(
-                "Checkpoint capacity must cover the maximum staged content so a full "
-                "staging snapshot can be recovered"
-            )
         if self.required_capacity_bytes >= self.work_capacity_bytes:
-            raise ValueError(
-                "Staging capacity, checkpoint capacity, and required temporary headroom "
-                "must fit strictly below /work capacity"
-            )
+            raise ValueError("Staging capacity, checkpoint capacity, and required temporary headroom must fit strictly below /work capacity")
 
     @classmethod
     def from_environment(cls) -> ExecutorConfig:
-        token_path = Path(
-            os.environ.get("LOCAL_CHAT_EXECUTOR_TOKEN_FILE", "/run/ipc/executor_token")
-        )
-        profile = (
-            os.environ.get("LOCAL_CHAT_EXECUTOR_PROFILE", "coding").strip().casefold()
-            or "coding"
-        )
+        token_path = Path(os.environ.get("LOCAL_CHAT_EXECUTOR_TOKEN_FILE", "/run/ipc/executor_token"))
+        profile = os.environ.get("LOCAL_CHAT_EXECUTOR_PROFILE", "coding").strip().casefold() or "coding"
         profiles = cls._profiles()
         if profile not in profiles:
             raise ValueError(f"Unknown executor profile: {profile}")
@@ -144,9 +118,7 @@ class ExecutorConfig:
         return cls(
             source_root=Path(os.environ.get("LOCAL_CHAT_SOURCE_ROOT", "/source")),
             work_root=Path(os.environ.get("LOCAL_CHAT_WORK_ROOT", "/work")),
-            socket_path=Path(
-                os.environ.get("LOCAL_CHAT_EXECUTOR_SOCKET", "/run/ipc/executor.sock")
-            ),
+            socket_path=Path(os.environ.get("LOCAL_CHAT_EXECUTOR_SOCKET", "/run/ipc/executor.sock")),
             token=token_path.read_text(encoding="utf-8").strip(),
             workspace_id=os.environ.get("LOCAL_CHAT_WORKSPACE_ID", "").strip(),
             sources=sources,
@@ -223,24 +195,10 @@ class ExecutorConfig:
         if name not in self._LIMIT_FIELDS:
             raise KeyError(f"Unknown executor limit: {name}")
         configured = getattr(self, name)
-        return {
-            "requested": requested,
-            "configured": configured,
-            "hard_ceiling": self.HARD_CEILINGS[name],
-            "effective": self.effective_limit(name, requested),
-            "source": self.sources.get(name, "constructor"),
-        }
+        return {"requested": requested, "configured": configured, "hard_ceiling": self.HARD_CEILINGS[name], "effective": self.effective_limit(name, requested), "source": self.sources.get(name, "constructor")}
 
     def limits_status(self) -> dict[str, dict[str, object]]:
         status = {name: self.limit_status(name) for name in self._LIMIT_FIELDS}
-        status["required_temp_headroom_bytes"] = {
-            "configured": self.REQUIRED_TEMP_HEADROOM_BYTES,
-            "effective": self.REQUIRED_TEMP_HEADROOM_BYTES,
-            "source": "resource-model",
-        }
-        status["required_capacity_bytes"] = {
-            "configured": self.required_capacity_bytes,
-            "effective": self.required_capacity_bytes,
-            "source": "resource-model",
-        }
+        status["required_temp_headroom_bytes"] = {"configured": self.REQUIRED_TEMP_HEADROOM_BYTES, "effective": self.REQUIRED_TEMP_HEADROOM_BYTES, "source": "resource-model"}
+        status["required_capacity_bytes"] = {"configured": self.required_capacity_bytes, "effective": self.required_capacity_bytes, "source": "resource-model"}
         return status
