@@ -48,7 +48,7 @@ The executor creates a manifest from its current staging baseline. The manifest 
 
 ## Security boundary
 
-The executor container is network-disabled, non-root, capability-restricted, and backed by a read-only source mount plus bounded writable staging. Bash is non-interactive and subject to command, stdin, output, timeout, process, and environment controls. The gateway does not receive a workspace mount. Host publication is unavailable to the executor by design.
+The **executor cannot publish**. It is network-disabled, non-root, capability-restricted, and backed by a read-only source mount plus bounded writable staging. Bash is non-interactive and subject to command, stdin, output, timeout, process, and environment controls. The gateway does not receive a workspace mount. Host publication is unavailable to the executor by design.
 
 ## Current versus historical design
 

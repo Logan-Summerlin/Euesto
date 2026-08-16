@@ -16,11 +16,16 @@ def test_public_tool_documentation_matches_registry() -> None:
 
 def test_limits_document_active_coding_defaults_and_ceilings() -> None:
     docs = (ROOT / "docs" / "LIMITS.md").read_text(encoding="utf-8")
+
+    def documented(value: int) -> bool:
+        raw = str(value)
+        return raw in docs or f"{value:,}" in docs
+
     config = ExecutorConfig._profiles()["coding"]
     for name, value in config.items():
-        assert str(value) in docs, name
+        assert documented(value), name
     for name, value in ExecutorConfig.HARD_CEILINGS.items():
-        assert str(value) in docs, name
+        assert documented(value), name
 
 
 def test_documentation_keeps_publication_boundary_explicit() -> None:
