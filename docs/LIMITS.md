@@ -4,24 +4,22 @@ Limits below describe the current `coding` executor profile. `executor/config.py
 
 | Area | Coding default | Hard maximum | Notes |
 |---|---:|---:|---|
-| `read` bytes | 1,000,000 | 8,000,000 | Requested value is clamped to effective limit. |
-| `write` bytes | 1,000,000 | 8,000,000 | UTF-8 text content. |
-| `edit` target | 2,000,000 | 16,000,000 | Target file size. |
-| `edit` result | 2,000,000 | 16,000,000 | Resulting file size. |
-| Bash command | 1,000,000 bytes | 1,000,000 bytes | Hard ceiling equals default. |
-| Bash stdin | 1,000,000 bytes | 8,000,000 bytes | Schema also bounds stdin to 8,000,000 characters. |
-| Bash output | 1,000,000 bytes | 8,000,000 bytes | Output is bounded/truncatable. |
-| Bash timeout | 300 s | 900 s | Non-interactive process group. |
-| `grep` results | 500 | 5,000 | Separate scan-byte budget. |
-| `grep` scan | 64 MiB | 256 MiB | Search work budget. |
-| `find` results | 500 | 2,000 | Depth also capped at 20 by schema. |
-| `ls` results | 500 | 2,000 | Immediate directory only. |
-| Tool arguments | 512 KiB | 512 KiB | Shared protocol-level request bound. |
-| Staged files | 300,000 | 1,000,000 | Shared staging resource. |
-| Staging bytes | 2.5 GB (2,500,000,000 bytes) | 4 GB | Must fit the work-volume resource model. |
-| Checkpoint bytes | 2.5 GB (2,500,000,000 bytes) | 3.5 GB | Shares work-volume capacity with staging/temp headroom. |
-| Work capacity | 8 GB configured | 8 GB configured ceiling | Actual container capacity must be greater than configured capacity and required headroom. |
-| Temporary headroom | 1 GB | 1 GB | Reserved by the resource model. |
+| `read` bytes | 1,000,000 | 8,000,000 | Exact byte values: 1,000,000 / 8,000,000. Requested value is clamped to effective limit. |
+| `write` bytes | 1,000,000 | 8,000,000 | Exact byte values: 1,000,000 / 8,000,000. UTF-8 text content. |
+| `edit` target | 2,000,000 | 16,000,000 | Exact byte values: 2,000,000 / 16,000,000. Target file size. |
+| `edit` result | 2,000,000 | 16,000,000 | Exact byte values: 2,000,000 / 16,000,000. Resulting file size. |
+| Bash command | 1,000,000 bytes | 1,000,000 bytes | Exact byte values: 1,000,000 / 1,000,000. Hard ceiling equals default. |
+| Bash stdin | 1,000,000 bytes | 8,000,000 bytes | Exact byte values: 1,000,000 / 8,000,000. Schema also bounds stdin to 8,000,000 characters. |
+| Bash output | 1,000,000 bytes | 8,000,000 bytes | Exact byte values: 1,000,000 / 8,000,000. Output is bounded/truncatable. |
+| Bash timeout | 300 s | 900 s | Exact seconds: 300 / 900. Non-interactive process group. |
+| `grep` results | 500 | 5,000 | Exact counts: 500 / 5,000. Separate scan-byte budget. |
+| `grep` scan | 64 MiB (64,000,000 bytes) | 256 MiB (256,000,000 bytes) | Exact decimal byte values: 64,000,000 / 256,000,000. Search work budget. |
+| `find` results | 500 | 2,000 | Exact counts: 500 / 2,000. Depth also capped at 20 by schema. |
+| `ls` results | 500 | 2,000 | Exact counts: 500 / 2,000. Immediate directory only. |
+| Staged files | 300,000 | 1,000,000 | Exact counts: 300,000 / 1,000,000. Shared staging resource. |
+| Staging bytes | 2.5 GB (2,500,000,000 bytes) | 4 GB (4,000,000,000 bytes) | Exact decimal byte values: 2,500,000,000 / 4,000,000,000. Must fit the work-volume resource model. |
+| Checkpoint bytes | 2.5 GB (2,500,000,000 bytes) | 3.5 GB (3,500,000,000 bytes) | Exact decimal byte values: 2,500,000,000 / 3,500,000,000. Shares work-volume capacity with staging/temp headroom. |
+| Work capacity | 8 GB (8,000,000,000 bytes) | 8 GB (8,000,000,000 bytes) | Exact configured/ceiling value: 8,000,000,000 bytes. Actual container capacity must be greater than configured capacity and required headroom. |
 
 ## Profiles
 
