@@ -47,7 +47,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: pytest
       - name: Ruff
-        run: ruff check .
+        run: ruff check . --output-format=github
       - name: Python compile check
         run: python -m compileall -q app.py src server shared executor tests scripts
       - name: QML lint
