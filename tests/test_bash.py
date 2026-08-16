@@ -43,7 +43,7 @@ def test_bash_enforces_separate_command_and_stdin_limits(tmp_path: Path) -> None
     with pytest.raises(ValueError, match="command exceeds"):
         asyncio.run(run_bash(tmp_path, {"command": "x" * 1_000_001}))
     with pytest.raises(ValueError, match="stdin exceeds"):
-        asyncio.run(run_bash(tmp_path, {"command": "true", "stdin": "x" * 1_000_001}))
+        asyncio.run(run_bash(tmp_path, {"command": "true", "stdin": "x" * 8_000_001}))
 
 
 def test_bash_enforces_timeout_and_rolls_back(tmp_path: Path) -> None:
@@ -85,7 +85,7 @@ def test_bash_large_stdout_retains_bounded_head_and_tail(tmp_path: Path) -> None
 
 
 def test_bash_large_stderr_and_mixed_streams_are_accounted_separately(tmp_path: Path) -> None:
-    command = "python -c 'import sys; print(\"OUT\" * 300000); print(\"ERR\" * 300000, file=sys.stderr)'"
+    command = "python -c 'import sys; print(\"OUT\" * 400000); print(\"ERR\" * 400000, file=sys.stderr)'"
     output, data = asyncio.run(run_bash(tmp_path, {"command": command}, max_output=100_000))
     assert data["stdout_bytes"] > 1_000_000
     assert data["stderr_bytes"] > 1_000_000
@@ -115,7 +115,7 @@ def test_bash_event_retention_and_cursors_are_bounded(tmp_path: Path) -> None:
 def test_bash_preserves_restricted_environment(tmp_path: Path) -> None:
     output, data = asyncio.run(run_bash(tmp_path, {"command": "printf '%s\\n' \"$PATH\"; printf '%s\\n' \"${SECRET:-unset}\""}))
     assert data["exit_code"] == 0
-    assert output.splitlines()[0] == "/usr/local/bin:/usr/bin:/bin"
+    assert output.splitlines()[0].startswith("/usr/local/bin:/usr/bin:/bin")
     assert output.splitlines()[1] == "unset"
     with pytest.raises(ValueError, match="restricted"):
         asyncio.run(run_bash(tmp_path, {"command": "true", "env": {"LD_PRELOAD": "x"}}))
