@@ -139,16 +139,10 @@ class PublicationWorker(QThread):
         except Exception as exc:
             self.failed.emit(f"Unexpected publication error: {exc}"); return
         result: dict[str, Any] = {"completed_paths": list(published.completed_paths), "checkpoint_id": published.checkpoint_id}
-        # Publication must reconcile the executor baseline before the handoff is
-        # considered complete. The staging-inspect endpoint asks the executor to
-        # reconcile a host publication and then reports its resulting state.
         reseed_client = self.reseed_client or _last_gateway_client
         try:
             if reseed_client:
-                inspection = reseed_client.inspect_staging(self.manifest.workspace_id)
-                data = inspection.get("data") if isinstance(inspection, dict) else None
-                if not isinstance(data, dict) or bool(data.get("unpublished_changes")):
-                    raise GatewayError("Published workspace still has unpublished staging changes.")
+                reseed_client.mark_staging_published(self.manifest)
                 result["reseeded"] = True
             else:
                 result["reseeded"] = False

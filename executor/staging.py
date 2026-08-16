@@ -6,9 +6,11 @@ import os
 import shutil
 import stat
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from shared.tools import PublishOperation
 from .config import ExecutorConfig
 from .paths import UnsafePath, assert_unique_paths, is_secret_path, is_staging_excluded
 
@@ -81,7 +83,6 @@ def seed_staging(config: ExecutorConfig) -> Snapshot:
             relative_paths.append(relative)
             (work / relative).mkdir(parents=True, exist_ok=True)
         dirnames[:] = retained_dirs
-
         for filename in sorted(filenames):
             path = current_path / filename
             relative = path.relative_to(source).as_posix()
@@ -116,11 +117,11 @@ def seed_staging(config: ExecutorConfig) -> Snapshot:
 
 
 def snapshot_current_staging(work_root: Path) -> Snapshot:
-    """Create a new publication baseline from the current staged workspace.
+    """Create a baseline from the entire staged workspace.
 
-    This does not copy or discard files. It records the exact executor state that
-    was just published, so those files remain available for subsequent agent turns
-    without being treated as new host changes.
+    This helper is retained for callers that intentionally want a complete
+    snapshot; publication uses ``advance_published_staging`` so unrelated staged
+    changes are never implicitly marked as published.
     """
     current = visible_files(work_root)
     hashes = {path: value[0] for path, value in current.items()}
@@ -129,6 +130,54 @@ def snapshot_current_staging(work_root: Path) -> Snapshot:
     snapshot = Snapshot(str(uuid.uuid4()), hashes, sum(sizes.values()), sizes, modes)
     _write_snapshot(work_root, snapshot)
     return snapshot
+
+
+def advance_published_staging(
+    work_root: Path,
+    snapshot: Snapshot,
+    operations: Sequence[PublishOperation],
+) -> Snapshot:
+    """Advance the baseline only for operations successfully published to the host.
+
+    The executor keeps the staged files for subsequent agent turns. Every
+    published operation must still match its manifest hash/mode; otherwise the
+    publication handoff is rejected instead of accidentally marking a newer
+    staged mutation as published. Unrelated staged changes remain relative to
+    the previous baseline and therefore continue to block Auto mode.
+    """
+    current = visible_files(work_root)
+    hashes = dict(snapshot.hashes)
+    sizes = dict(snapshot.sizes)
+    modes = dict(snapshot.modes)
+    for operation in operations:
+        value = current.get(operation.path)
+        if operation.operation == "delete":
+            if value is not None:
+                raise RuntimeError(
+                    f"Published delete no longer matches staging: {operation.path}"
+                )
+            hashes.pop(operation.path, None)
+            sizes.pop(operation.path, None)
+            modes.pop(operation.path, None)
+            continue
+        if value is None or value[0] != operation.staged_sha256 or (
+            operation.staged_mode is not None and value[2] != operation.staged_mode
+        ):
+            raise RuntimeError(
+                f"Published staging no longer matches the manifest: {operation.path}"
+            )
+        hashes[operation.path] = value[0]
+        sizes[operation.path] = value[1]
+        modes[operation.path] = value[2]
+    updated = Snapshot(
+        str(uuid.uuid4()),
+        hashes,
+        sum(sizes.values()),
+        sizes,
+        modes,
+    )
+    _write_snapshot(work_root, updated)
+    return updated
 
 
 def _write_snapshot(work: Path, snapshot: Snapshot) -> None:
@@ -173,7 +222,6 @@ def visible_files(root: Path) -> dict[str, tuple[str, int, int]]:
                 continue
             retained_dirs.append(dirname)
         dirnames[:] = retained_dirs
-
         for filename in sorted(filenames):
             path = current_path / filename
             relative = path.relative_to(root).as_posix()
