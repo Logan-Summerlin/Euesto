@@ -49,27 +49,17 @@ def test_limits_cannot_exceed_hard_ceilings(tmp_path: Path) -> None:
             _config(tmp_path, **{name: ceiling + 1})
 
 
-def test_checkpoint_and_staging_limits_are_consistent(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="cover the maximum staged content"):
-        _config(tmp_path, max_checkpoint_bytes=500, max_staging_bytes=501)
+def test_staging_checkpoint_and_headroom_must_fit_together(tmp_path: Path) -> None:
+    config = _config(tmp_path, max_checkpoint_bytes=500, max_staging_bytes=501)
+    assert config.required_capacity_bytes == 1_000_000_001
     with pytest.raises(ValueError, match="fit strictly below"):
-        _config(
-            tmp_path,
-            max_checkpoint_bytes=3_500_000_000,
-            max_staging_bytes=3_500_000_000,
-        )
+        _config(tmp_path, max_checkpoint_bytes=3_500_000_000, max_staging_bytes=3_500_000_000)
 
 
 def test_effective_limit_reports_requested_configured_and_hard_values(tmp_path: Path) -> None:
     config = _config(tmp_path, max_read_bytes=1_000_000)
     status = config.limit_status("max_read_bytes", requested=2_000_000)
-    assert status == {
-        "requested": 2_000_000,
-        "configured": 1_000_000,
-        "hard_ceiling": 8_000_000,
-        "effective": 1_000_000,
-        "source": "constructor",
-    }
+    assert status == {"requested": 2_000_000, "configured": 1_000_000, "hard_ceiling": 8_000_000, "effective": 1_000_000, "source": "constructor"}
     assert config.effective_limit("max_read_bytes", 100_000) == 100_000
 
 
@@ -80,7 +70,6 @@ def test_environment_profile_and_overrides(monkeypatch: pytest.MonkeyPatch, tmp_
     monkeypatch.setenv("LOCAL_CHAT_WORKSPACE_ID", "env-workspace")
     monkeypatch.setenv("LOCAL_CHAT_EXECUTOR_PROFILE", "small")
     monkeypatch.setenv("LOCAL_CHAT_MAX_READ_BYTES", "123456")
-
     config = ExecutorConfig.from_environment()
     assert config.workspace_id == "env-workspace"
     assert config.max_read_bytes == 123_456
