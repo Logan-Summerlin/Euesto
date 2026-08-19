@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Property, Slot
+from PySide6.QtCore import Property, QTimer, Slot
 from PySide6.QtGui import QIcon
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuickControls2 import QQuickStyle
@@ -21,26 +21,68 @@ def resource_path(relative: str) -> Path:
 class DesktopBridge(BaseDesktopBridge):
     """Desktop bridge with a concrete, persistent investigation-model setting."""
 
-    @Property("QVariantList", notify=BaseDesktopBridge.modelsChanged)
-    def models(self) -> list[dict[str, object]]:
-        values = list(super().models)
-        if not any(item.get("id") == DEFAULT_INVESTIGATION_MODEL for item in values):
-            values.append(
-                {
-                    "id": DEFAULT_INVESTIGATION_MODEL,
-                    "label": "MiMo-V2.5",
-                    "description": "Xiaomi MiMo-V2.5",
-                    "contextLength": 1_000_000,
-                    "price": 0.21,
-                    "rank": None,
-                    "year": 2026,
-                    "favorite": False,
-                    "recent": False,
-                    "reasoning": True,
-                    "textCompatible": True,
-                }
-            )
-        return values
+    _MIMO_MODEL = {
+        "id": DEFAULT_INVESTIGATION_MODEL,
+        "label": "MiMo-V2.5",
+        "description": "Xiaomi MiMo-V2.5",
+        "contextLength": 1_000_000,
+        "price": 0.21,
+        "rank": None,
+        "year": 2026,
+        "favorite": False,
+        "recent": False,
+        "reasoning": True,
+        "textCompatible": True,
+    }
+
+    def _reload_models(self) -> None:
+        # Keep the base Qt Property intact. Re-declaring the `models` Property in
+        # this QObject subclass creates a second meta-object property with the
+        # same name, which makes QML bindings/dialogs unreliable. Extend the
+        # underlying list instead so the inherited property remains canonical.
+        super()._reload_models()
+        if not any(item.get("id") == DEFAULT_INVESTIGATION_MODEL for item in self._models):
+            self._models.append(dict(self._MIMO_MODEL))
+            self.modelsChanged.emit()
+
+    @Slot(str, bool, float, int, int, result="QVariantList")
+    def filteredModels(
+        self,
+        query: str,
+        text_only: bool,
+        max_price: float,
+        max_rank: int,
+        year: int,
+    ) -> list[dict[str, object]]:
+        query = query.strip().casefold()
+        results: list[dict[str, object]] = []
+        for item in self._models:
+            if text_only and not bool(item.get("textCompatible", False)):
+                continue
+            haystack = " ".join(
+                str(item.get(key) or "")
+                for key in ("id", "label", "description")
+            ).casefold()
+            if query not in haystack:
+                continue
+            price = item.get("price")
+            if max_price >= 0 and (price is None or float(price) > max_price):
+                continue
+            rank = item.get("rank")
+            if max_rank > 0 and (rank is None or int(rank) > max_rank):
+                continue
+            item_year = item.get("year")
+            if year > 0 and item_year != year:
+                continue
+            results.append(item)
+        return results
+
+    @Slot()
+    def loadPermissionRules(self) -> None:
+        # The base implementation performs a synchronous gateway request. The
+        # settings dialog calls this while it is being opened, so defer it to
+        # the event loop rather than blocking the UI before `Dialog.open()`.
+        QTimer.singleShot(0, super().loadPermissionRules)
 
     @Property(str, notify=BaseDesktopBridge.settingsChanged)
     def investigationModel(self) -> str:
@@ -65,10 +107,9 @@ class DesktopBridge(BaseDesktopBridge):
 
 
 def main() -> int:
-    # Keep the legacy Basic initialization for compatibility with the existing
-    # QML packaging contract, then use Fusion so combo-box scrollbars remain
-    # persistent and directly mouse-accessible.
-    QQuickStyle.setStyle("Basic")
+    # Set the style once before QApplication is created. Multiple style changes
+    # during startup are undefined and can produce inconsistent control input
+    # handling across Qt Quick Controls.
     QQuickStyle.setStyle("Fusion")
     app = QApplication(sys.argv)
     app.setApplicationName("Local OpenRouter Chat")
