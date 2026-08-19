@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
-from app import DesktopBridge
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault("QT_QUICK_BACKEND", "software")
+
+import pytest
+
+try:
+    from app import DesktopBridge
+except ImportError as exc:
+    pytest.skip(f"Desktop Qt bridge unavailable: {exc}", allow_module_level=True)
+
 from shared.requests import DEFAULT_INVESTIGATION_MODEL
 from src.storage import Storage
 
@@ -21,7 +31,7 @@ def test_default_investigation_model_is_mimo_v25() -> None:
     assert DEFAULT_INVESTIGATION_MODEL == "xiaomi/mimo-v2.5"
 
 
-def test_desktop_bridge_has_one_investigation_model_property() -> None:
+def test_desktop_bridge_does_not_redeclare_investigation_model_property() -> None:
     meta = DesktopBridge.staticMetaObject
     matches = [
         index
