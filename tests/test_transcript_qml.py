@@ -111,14 +111,10 @@ ApplicationWindow {
 
 
 def _transcript_repeater(transcript: QObject) -> QObject:
-    """Find the actual QML Repeater; its delegates are not QObject children of Transcript."""
-    repeaters = [
-        child
-        for child in transcript.findChildren(QObject)
-        if child.metaObject().className() == "QQuickRepeater"
-    ]
-    assert len(repeaters) == 1
-    return repeaters[0]
+    """Find the QML Repeater by stable objectName instead of its Qt class name."""
+    repeater = transcript.findChild(QObject, "transcriptRepeater")
+    assert repeater is not None
+    return repeater
 
 
 def _message_bodies(transcript: QObject, count: int) -> list[QObject]:
