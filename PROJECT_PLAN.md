@@ -4,7 +4,7 @@ This document is a status-oriented roadmap. It is not the authoritative architec
 
 ## Completed
 
-- Seven-tool model-facing executor API: `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`.
+- Seven-tool model-facing executor API: `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`, plus scoped read-only `investigate_repository` delegation.
 - Plan/Agent capability separation with Plan mutation denial enforced in code.
 - Incremental file inspection and localized editing for larger files.
 - Bounded Bash execution, output, stdin, command time, process cleanup, and rollback.
@@ -30,7 +30,7 @@ This document is a status-oriented roadmap. It is not the authoritative architec
 ## Deferred
 
 - Broader plugin/MCP discovery and credential delegation.
-- Multi-agent orchestration.
+- Independent multi-agent orchestration (scoped read-only investigation delegation is supported).
 - Unrestricted host tools or direct host shell access.
 - Provider-independent cloud synchronization.
 

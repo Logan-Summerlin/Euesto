@@ -99,3 +99,8 @@ Every result contains `request_id`, `ok`, `output`, `data`, `error_code`, `trunc
 | `ls` | yes | yes | no |
 
 The public seven-tool API is unchanged by this documentation. Check `shared/tools.py` and `server/openrouter/agent.py` when modifying schemas or dispatch.
+
+
+## investigate_repository
+
+Agent mode may use `investigate_repository` with `{query, path_hint?}` to delegate a bounded, read-only repository investigation. The configured Settings model is required; there is no per-call override. The nested loop reuses the parent executor session and budget, is limited to `read`, `grep`, `find`, and `ls`, and returns only `summary`, `files_examined`, and `truncated`. Its allowance is 50% of the parent run remaining cost at call time and no more than two calls are accepted per turn. Nested `subagent.*` events remain in the journal while the desktop displays the parent tool as a flat entry.

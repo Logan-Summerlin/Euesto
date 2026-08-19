@@ -55,3 +55,8 @@ pyside6-qmllint qml/Main.qml qml/Sidebar.qml qml/Transcript.qml qml/Composer.qml
 ```
 
 Unit tests must not require provider credentials. Container/security checks must continue to verify non-root execution, blocked egress, mounts, resource limits, traversal/link rejection, staging recovery, and exact tool-mode boundaries.
+
+
+## Scoped investigation
+
+Read-only repository investigation delegation is in scope through `investigate_repository`. It uses the parent executor session and budget, has no mutation, command, or publication authority, and is limited to two calls per turn. General multi-agent orchestration, independent sessions, and concurrent staging remain out of scope.

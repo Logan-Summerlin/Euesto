@@ -17,12 +17,23 @@ def openrouter_tools(enabled: Mapping[str, bool]) -> list[dict[str, Any]]:
     return tools
 
 TOOL_PROFILE = "pi-compatible"
-TOOL_NAMES = frozenset({"read", "write", "edit", "bash", "grep", "find", "ls"})
+TOOL_NAMES = frozenset({"read", "write", "edit", "bash", "grep", "find", "ls", "investigate_repository"})
 PLAN_TOOLS = frozenset({"read", "grep", "find", "ls"})
+INVESTIGATION_TOOLS = frozenset({"investigate_repository"})
 AGENT_TOOLS = TOOL_NAMES
-READ_TOOLS = PLAN_TOOLS
+READ_TOOLS = PLAN_TOOLS | INVESTIGATION_TOOLS
 MUTATION_TOOLS = frozenset({"write", "edit", "bash"})
 MAX_TOOL_ARGUMENT_BYTES = 512_000
+
+@dataclass(frozen=True, slots=True)
+class InvestigationResult:
+    summary: str
+    files_examined: tuple[str, ...] = ()
+    truncated: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"summary": self.summary, "files_examined": list(self.files_examined), "truncated": self.truncated}
+
 
 @dataclass(frozen=True, slots=True)
 class ToolRequest:

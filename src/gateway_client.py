@@ -197,12 +197,12 @@ class GatewayClient:
         with self._lock:
             self._active_run_id = None
 
-    def stream_agent(self, *, api_key: str, model: str, messages: Sequence[dict[str, Any]], mode: str, workspace_id: str, approval_policy: str = "prompt", stop_event: threading.Event | None = None, session_id: str | None = None, context_limit_tokens: int = 100_000, skills: Sequence[dict[str, Any]] = (), workspace_config: dict[str, Any] | None = None, max_iterations: int = 101, max_tool_calls: int = 100, max_wall_seconds: int = 900, max_cost: float = 1.0, provider_preferences: dict[str, Any] | None = None) -> Iterator[EventEnvelope]:
+    def stream_agent(self, *, api_key: str, model: str, messages: Sequence[dict[str, Any]], mode: str, workspace_id: str, approval_policy: str = "prompt", stop_event: threading.Event | None = None, session_id: str | None = None, context_limit_tokens: int = 100_000, skills: Sequence[dict[str, Any]] = (), workspace_config: dict[str, Any] | None = None, investigation_model_id: str | None = None, max_iterations: int = 101, max_tool_calls: int = 100, max_wall_seconds: int = 900, max_cost: float = 1.0, provider_preferences: dict[str, Any] | None = None) -> Iterator[EventEnvelope]:
         self.configure_openrouter_key(api_key)
         payload = {
             "model": model, "messages": _public_messages(messages), "mode": mode, "workspace_id": workspace_id,
             "approval_policy": approval_policy, "session_id": session_id, "context_limit_tokens": context_limit_tokens,
-            "skills": [dict(item) for item in skills], "workspace_config": dict(workspace_config or {}),
+            "skills": [dict(item) for item in skills], "workspace_config": dict(workspace_config or {}), "investigation_model_id": investigation_model_id,
             "max_iterations": max_iterations, "max_tool_calls": max_tool_calls, "max_wall_seconds": max_wall_seconds,
             "max_cost": max_cost, "provider_preferences": dict(provider_preferences or {}),
         }
