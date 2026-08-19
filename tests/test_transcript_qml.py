@@ -200,7 +200,9 @@ ApplicationWindow {
     assert window is not None, [error.toString() for error in component.errors()]
     QTest.qWait(100)
 
-    bodies = window.findChildren(QObject, "transcriptMessageBody")
+    transcript = window.findChild(QObject, "transcriptRoot")
+    assert transcript is not None
+    bodies = transcript.findChildren(QObject, "transcriptMessageBody")
     assert len(bodies) == 2
     before = float(bodies[-1].property("contentHeight"))
 
@@ -209,7 +211,7 @@ ApplicationWindow {
     backend.model.replace(updated)
     QTest.qWait(150)
 
-    bodies = window.findChildren(QObject, "transcriptMessageBody")
+    bodies = transcript.findChildren(QObject, "transcriptMessageBody")
     after = bodies[-1]
     content_height = float(after.property("contentHeight"))
     assert content_height > before
@@ -283,7 +285,7 @@ ApplicationWindow {
         viewport.setProperty("contentY", maximum * fraction)
         QTest.qWait(15)
 
-    bodies = window.findChildren(QObject, "transcriptMessageBody")
+    bodies = transcript.findChildren(QObject, "transcriptMessageBody")
     assert len(bodies) == len(changed)
     assert all(float(body.property("height")) > 0 for body in bodies)
     assert float(viewport.property("contentHeight")) > initial_height
