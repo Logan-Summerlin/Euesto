@@ -10,9 +10,10 @@ from executor.app import ExecutorService
 from executor.config import ExecutorConfig
 from executor.tools import bash, edit, find, grep, ls, read, write
 from server.openrouter.agent import LOCAL_TOOL_SCHEMAS
-from shared.tools import AGENT_TOOLS, PLAN_TOOLS, TOOL_NAMES, ToolRequest
+from shared.tools import AGENT_TOOLS, INVESTIGATION_TOOLS, PLAN_TOOLS, READ_TOOLS, TOOL_NAMES, ToolRequest
 
 CANONICAL_TOOLS = ("read", "write", "edit", "bash", "grep", "find", "ls")
+MODEL_TOOL_NAMES = CANONICAL_TOOLS + ("investigate_repository",)
 READ_ONLY_TOOLS = frozenset({"read", "grep", "find", "ls"})
 LEGACY_TOOL_NAMES = {"read_file", "write_file", "edit_file", "apply_patch", "run_command", "list_files", "search_files", "move", "copy", "checkpoint", "restore"}
 
@@ -36,18 +37,23 @@ def test_executor_exports_exactly_the_canonical_tools() -> None:
 
 def test_public_schema_and_shared_contract_have_one_vocabulary() -> None:
     schema_names = tuple(item["function"]["name"] for item in LOCAL_TOOL_SCHEMAS)
-    assert schema_names == CANONICAL_TOOLS
-    assert TOOL_NAMES == frozenset(CANONICAL_TOOLS)
+    assert schema_names == MODEL_TOOL_NAMES
+    assert TOOL_NAMES == frozenset(MODEL_TOOL_NAMES)
     assert PLAN_TOOLS == READ_ONLY_TOOLS
+    assert READ_TOOLS == READ_ONLY_TOOLS | INVESTIGATION_TOOLS
     assert AGENT_TOOLS == TOOL_NAMES
     assert not LEGACY_TOOL_NAMES.intersection(TOOL_NAMES)
 
 
 def test_each_schema_has_a_matching_executor_callable() -> None:
     implementations = {name: globals()[name] for name in CANONICAL_TOOLS}
-    for name, schema in _schema_map().items():
+    for name in CANONICAL_TOOLS:
+        schema = _schema_map()[name]
         assert callable(implementations[name])
         assert schema["parameters"]["additionalProperties"] is False
+    investigation = _schema_map()["investigate_repository"]
+    assert investigation["parameters"]["additionalProperties"] is False
+    assert set(investigation["parameters"]["properties"]) == {"query", "path_hint"}
 
 
 def test_tool_schemas_match_executor_argument_names() -> None:
@@ -72,6 +78,7 @@ def test_mode_boundaries_are_enforced() -> None:
         if name not in READ_ONLY_TOOLS:
             with pytest.raises(ValueError, match="Plan mode"):
                 ToolRequest("request", "run", name, "plan", {})
+    ToolRequest("request", "run", "investigate_repository", "agent", {})
     for name in CANONICAL_TOOLS:
         assert ToolRequest("request", "run", name, "agent", {}).tool == name
 
