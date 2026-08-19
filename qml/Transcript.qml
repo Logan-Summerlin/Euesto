@@ -124,7 +124,7 @@ Rectangle {
             Repeater {
                 id: transcriptRepeater
                 objectName: "transcriptRepeater"
-                model: backend.transcriptModel
+                model: transcriptModel
 
                 delegate: Rectangle {
                     id: card
