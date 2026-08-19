@@ -16,5 +16,5 @@ def test_investigation_model_setting_round_trips(tmp_path: Path) -> None:
         storage.close()
 
 
-def test_missing_investigation_model_has_a_safe_default() -> None:
-    assert DEFAULT_INVESTIGATION_MODEL == "deepseek/deepseek-chat-v3-0324"
+def test_default_investigation_model_is_mimo_v25() -> None:
+    assert DEFAULT_INVESTIGATION_MODEL == "xiaomi/mimo-v2.5"
