@@ -30,8 +30,8 @@ class FakeBackend(QObject):
         super().__init__()
         self.model = TranscriptListModel(self)
 
-    @Property(QObject, constant=True)
-    def transcriptModel(self) -> QObject:
+    @Property("QVariant", constant=True)
+    def transcriptModel(self) -> object:
         return self.model
 
     @Property(str, notify=stateChanged)
