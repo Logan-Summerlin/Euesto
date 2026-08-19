@@ -9,6 +9,7 @@ from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtWidgets import QApplication
 
 from src.qml_backend import DesktopBridge
+from shared.requests import DEFAULT_INVESTIGATION_MODEL
 
 
 def resource_path(relative: str) -> Path:
@@ -17,7 +18,9 @@ def resource_path(relative: str) -> Path:
 
 
 def main() -> int:
-    QQuickStyle.setStyle("Basic")
+    # Fusion gives Qt Quick Controls a persistent, mouse-accessible scrollbar in
+    # combo-box popups instead of the easy-to-miss overlay treatment used by Basic.
+    QQuickStyle.setStyle("Fusion")
     app = QApplication(sys.argv)
     app.setApplicationName("Local OpenRouter Chat")
     app.setApplicationDisplayName("Local OpenRouter Chat")
@@ -26,6 +29,8 @@ def main() -> int:
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
     backend = DesktopBridge()
+    if not backend.investigationModel:
+        backend.saveInvestigationModel(DEFAULT_INVESTIGATION_MODEL)
     engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty("backend", backend)
     qml_root = resource_path("qml")
