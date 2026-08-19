@@ -107,7 +107,7 @@ def main() -> int:
     # be converted to a generic QObject QVariant by the QML boundary. Expose the
     # persistent model directly as a context property so Repeater receives the
     # actual QAbstractListModel interface and its row/reset signals.
-    engine.rootContext().setContextProperty("transcriptModel", backend._transcript_model)
+    engine.rootContext().setContextProperty("transcriptModel", backend.transcriptModel)
     qml_root = resource_path("qml")
     engine.addImportPath(str(qml_root))
     engine.load(str(qml_root / "Main.qml"))
