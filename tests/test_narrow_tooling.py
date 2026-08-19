@@ -5,7 +5,8 @@ import pytest
 from executor.tools.grep import grep
 from executor.tools.ls import ls
 from executor.tools.read import read
-from shared.tools import AGENT_TOOLS, PLAN_TOOLS, TOOL_NAMES, TOOL_PROFILE, ToolRequest
+from shared.tools import AGENT_TOOLS, INVESTIGATION_TOOLS, PLAN_TOOLS, TOOL_NAMES, TOOL_PROFILE, ToolRequest
+
 
 
 def test_read_rejects_out_of_range_lines_instead_of_empty_result(tmp_path: Path) -> None:
@@ -39,7 +40,9 @@ def test_grep_limits_files_considered_and_searched(tmp_path: Path) -> None:
 
 def test_canonical_tool_profile_is_exact() -> None:
     assert TOOL_PROFILE == "pi-compatible"
-    assert TOOL_NAMES == {"read", "write", "edit", "bash", "grep", "find", "ls"}
+    canonical_tools = {"read", "write", "edit", "bash", "grep", "find", "ls"}
+    assert canonical_tools <= TOOL_NAMES
+    assert TOOL_NAMES == canonical_tools | INVESTIGATION_TOOLS
     assert PLAN_TOOLS == {"read", "grep", "find", "ls"}
     assert AGENT_TOOLS == TOOL_NAMES
     for name in TOOL_NAMES:
