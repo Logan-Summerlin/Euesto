@@ -21,6 +21,27 @@ def resource_path(relative: str) -> Path:
 class DesktopBridge(BaseDesktopBridge):
     """Desktop bridge with a concrete, persistent investigation-model setting."""
 
+    @Property("QVariantList", notify=BaseDesktopBridge.modelsChanged)
+    def models(self) -> list[dict[str, object]]:
+        values = list(super().models)
+        if not any(item.get("id") == DEFAULT_INVESTIGATION_MODEL for item in values):
+            values.append(
+                {
+                    "id": DEFAULT_INVESTIGATION_MODEL,
+                    "label": "MiMo-V2.5",
+                    "description": "Xiaomi MiMo-V2.5",
+                    "contextLength": 1_000_000,
+                    "price": 0.21,
+                    "rank": None,
+                    "year": 2026,
+                    "favorite": False,
+                    "recent": False,
+                    "reasoning": True,
+                    "textCompatible": True,
+                }
+            )
+        return values
+
     @Property(str, notify=BaseDesktopBridge.settingsChanged)
     def investigationModel(self) -> str:
         return self.storage.get_setting(
@@ -31,8 +52,6 @@ class DesktopBridge(BaseDesktopBridge):
     def saveInvestigationModel(self, model_id: str) -> None:
         selected = str(model_id or "").strip() or DEFAULT_INVESTIGATION_MODEL
         self.storage.set_setting("investigation_model_id", selected)
-        # Read the value back from SQLite so the UI is updated from the persisted
-        # value rather than assuming the write succeeded.
         persisted = self.storage.get_setting("investigation_model_id", "") or ""
         if persisted != selected:
             self.errorRequested.emit(
