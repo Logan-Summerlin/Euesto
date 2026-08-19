@@ -30,8 +30,12 @@ class FakeBackend(QObject):
         super().__init__()
         self.model = TranscriptListModel(self)
 
-    @Property("QVariant", constant=True)
-    def transcriptModel(self) -> object:
+    # Expose the QAbstractListModel as a QObject rather than a QVariant. QML's
+    # Repeater needs the model interface itself; wrapping it as QVariant can
+    # leave the Repeater with a zero-row model on the headless Qt runtime used
+    # by GitHub Actions.
+    @Property(QObject, constant=True)
+    def transcriptModel(self) -> QObject:
         return self.model
 
     @Property(str, notify=stateChanged)
