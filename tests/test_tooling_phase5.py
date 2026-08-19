@@ -1,15 +1,18 @@
 from pathlib import Path
 
 from server.openrouter.agent import LOCAL_TOOL_SCHEMAS
-from shared.tools import AGENT_TOOLS, PLAN_TOOLS, TOOL_NAMES
+from shared.tools import AGENT_TOOLS, INVESTIGATION_TOOLS, PLAN_TOOLS, TOOL_NAMES
 
 
-def test_public_tool_contract_is_exactly_seven_tools() -> None:
+
+def test_public_tool_contract_includes_canonical_tools_and_investigation() -> None:
     names = [item["function"]["name"] for item in LOCAL_TOOL_SCHEMAS]
-    assert names == ["read", "write", "edit", "bash", "grep", "find", "ls"]
+    canonical = ["read", "write", "edit", "bash", "grep", "find", "ls"]
+    assert names == canonical + ["investigate_repository"]
     assert TOOL_NAMES == set(names)
     assert PLAN_TOOLS == {"read", "grep", "find", "ls"}
     assert AGENT_TOOLS == TOOL_NAMES
+    assert INVESTIGATION_TOOLS == {"investigate_repository"}
 
 
 def test_mutation_schemas_allow_optional_hashes() -> None:
