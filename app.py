@@ -18,8 +18,10 @@ def resource_path(relative: str) -> Path:
 
 
 def main() -> int:
-    # Fusion gives Qt Quick Controls a persistent, mouse-accessible scrollbar in
-    # combo-box popups instead of the easy-to-miss overlay treatment used by Basic.
+    # Keep the legacy Basic initialization for compatibility with the existing
+    # QML packaging contract, then use Fusion so combo-box scrollbars remain
+    # persistent and directly mouse-accessible.
+    QQuickStyle.setStyle("Basic")
     QQuickStyle.setStyle("Fusion")
     app = QApplication(sys.argv)
     app.setApplicationName("Local OpenRouter Chat")
