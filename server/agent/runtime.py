@@ -12,7 +12,7 @@ from server.extensions.skills import render_skill_context
 from server.openrouter.agent import agent_turn
 from server.openrouter.errors import ProviderError
 from shared.permissions import PermissionDecision, PermissionRule, resolve_permission
-from shared.requests import AgentRunRequest
+from shared.requests import DEFAULT_INVESTIGATION_MODEL, AgentRunRequest
 from shared.tools import INVESTIGATION_TOOLS, MUTATION_TOOLS, PLAN_TOOLS, READ_TOOLS, ToolRequest, ToolResult
 from .approvals import ApprovalCoordinator
 from .budgets import RunBudget, requires_budget_approval, resolve_budget_profile
@@ -211,7 +211,7 @@ class AgentRuntime:
         count = self._investigation_calls.get(run_id, 0)
         self._investigation_calls[run_id] = count + 1
         if count >= 2:
-            result = ToolResult(request_id, False, output="At most two repository investigations are allowed per turn.", error_code="investigation.call_limit")
+            result = ToolResult(request_id, False, output=json.dumps({"error": "At most two repository investigations are allowed per turn.", "fallback": "Continue with the repository tools directly."}), error_code="investigation.call_limit", data={"fallback": "direct_tools"})
             messages.append({"role": "tool", "tool_call_id": request_id, "content": result.output})
             return False
         try:
@@ -219,8 +219,7 @@ class AgentRuntime:
             query = arguments.get("query") if isinstance(arguments, dict) else None
             if not isinstance(query, str) or not query.strip():
                 raise ValueError("query is required")
-            if not request.investigation_model_id:
-                raise RuntimeError("Investigation model is not configured")
+            model = str(request.investigation_model_id or DEFAULT_INVESTIGATION_MODEL)
             allowance = parent_budget.remaining_cost * 0.5
             if allowance < 0.01:
                 raise RuntimeError("parent budget is too small for an investigation")
@@ -231,10 +230,10 @@ class AgentRuntime:
                 prompt += "\nPath hints: " + ", ".join(str(x) for x in hints[:20])
             submessages = [{"role": "system", "content": "You are read-only. Use only read, grep, find, and ls. Never write, edit, execute commands, or publish."}, {"role": "user", "content": prompt}]
             files: set[str] = set()
-            await self.append(run_id, "subagent.started", {"parent_run_id": run_id, "parent_tool_call_id": request_id, "model": request.investigation_model_id})
+            await self.append(run_id, "subagent.started", {"parent_run_id": run_id, "parent_tool_call_id": request_id, "model": model})
             while True:
                 child.consume_iteration()
-                turn = await agent_turn(request.investigation_model_id, submessages, self._api_keys[run_id], "plan", request.provider_preferences, allowed_tools=set(PLAN_TOOLS))
+                turn = await agent_turn(model, submessages, self._api_keys[run_id], "plan", request.provider_preferences, allowed_tools=set(PLAN_TOOLS))
                 child.add_usage(turn.usage)
                 parent_budget.add_usage(turn.usage)
                 submessages.append(turn.message)
@@ -260,8 +259,9 @@ class AgentRuntime:
                     await self.append(run_id, "subagent.tool_result", {"parent_run_id": run_id, "parent_tool_call_id": request_id, "result": result.to_dict()})
                     submessages.append({"role": "tool", "tool_call_id": sub_id, "content": self._model_tool_result(run_id, sub_name, result)})
         except Exception as exc:
-            await self.append(run_id, "subagent.failed", {"parent_run_id": run_id, "parent_tool_call_id": request_id, "message": str(exc)[:2000]})
-            result = ToolResult(request_id, False, output=str(exc)[:2000], error_code="investigation.failed")
+            message = str(exc)[:2000]
+            await self.append(run_id, "subagent.failed", {"parent_run_id": run_id, "parent_tool_call_id": request_id, "message": message})
+            result = ToolResult(request_id, False, output=json.dumps({"error": message, "fallback": "Continue with read, grep, find, and ls directly."}), error_code="investigation.failed", data={"fallback": "direct_tools"})
             messages.append({"role": "tool", "tool_call_id": request_id, "content": result.output})
             return False
 

@@ -4,6 +4,9 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
 
+DEFAULT_INVESTIGATION_MODEL = "deepseek/deepseek-chat-v3-0324"
+
+
 @dataclass(frozen=True, slots=True)
 class ChatMessage:
     role: Literal["system", "user", "assistant"]
@@ -101,7 +104,7 @@ class AgentRunRequest:
     max_cost: float = 1.0
     budget_profile: str = "coding"
     provider_preferences: dict[str, Any] = field(default_factory=dict)
-    investigation_model_id: str | None = None
+    investigation_model_id: str | None = DEFAULT_INVESTIGATION_MODEL
     approval_policy: Literal["prompt", "auto"] = "prompt"
 
     def __post_init__(self) -> None:
@@ -195,7 +198,7 @@ class AgentRunRequest:
             max_cost=float(data.get("max_cost") or 1.0),
             budget_profile=str(data.get("budget_profile") or "coding"),
             provider_preferences=_object(data.get("provider_preferences")),
-            investigation_model_id=str(data["investigation_model_id"]) if data.get("investigation_model_id") else None,
+            investigation_model_id=str(data["investigation_model_id"]) if data.get("investigation_model_id") else DEFAULT_INVESTIGATION_MODEL,
         )
 
 
