@@ -77,6 +77,18 @@ def qapp() -> QApplication:
     return QApplication([])
 
 
+def _wait_for_message_bodies(transcript: QObject, count: int) -> list[QObject]:
+    """Wait for the Repeater to finish incubating its delegates on slow CI runners."""
+    for _ in range(100):
+        bodies = transcript.findChildren(QObject, "transcriptMessageBody")
+        if len(bodies) == count:
+            return bodies
+        QTest.qWait(20)
+    bodies = transcript.findChildren(QObject, "transcriptMessageBody")
+    assert len(bodies) == count
+    return bodies
+
+
 def test_transcript_scroll_anchor_survives_a_tail_update(qapp: QApplication) -> None:
     backend = FakeBackend()
     rows = [_message(index, (1, 4, 16, 3)[index % 4]) for index in range(1, 41)]
@@ -202,16 +214,13 @@ ApplicationWindow {
 
     transcript = window.findChild(QObject, "transcriptRoot")
     assert transcript is not None
-    bodies = transcript.findChildren(QObject, "transcriptMessageBody")
-    assert len(bodies) == 2
+    bodies = _wait_for_message_bodies(transcript, 2)
     before = float(bodies[-1].property("contentHeight"))
 
     updated = list(rows)
     updated[-1] = _message(2, 180)
     backend.model.replace(updated)
-    QTest.qWait(150)
-
-    bodies = transcript.findChildren(QObject, "transcriptMessageBody")
+    bodies = _wait_for_message_bodies(transcript, 2)
     after = bodies[-1]
     content_height = float(after.property("contentHeight"))
     assert content_height > before
@@ -278,15 +287,14 @@ ApplicationWindow {
     changed[10] = _message(11, 45)
     changed[48] = _message(49, 32)
     backend.model.replace(changed)
-    QTest.qWait(120)
+    _wait_for_message_bodies(transcript, len(changed))
 
     for fraction in (1.0, 0.0, 0.5, 0.17, 0.83, 0.0, 1.0):
         maximum = max(0.0, float(viewport.property("contentHeight")) - viewport_height)
         viewport.setProperty("contentY", maximum * fraction)
         QTest.qWait(15)
 
-    bodies = transcript.findChildren(QObject, "transcriptMessageBody")
-    assert len(bodies) == len(changed)
+    bodies = _wait_for_message_bodies(transcript, len(changed))
     assert all(float(body.property("height")) > 0 for body in bodies)
     assert float(viewport.property("contentHeight")) > initial_height
 
