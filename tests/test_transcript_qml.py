@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QUICK_BACKEND", "software")
 import pytest
 
 try:
-    from PySide6.QtCore import QAbstractItemModel, Property, QObject, QUrl, Signal, Slot
+    from PySide6.QtCore import QAbstractListModel, Property, QObject, QUrl, Signal, Slot
     from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent
     from PySide6.QtQuickControls2 import QQuickStyle
     from PySide6.QtTest import QTest
@@ -30,8 +30,8 @@ class FakeBackend(QObject):
         super().__init__()
         self.model = TranscriptListModel(self)
 
-    @Property(QAbstractItemModel, constant=True)
-    def transcriptModel(self) -> QAbstractItemModel:
+    @Property(QAbstractListModel, constant=True)
+    def transcriptModel(self) -> QAbstractListModel:
         return self.model
 
     @Property(str, notify=stateChanged)
