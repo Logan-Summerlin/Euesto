@@ -30,10 +30,10 @@ class FakeBackend(QObject):
         super().__init__()
         self.model = TranscriptListModel(self)
 
-    # Expose the QAbstractListModel as a QObject rather than a QVariant. QML's
-    # Repeater needs the model interface itself; wrapping it as QVariant can
-    # leave the Repeater with a zero-row model on the headless Qt runtime used
-    # by GitHub Actions.
+    # Keep the backend property for parity with the production bridge. The QML
+    # view receives the model itself through a context property because a
+    # QAbstractListModel can be coerced to a generic QObject at a PySide property
+    # boundary, which prevents Repeater from recognizing its model interface.
     @Property(QObject, constant=True)
     def transcriptModel(self) -> QObject:
         return self.model
@@ -84,6 +84,7 @@ def qapp() -> QApplication:
 def _create_transcript_window(backend: FakeBackend) -> tuple[QQmlApplicationEngine, QObject]:
     engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty("backend", backend)
+    engine.rootContext().setContextProperty("transcriptModel", backend.model)
     engine.addImportPath(str(ROOT / "qml"))
     component = QQmlComponent(engine)
     component.setData(
