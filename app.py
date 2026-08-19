@@ -84,27 +84,6 @@ class DesktopBridge(BaseDesktopBridge):
         # the event loop rather than blocking the UI before `Dialog.open()`.
         QTimer.singleShot(0, super().loadPermissionRules)
 
-    @Property(str, notify=BaseDesktopBridge.settingsChanged)
-    def investigationModel(self) -> str:
-        return self.storage.get_setting(
-            "investigation_model_id", DEFAULT_INVESTIGATION_MODEL
-        ) or DEFAULT_INVESTIGATION_MODEL
-
-    @Slot(str)
-    def saveInvestigationModel(self, model_id: str) -> None:
-        selected = str(model_id or "").strip() or DEFAULT_INVESTIGATION_MODEL
-        self.storage.set_setting("investigation_model_id", selected)
-        persisted = self.storage.get_setting("investigation_model_id", "") or ""
-        if persisted != selected:
-            self.errorRequested.emit(
-                "Could not save investigation model",
-                "The selected investigation model could not be persisted.",
-            )
-            return
-        self.settingsChanged.emit()
-        self.stateChanged.emit()
-        self._set_status(f"Investigation model saved: {selected}")
-
 
 def main() -> int:
     # The legacy test checks for the old Basic style call. Keep its source-level
