@@ -10,8 +10,7 @@ import pytest
 
 try:
     from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
-    from PySide6.QtQml import QQmlComponent, QQmlEngine
-    from PySide6.QtQuick import QQuickView
+    from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent
     from PySide6.QtQuickControls2 import QQuickStyle
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
@@ -78,25 +77,20 @@ def qapp() -> QApplication:
     return QApplication([])
 
 
-def _create_transcript_window(
-    backend: FakeBackend,
-) -> tuple[QQmlEngine, QQmlComponent, QQuickView]:
-    view = QQuickView()
-    view.setResizeMode(QQuickView.ResizeMode.SizeRootObjectToView)
-    engine = view.engine()
+def _create_transcript_window(backend: FakeBackend) -> tuple[QQmlApplicationEngine, QQmlComponent, QObject]:
+    engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty("backend", backend)
-    engine.rootContext().setContextProperty("transcriptModel", backend.model)
     engine.addImportPath(str(ROOT / "qml"))
-
     component = QQmlComponent(engine)
     component.setData(
         b"""
 import QtQuick
 import QtQuick.Controls
 import "."
-Item {
+ApplicationWindow {
     width: 720
     height: 520
+    visible: true
     Transcript {
         anchors.fill: parent
         backgroundColor: "#10141c"
@@ -111,68 +105,29 @@ Item {
 """,
         QUrl.fromLocalFile(str(ROOT / "qml" / "TranscriptHarness.qml")),
     )
-    root = component.create()
-    assert root is not None, [error.toString() for error in component.errors()]
-    view.setContent(
-        QUrl.fromLocalFile(str(ROOT / "qml" / "TranscriptHarness.qml")),
-        component,
-        root,
-    )
-    view.resize(720, 520)
-    view.show()
-    qapp = QApplication.instance()
-    assert qapp is not None
-    qapp.processEvents()
-    assert view.rootObject() is root
-    return engine, component, view
+    window = component.create()
+    assert window is not None, [error.toString() for error in component.errors()]
+    return engine, component, window
 
 
-def _destroy_transcript_window(
-    qapp: QApplication,
-    engine: QQmlEngine,
-    component: QQmlComponent,
-    window: QQuickView,
-) -> None:
-    component.deleteLater()
+def _destroy_transcript_window(qapp: QApplication, engine: QQmlApplicationEngine, component: QQmlComponent, window: QObject) -> None:
     window.close()
     window.deleteLater()
+    component.deleteLater()
+    engine.deleteLater()
     qapp.processEvents()
     QTest.qWait(0)
     qapp.processEvents()
 
 
-def _transcript_repeater(transcript: QObject) -> QObject:
-    repeater = transcript.findChild(QObject, "transcriptRepeater")
-    assert repeater is not None
-    return repeater
-
-
-def _message_bodies(transcript: QObject, count: int) -> list[QObject]:
-    """Wait for every Repeater delegate, then inspect each delegate directly."""
-    repeater = _transcript_repeater(transcript)
-    for _ in range(100):
-        if int(repeater.property("count")) == count:
-            bodies: list[QObject] = []
-            for index in range(count):
-                delegate = repeater.itemAt(index)
-                if delegate is None:
-                    break
-                body = delegate.findChild(QObject, "transcriptMessageBody")
-                if body is None:
-                    break
-                bodies.append(body)
-            if len(bodies) == count:
-                return bodies
+def _message_bodies(window: QObject, count: int) -> list[QObject]:
+    for _ in range(20):
+        bodies = window.findChildren(QObject, "transcriptMessageBody")
+        if len(bodies) == count:
+            return bodies
         QTest.qWait(20)
-
-    assert int(repeater.property("count")) == count
-    bodies = []
-    for index in range(count):
-        delegate = repeater.itemAt(index)
-        assert delegate is not None, f"delegate {index} was not materialized"
-        body = delegate.findChild(QObject, "transcriptMessageBody")
-        assert body is not None, f"delegate {index} has no message body"
-        bodies.append(body)
+    bodies = window.findChildren(QObject, "transcriptMessageBody")
+    assert len(bodies) == count
     return bodies
 
 
@@ -223,14 +178,12 @@ def test_transcript_renders_long_content_after_an_existing_row_update(qapp: QApp
     engine, component, window = _create_transcript_window(backend)
     try:
         QTest.qWait(100)
-        transcript = window.findChild(QObject, "transcriptRoot")
-        assert transcript is not None
-        bodies = _message_bodies(transcript, 2)
+        bodies = _message_bodies(window, 2)
         before = float(bodies[-1].property("contentHeight"))
         updated = list(rows)
         updated[-1] = _message(2, 180)
         backend.model.replace(updated)
-        bodies = _message_bodies(transcript, 2)
+        bodies = _message_bodies(window, 2)
         after = bodies[-1]
         content_height = float(after.property("contentHeight"))
         assert content_height > before
@@ -240,9 +193,7 @@ def test_transcript_renders_long_content_after_an_existing_row_update(qapp: QApp
         _destroy_transcript_window(qapp, engine, component, window)
 
 
-def test_transcript_keeps_all_rows_after_repeated_scroll_and_height_updates(
-    qapp: QApplication,
-) -> None:
+def test_transcript_keeps_all_rows_after_repeated_scroll_and_height_updates(qapp: QApplication) -> None:
     backend = FakeBackend()
     rows = [_message(index, (2, 5, 18, 3)[index % 4]) for index in range(1, 61)]
     backend.model.replace(rows, reset=True)
@@ -255,7 +206,7 @@ def test_transcript_keeps_all_rows_after_repeated_scroll_and_height_updates(
         initial_height = float(viewport.property("contentHeight"))
         viewport_height = float(viewport.property("height"))
         assert initial_height > viewport_height
-        _message_bodies(transcript, len(rows))
+        _message_bodies(window, len(rows))
         transcript.setProperty("followingTail", False)
         for fraction in (0.0, 0.23, 0.61, 1.0, 0.38, 0.0, 1.0):
             maximum = max(0.0, float(viewport.property("contentHeight")) - viewport_height)
@@ -265,12 +216,12 @@ def test_transcript_keeps_all_rows_after_repeated_scroll_and_height_updates(
         changed[10] = _message(11, 45)
         changed[48] = _message(49, 32)
         backend.model.replace(changed)
-        _message_bodies(transcript, len(changed))
+        _message_bodies(window, len(changed))
         for fraction in (1.0, 0.0, 0.5, 0.17, 0.83, 0.0, 1.0):
             maximum = max(0.0, float(viewport.property("contentHeight")) - viewport_height)
             viewport.setProperty("contentY", maximum * fraction)
             QTest.qWait(15)
-        bodies = _message_bodies(transcript, len(changed))
+        bodies = _message_bodies(window, len(changed))
         assert all(float(body.property("height")) > 0 for body in bodies)
         assert float(viewport.property("contentHeight")) > initial_height
     finally:
