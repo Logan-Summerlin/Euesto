@@ -17,22 +17,22 @@ class BudgetProfile:
 
 STANDARD_CODING_PROFILE = BudgetProfile(
     "coding",
-    max_iterations=200,
-    max_tool_calls=300,
+    max_iterations=600,
+    max_tool_calls=900,
     max_wall_seconds=1_800,
     max_cost=2.0,
 )
 EXTENDED_CODING_PROFILE = BudgetProfile(
     "extended-coding",
-    max_iterations=400,
-    max_tool_calls=600,
+    max_iterations=1_200,
+    max_tool_calls=1_800,
     max_wall_seconds=3_600,
     max_cost=4.0,
 )
 LARGE_CODING_PROFILE = BudgetProfile(
     "large-coding",
-    max_iterations=600,
-    max_tool_calls=900,
+    max_iterations=1_800,
+    max_tool_calls=2_700,
     max_wall_seconds=5_400,
     max_cost=8.0,
 )
