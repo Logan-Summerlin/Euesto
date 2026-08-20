@@ -27,7 +27,7 @@ LOCAL_TOOL_SCHEMAS = [
     _tool("grep", "Search file contents.", {"query": {"type": "string"}, "path": {"type": "string"}, "regex": {"type": "boolean"}, "case_sensitive": {"type": "boolean"}, "include_glob": {"type": "string"}, "exclude_glob": {"type": "string"}, "max_results": {"type": "integer", "minimum": 1, "maximum": 5000}, "context_lines": {"type": "integer", "minimum": 0, "maximum": 5}, "include_metadata": {"type": "boolean"}, "cursor": {"type": "string"}}, ["query"]),
     _tool("find", "Recursively find files and directories.", {"path": {"type": "string"}, "glob": {"type": "string"}, "max_depth": {"type": "integer", "minimum": 0, "maximum": 20}, "max_results": {"type": "integer", "minimum": 1, "maximum": 2000}, "details": {"type": "boolean"}}),
     _tool("ls", "List a directory's immediate contents.", {"path": {"type": "string"}, "max_results": {"type": "integer", "minimum": 1, "maximum": 2000}, "details": {"type": "boolean"}}),
-    _tool("investigate_repository", "Delegate a read-only repository investigation to a cheaper model.", {"query": {"type": "string", "minLength": 1}, "path_hint": {"type": "array", "items": {"type": "string"}, "maxItems": 20}}, ["query"]),
+    _tool("investigate_repository", "Delegate a read-only repository investigation. Put the complete investigation request in `query`, including relevant symptoms, suspected components or files, error messages, hypotheses, and useful context. The investigation model independently decides which read-only files and searches to inspect; do not provide separate path hints.", {"query": {"type": "string", "minLength": 1}}, ["query"]),
 ]
 
 

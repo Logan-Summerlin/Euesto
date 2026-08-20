@@ -89,7 +89,8 @@ Every result contains `request_id`, `ok`, `output`, `data`, `error_code`, `trunc
 ## `investigate_repository`
 
 - **Purpose:** delegate a bounded repository investigation to a cheaper model.
-- **Arguments:** `query` required; optional `path_hint` (up to 20 paths).
+- **Arguments:** `query` required; there are no separate path or hint arguments. Put the complete investigation request in `query`.
+- **Request guidance:** include relevant symptoms, error messages, suspected components or files, hypotheses, desired scope, and any other context that can help the investigator focus its search. Do not encode path hints separately; describe them naturally in the request. The investigation model decides whether to use `read`, `grep`, `find`, or `ls` and how to scope those tools.
 - **Modes:** Agent only.
 - **Permission:** read-only; it cannot mutate, execute commands, checkpoint, or publish.
 - **Model:** uses the investigation model configured in Settings; the primary model cannot select or override it.
