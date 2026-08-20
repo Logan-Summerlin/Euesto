@@ -111,6 +111,11 @@ ApplicationWindow {
     window = component.create()
     assert window is not None, [error.toString() for error in component.errors()]
     QQmlEngine.setObjectOwnership(window, QQmlEngine.ObjectOwnership.CppOwnership)
+    window.show()
+    backend.model.layoutChanged.emit()
+    qapp = QApplication.instance()
+    assert qapp is not None
+    qapp.processEvents()
     return engine, component, window
 
 
@@ -125,6 +130,8 @@ def _destroy_transcript_window(
     component.deleteLater()
     engine.deleteLater()
     qapp.processEvents()
+    QTest.qWait(0)
+    qapp.processEvents()
 
 
 def _transcript_repeater(transcript: QObject) -> QObject:
@@ -134,12 +141,7 @@ def _transcript_repeater(transcript: QObject) -> QObject:
 
 
 def _message_bodies(transcript: QObject, count: int) -> list[QObject]:
-    """Wait for every Repeater delegate, then inspect each delegate directly.
-
-    Repeater delegates are visual children and are not guaranteed to appear in the
-    QObject parent tree rooted at the Transcript item, so findChildren() can return
-    zero even when itemAt() has already materialized every delegate.
-    """
+    """Wait for every Repeater delegate, then inspect each delegate directly."""
     repeater = _transcript_repeater(transcript)
     for _ in range(100):
         if int(repeater.property("count")) == count:
