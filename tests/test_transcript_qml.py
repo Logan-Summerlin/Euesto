@@ -10,7 +10,8 @@ import pytest
 
 try:
     from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
-    from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent, QQmlEngine
+    from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent
+    from PySide6.QtQuick import QQuickView
     from PySide6.QtQuickControls2 import QQuickStyle
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
@@ -79,21 +80,21 @@ def qapp() -> QApplication:
 
 def _create_transcript_window(
     backend: FakeBackend,
-) -> tuple[QQmlApplicationEngine, QQmlComponent, QObject]:
+) -> tuple[QQmlApplicationEngine, QQmlComponent, QQuickView]:
     engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty("backend", backend)
     engine.rootContext().setContextProperty("transcriptModel", backend.model)
     engine.addImportPath(str(ROOT / "qml"))
+
     component = QQmlComponent(engine)
     component.setData(
         b"""
 import QtQuick
 import QtQuick.Controls
 import "."
-ApplicationWindow {
+Item {
     width: 720
     height: 520
-    visible: true
     Transcript {
         anchors.fill: parent
         backgroundColor: "#10141c"
@@ -108,24 +109,34 @@ ApplicationWindow {
 """,
         QUrl.fromLocalFile(str(ROOT / "qml" / "TranscriptHarness.qml")),
     )
-    window = component.create()
-    assert window is not None, [error.toString() for error in component.errors()]
-    QQmlEngine.setObjectOwnership(window, QQmlEngine.ObjectOwnership.CppOwnership)
-    window.show()
+    root = component.create()
+    assert root is not None, [error.toString() for error in component.errors()]
+
+    view = QQuickView()
+    view.setResizeMode(QQuickView.ResizeMode.SizeRootObjectToView)
+    view.setContent(
+        QUrl.fromLocalFile(str(ROOT / "qml" / "TranscriptHarness.qml")),
+        component,
+        root,
+    )
+    view.resize(720, 520)
+    view.show()
     qapp = QApplication.instance()
     assert qapp is not None
     qapp.processEvents()
-    return engine, component, window
+    assert view.rootObject() is root
+    return engine, component, view
 
 
 def _destroy_transcript_window(
     qapp: QApplication,
     engine: QQmlApplicationEngine,
     component: QQmlComponent,
-    window: QObject,
+    window: QQuickView,
 ) -> None:
     window.close()
     window.deleteLater()
+    qapp.processEvents()
     component.deleteLater()
     engine.deleteLater()
     qapp.processEvents()
