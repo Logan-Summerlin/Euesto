@@ -19,7 +19,7 @@ Rectangle {
     property bool userScrolling: false
     property bool movingToTail: false
     property var activityOverrides: ({})
-    property string conversationId: backend.currentConversationId
+    property string conversationId: backend ? backend.currentConversationId : ""
 
     function maximumY() {
         return Math.max(0, viewport.contentHeight - viewport.height)
@@ -165,7 +165,7 @@ Rectangle {
                                 text: "↻"
                                 ToolTip.visible: hovered
                                 ToolTip.text: "Regenerate"
-                                onClicked: backend.regenerateMessage(card.value.messageId)
+                                onClicked: if (backend) backend.regenerateMessage(card.value.messageId)
                             }
                         }
 
@@ -248,9 +248,11 @@ Rectangle {
                                 elide: Text.ElideRight
                             }
                             ToolButton {
-                                visible: card.value.role === "user" && !backend.generating
+                                visible: card.value.role === "user"
+                                    && backend !== null
+                                    && !backend.generating
                                 text: "Edit"
-                                onClicked: editDialog.openFor(
+                                onClicked: if (backend) editDialog.openFor(
                                     card.value.messageId, card.value.content
                                 )
                             }
@@ -290,7 +292,7 @@ Rectangle {
             editor.text = value
             open()
         }
-        onAccepted: backend.editMessage(messageId, editor.text)
+        onAccepted: if (backend) backend.editMessage(messageId, editor.text)
         contentItem: TextArea {
             id: editor
             implicitHeight: 220
