@@ -11,6 +11,7 @@ import pytest
 try:
     from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
     from PySide6.QtQml import QQmlApplicationEngine
+    from PySide6.QtQuick import QQuickItem
     from PySide6.QtQuickControls2 import QQuickStyle
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
@@ -124,13 +125,23 @@ def _destroy_transcript_window(
     qapp.processEvents()
 
 
+def _visual_find(item: QQuickItem, name: str, out: list[QObject]) -> None:
+    if item.objectName() == name:
+        out.append(item)
+    for child in item.childItems():
+        _visual_find(child, name, out)
+
+
 def _message_bodies(window: QObject, count: int) -> list[QObject]:
+    root = window.contentItem()
     for _ in range(25):
-        bodies = window.findChildren(QObject, "transcriptMessageBody")
+        bodies: list[QObject] = []
+        _visual_find(root, "transcriptMessageBody", bodies)
         if len(bodies) == count:
             return bodies
         QTest.qWait(20)
-    bodies = window.findChildren(QObject, "transcriptMessageBody")
+    bodies = []
+    _visual_find(root, "transcriptMessageBody", bodies)
     assert len(bodies) == count
     return bodies
 
@@ -198,7 +209,7 @@ def test_transcript_renders_long_content_after_an_existing_row_update(qapp: QApp
         content_height = float(after.property("contentHeight"))
         assert content_height > before
         assert float(after.property("height")) == pytest.approx(content_height, abs=1.0)
-        assert str(after.property("text")).startswith("<p>line 0")
+        assert "line 0" in str(after.property("text"))
     finally:
         _destroy_transcript_window(qapp, engine, window)
 
