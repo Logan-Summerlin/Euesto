@@ -112,7 +112,6 @@ ApplicationWindow {
     assert window is not None, [error.toString() for error in component.errors()]
     QQmlEngine.setObjectOwnership(window, QQmlEngine.ObjectOwnership.CppOwnership)
     window.show()
-    backend.model.layoutChanged.emit()
     qapp = QApplication.instance()
     assert qapp is not None
     qapp.processEvents()
