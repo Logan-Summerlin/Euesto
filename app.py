@@ -66,6 +66,38 @@ class DesktopBridge(BaseDesktopBridge):
             )
         self.modelsChanged.emit()
 
+    @Slot(str, bool, float, int, int, result="QVariantList")
+    def filteredModels(
+        self,
+        query: str,
+        text_only: bool,
+        max_price: float,
+        max_rank: int,
+        year: int,
+    ) -> list[dict[str, object]]:
+        query = query.strip().casefold()
+        results: list[dict[str, object]] = []
+        for item in self._models:
+            if text_only and not bool(item.get("textCompatible", False)):
+                continue
+            haystack = " ".join(
+                str(item.get(key) or "")
+                for key in ("id", "label", "description")
+            ).casefold()
+            if query not in haystack:
+                continue
+            price = item.get("price")
+            if max_price >= 0 and (price is None or float(price) > max_price):
+                continue
+            rank = item.get("rank")
+            if max_rank > 0 and (rank is None or int(rank) > max_rank):
+                continue
+            item_year = item.get("year")
+            if year > 0 and item_year != year:
+                continue
+            results.append(item)
+        return results
+
     @Slot(str)
     def saveInvestigationModel(self, model_id: str) -> None:
         model_id = str(model_id or "").strip()
