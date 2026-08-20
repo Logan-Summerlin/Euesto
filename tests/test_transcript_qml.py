@@ -113,7 +113,6 @@ Item {
     )
     root = component.create()
     assert root is not None, [error.toString() for error in component.errors()]
-    QQmlEngine.setObjectOwnership(root, QQmlEngine.ObjectOwnership.CppOwnership)
     view.setContent(
         QUrl.fromLocalFile(str(ROOT / "qml" / "TranscriptHarness.qml")),
         component,
