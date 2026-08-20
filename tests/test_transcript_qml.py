@@ -10,7 +10,7 @@ import pytest
 
 try:
     from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
-    from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent
+    from PySide6.QtQml import QQmlComponent, QQmlEngine
     from PySide6.QtQuick import QQuickView
     from PySide6.QtQuickControls2 import QQuickStyle
     from PySide6.QtTest import QTest
@@ -80,8 +80,10 @@ def qapp() -> QApplication:
 
 def _create_transcript_window(
     backend: FakeBackend,
-) -> tuple[QQmlApplicationEngine, QQmlComponent, QQuickView]:
-    engine = QQmlApplicationEngine()
+) -> tuple[QQmlEngine, QQmlComponent, QQuickView]:
+    view = QQuickView()
+    view.setResizeMode(QQuickView.ResizeMode.SizeRootObjectToView)
+    engine = view.engine()
     engine.rootContext().setContextProperty("backend", backend)
     engine.rootContext().setContextProperty("transcriptModel", backend.model)
     engine.addImportPath(str(ROOT / "qml"))
@@ -111,9 +113,7 @@ Item {
     )
     root = component.create()
     assert root is not None, [error.toString() for error in component.errors()]
-
-    view = QQuickView()
-    view.setResizeMode(QQuickView.ResizeMode.SizeRootObjectToView)
+    QQmlEngine.setObjectOwnership(root, QQmlEngine.ObjectOwnership.CppOwnership)
     view.setContent(
         QUrl.fromLocalFile(str(ROOT / "qml" / "TranscriptHarness.qml")),
         component,
@@ -130,15 +130,13 @@ Item {
 
 def _destroy_transcript_window(
     qapp: QApplication,
-    engine: QQmlApplicationEngine,
+    engine: QQmlEngine,
     component: QQmlComponent,
     window: QQuickView,
 ) -> None:
+    component.deleteLater()
     window.close()
     window.deleteLater()
-    qapp.processEvents()
-    component.deleteLater()
-    engine.deleteLater()
     qapp.processEvents()
     QTest.qWait(0)
     qapp.processEvents()
