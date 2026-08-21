@@ -32,6 +32,13 @@ Publication requires the correct workspace, current source snapshot, approval, v
 
 A stale manifest means the publication baseline changed. Discard/reseed staging against the current workspace, repeat the needed agent work, and create a new manifest. Stale manifests are rejected by design.
 
+## Investigation failures
+
+- `investigation.call_limit`: more than two `investigate_repository` calls were attempted in one turn. Continue with the direct tools instead.
+- `investigation.tool_not_permitted`: the nested loop tried a non-Plan tool; enforcement is in code, so this indicates the investigator model attempted an out-of-scope call.
+- `investigation.failed`: the nested loop errored (provider, budget, or tool failure). The parent is told to fall back to direct `read`/`grep`/`find`/`ls` use. A failed call still counts toward the two-call cap.
+- Truncated or thin summaries: the child budget ran out and forced synthesis. Re-run with a narrower query or investigate directly.
+
 ## Resource-limit failures
 
 The effective value is the minimum of the request, configured profile, and hard ceiling. See [LIMITS.md](LIMITS.md). A valid tool call can still fail if the shared staging/checkpoint resource model or Docker/container capacity is exhausted.

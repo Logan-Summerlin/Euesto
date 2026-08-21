@@ -23,11 +23,11 @@ runtime is recommended when available.
 ## 2. Install the desktop dependencies
 
 ```powershell
-git clone https://github.com/Logan-Summerlin/Local-Chatbot.git
-cd Local-Chatbot
+git clone https://github.com/Logan-Summerlin/Euesto.git
+cd Euesto
 py -3.12 -m venv .venv
-.\\.venv\\Scripts\\Activate.ps1
-python -m pip install -r requirements.txt
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements-dev.txt
 ```
 
 Never put the OpenRouter key in `.env`, Compose environment values, the repository, or a
@@ -60,17 +60,20 @@ In the desktop app, choose **Workspace**, select the same folder, and then choos
 **Agent**. A workspace or mode mismatch fails closed; restart the containers to change projects.
 
 The executor automatically omits standard local metadata, dependency, and cache directories from
-its staging copy and staged publication review, including `.git`, `.venv`, `venv`, `env`,
-`node_modules`, Python bytecode caches, and common test/type-checker caches. It supports up
-to 300,000 materialized regular files and 2,000,000,000 bytes (2 GB decimal). The ephemeral
-staging filesystem is capped at 2 GB and the executor at 3 GB of memory; Docker Desktop must have
-enough memory allocated for the selected project. Keep large datasets and generated artifacts
-outside the selected workspace when they are not needed for the task.
+its staging copy and staged publication review, including `.git`, `.hg`, `.svn`, `.venv`, `venv`,
+`env`, `.tox`, `.nox`, `node_modules`, Python bytecode caches, and common test/type-checker caches.
+It supports up to 300,000 materialized regular files with a 2.5 GB staging budget (4 GB hard
+ceiling) in the default `coding` profile. The `/work` tmpfs is sized by
+`LOCAL_CHAT_WORK_TMPFS_SIZE` (8 GB default) and the executor container is capped at 3 GB of
+memory; Docker Desktop must have enough memory allocated for the selected project. Keep large
+datasets and generated artifacts outside the selected workspace when they are not needed for the task.
 
 Plan can list, read, and search bounded UTF-8 text. It cannot patch files or run commands under any
-approval. Agent can request typed text edits and non-shell executables. Approving a command lets it
-mutate any file in ephemeral staging; it does not permit a host write. Host publication requires a
-second approval showing the exact manifest.
+approval. Agent can create or replace files, make exact-string edits, run non-interactive Bash
+commands inside the container, and delegate read-only repository investigations to a configured
+cheaper model. Approving an edit or command lets it mutate files in ephemeral staging only; it does
+not permit a host write. Host publication requires a second approval showing the exact manifest.
+See `docs/TOOLS.md` for the full eight-tool contract and `docs/LIMITS.md` for effective limits.
 
 ## 5. Verify the isolation before trusting it
 
