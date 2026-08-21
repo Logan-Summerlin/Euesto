@@ -249,7 +249,8 @@ class AgentRuntime:
             force_finalize = False
             await self.append(run_id, "subagent.started", {"parent_run_id": run_id, "parent_tool_call_id": request_id, "model": model, "budget": {"max_tool_calls": child.max_tool_calls, "max_iterations": child.max_iterations}})
             while True:
-                child.consume_iteration()
+                if not force_finalize:
+                    child.consume_iteration()
                 allowed_tools = set() if force_finalize else set(PLAN_TOOLS)
                 if force_finalize:
                     submessages.append({"role": "system", "content": "Stop repository exploration now. Use the evidence already gathered and return the final concise investigation summary. Do not call any tools."})
