@@ -3,6 +3,9 @@ from pathlib import Path
 
 import pytest
 
+import importlib
+
+bash_tool = importlib.import_module("executor.tools.bash")
 from executor.tools.bash import MAX_COMMAND_SECONDS, MAX_EVENT_BYTES, MAX_EVENT_COUNT, bash, cancel, events
 
 
@@ -52,10 +55,19 @@ def test_bash_enforces_timeout_and_rolls_back(tmp_path: Path) -> None:
     assert not (tmp_path / "timeout.txt").exists()
 
 
-def test_bash_cancellation_terminates_process_group_and_rolls_back(tmp_path: Path) -> None:
+def test_bash_cancellation_terminates_process_group_and_rolls_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     async def scenario() -> dict:
+        started = asyncio.Event()
+        create_process = asyncio.create_subprocess_exec
+
+        async def create_and_signal(*args, **kwargs):
+            process = await create_process(*args, **kwargs)
+            started.set()
+            return process
+
+        monkeypatch.setattr(bash_tool.asyncio, "create_subprocess_exec", create_and_signal)
         task = asyncio.create_task(run_bash(tmp_path, {"command": "echo changed > cancel.txt; sleep 30"}))
-        await asyncio.sleep(0.1)
+        await started.wait()
         assert await cancel("test-request") is True
         return (await asyncio.wait_for(task, timeout=3))[1]
 
@@ -75,6 +87,7 @@ def test_bash_rolls_back_nonzero_exit(tmp_path: Path) -> None:
     assert "error" in output
 
 
+@pytest.mark.slow
 def test_bash_large_stdout_retains_bounded_head_and_tail(tmp_path: Path) -> None:
     output, data = asyncio.run(run_bash(tmp_path, {"command": "python -c 'print(\"A\" * 1200000); print(\"TAIL-MARKER\")'"}, max_output=2_000_000))
     assert data["stdout_bytes"] > 1_000_000
@@ -84,6 +97,7 @@ def test_bash_large_stdout_retains_bounded_head_and_tail(tmp_path: Path) -> None
     assert data["truncated"] is True
 
 
+@pytest.mark.slow
 def test_bash_large_stderr_and_mixed_streams_are_accounted_separately(tmp_path: Path) -> None:
     command = "python -c 'import sys; print(\"OUT\" * 400000); print(\"ERR\" * 400000, file=sys.stderr)'"
     _, data = asyncio.run(run_bash(tmp_path, {"command": command}, max_output=100_000))
@@ -98,6 +112,7 @@ def test_bash_large_stderr_and_mixed_streams_are_accounted_separately(tmp_path: 
     assert "ERR" in data["stderr"]
 
 
+@pytest.mark.slow
 def test_bash_event_retention_and_cursors_are_bounded(tmp_path: Path) -> None:
     _, data = asyncio.run(run_bash(tmp_path, {"command": "python -c 'import sys; [sys.stdout.write(\"x\" * 16384) for _ in range(700)]'"}, max_output=1000))
     assert data["exit_code"] == 0

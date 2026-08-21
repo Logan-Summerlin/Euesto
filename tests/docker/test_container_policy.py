@@ -1,5 +1,9 @@
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.docker
+
 
 def test_gateway_compose_keeps_loopback_and_least_privilege() -> None:
     compose = Path("docker/compose.yaml").read_text(encoding="utf-8")

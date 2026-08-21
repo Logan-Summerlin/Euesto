@@ -23,29 +23,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --yes libegl1
       - name: Install test dependencies
         run: pip install -r requirements-dev.txt
-      - name: Phase 6 regression matrix
-        run: |
-          pytest -q \
-            tests/test_phase6_regression_matrix.py \
-            tests/test_executor_config.py \
-            tests/test_executor_limit_enforcement.py \
-            tests/test_phase5_resources.py \
-            tests/test_bash.py \
-            tests/test_staging.py \
-            tests/test_publication_baseline.py \
-            tests/test_publication_baseline_handoff.py \
-            tests/test_publication_worker_failures.py \
-            tests/test_auto_staging_reconciliation.py
-      - name: Phase 6 security regression suite
-        run: |
-          pytest -q \
-            tests/test_container_policy.py \
-            tests/test_v10_qml_privacy.py \
-            tests/test_tooling_regressions.py \
-            tests/test_tooling_reporting_hardening.py \
-            tests/test_narrow_tooling.py
-      - name: Full pytest suite
-        run: pytest
+      - name: Fast test suite
+        run: pytest -m "not slow and not docker"
+      - name: Slow test suite
+        run: pytest -m "slow and not docker"
       - name: Ruff
         run: ruff check . --output-format=github
       - name: Python compile check

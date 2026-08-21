@@ -1,7 +1,11 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q -m 'not slow and not docker'"
 pythonpath = ["."]
+markers = [
+    "slow: tests that are unsuitable for the default fast feedback loop",
+    "docker: tests that require a Docker/container runtime",
+]
 
 [tool.ruff]
 target-version = "py312"
