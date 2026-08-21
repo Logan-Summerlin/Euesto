@@ -193,7 +193,7 @@ class AgentRuntime:
         remaining = max(0, 512_000 - self._tool_result_bytes.get(run_id, 0))
         if len(text.encode()) > remaining:
             text = json.dumps({"ok": result.ok, "error_code": result.error_code, "truncated": True, "output": _bounded_excerpt(result.output, 2_000), "data": {"truncated": True}}, separators=(",", ":"))
-        self._tool_result_bytes[run_id] += len(text.encode())
+        self._tool_result_bytes[run_id] = self._tool_result_bytes.get(run_id, 0) + len(text.encode())
         return text
 
     async def cancel(self, run_id: str) -> None:
