@@ -9,6 +9,7 @@ from server.openrouter.agent import LOCAL_TOOL_SCHEMAS
 from shared.tools import AGENT_TOOLS, PLAN_TOOLS, TOOL_NAMES, ToolRequest
 
 CANONICAL = ("read", "write", "edit", "bash", "grep", "find", "ls")
+MODEL_TOOLS = CANONICAL + ("investigate_repository",)
 READ_ONLY = frozenset({"read", "grep", "find", "ls"})
 
 
@@ -18,12 +19,22 @@ def _config(tmp_path: Path) -> ExecutorConfig:
 
 def test_agent_and_plan_contracts_are_exactly_canonical() -> None:
     schema_names = tuple(item["function"]["name"] for item in LOCAL_TOOL_SCHEMAS)
-    assert schema_names == CANONICAL; assert TOOL_NAMES == frozenset(CANONICAL); assert AGENT_TOOLS == TOOL_NAMES; assert PLAN_TOOLS == READ_ONLY; assert {name for name in CANONICAL if name not in READ_ONLY} == {"write", "edit", "bash"}; assert all(item["function"]["parameters"]["additionalProperties"] is False for item in LOCAL_TOOL_SCHEMAS)
+    assert schema_names == MODEL_TOOLS
+    assert TOOL_NAMES == frozenset(MODEL_TOOLS)
+    assert AGENT_TOOLS == TOOL_NAMES
+    assert PLAN_TOOLS == READ_ONLY
+    assert {name for name in CANONICAL if name not in READ_ONLY} == {"write", "edit", "bash"}
+    assert all(item["function"]["parameters"]["additionalProperties"] is False for item in LOCAL_TOOL_SCHEMAS)
 
 
 def test_model_schema_hard_maxima_match_configuration_ceilings() -> None:
     schemas = {item["function"]["name"]: item["function"]["parameters"]["properties"] for item in LOCAL_TOOL_SCHEMAS}
-    assert schemas["read"]["max_bytes"]["maximum"] == ExecutorConfig.HARD_CEILINGS["max_read_bytes"]; assert schemas["bash"]["timeout_seconds"]["maximum"] == ExecutorConfig.HARD_CEILINGS["max_command_seconds"]; assert schemas["bash"]["stdin"]["maxLength"] == ExecutorConfig.HARD_CEILINGS["max_bash_stdin_bytes"]; assert schemas["grep"]["max_results"]["maximum"] == ExecutorConfig.HARD_CEILINGS["max_search_results"]; assert schemas["find"]["max_results"]["maximum"] == ExecutorConfig.HARD_CEILINGS["max_find_results"]; assert schemas["ls"]["max_results"]["maximum"] == ExecutorConfig.HARD_CEILINGS["max_ls_results"]
+    assert schemas["read"]["max_bytes"]["maximum"] == ExecutorConfig.HARD_CEILINGS["max_read_bytes"]
+    assert schemas["bash"]["timeout_seconds"]["maximum"] == ExecutorConfig.HARD_CEILINGS["max_command_seconds"]
+    assert schemas["bash"]["stdin"]["maxLength"] == ExecutorConfig.HARD_CEILINGS["max_bash_stdin_bytes"]
+    assert schemas["grep"]["max_results"]["maximum"] == ExecutorConfig.HARD_CEILINGS["max_search_results"]
+    assert schemas["find"]["max_results"]["maximum"] == ExecutorConfig.HARD_CEILINGS["max_find_results"]
+    assert schemas["ls"]["max_results"]["maximum"] == ExecutorConfig.HARD_CEILINGS["max_ls_results"]
 
 
 def test_dispatch_passes_only_operation_specific_effective_limits(tmp_path: Path, monkeypatch) -> None:

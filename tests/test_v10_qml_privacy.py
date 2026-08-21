@@ -201,7 +201,8 @@ def test_transcript_uses_exact_height_scrolling_and_incremental_rows() -> None:
 
     assert "Flickable {" in source
     assert "ListView {" not in source
-    assert "model: backend.transcriptModel" in source
+    assert "model: transcriptModel" in source
+    assert "model: backend.transcriptModel" not in source
     assert "required property var rowData" in source
     assert 'objectName: "transcriptMessageBody"' in source
     assert "height: visible ? Math.ceil(contentHeight) : 0" in source
@@ -232,37 +233,12 @@ def test_transcript_never_loads_tool_outputs_into_qml_activity(tmp_path: Path) -
     storage = Storage(tmp_path / "chat.sqlite3")
     conversation = storage.create_conversation("Chat", "model/a", "System")
     for event_id, event_type, payload in (
-        (
-            1,
-            "tool.requested",
-            {
-                "request_id": "call-1",
-                "tool": "read_file",
-                "arguments": {"path": "large.py"},
-            },
-        ),
-        (
-            2,
-            "tool.completed",
-            {"request_id": "call-1", "tool": "read_file", "output": "x" * 500_000},
-        ),
+        (1, "tool.requested", {"request_id": "call-1", "tool": "read_file", "arguments": {"path": "large.py"}}),
+        (2, "tool.completed", {"request_id": "call-1", "tool": "read_file", "output": "x" * 500_000}),
     ):
-        storage.save_run_event(
-            conversation.id,
-            SimpleNamespace(
-                run_id="run-1",
-                event_id=event_id,
-                type=event_type,
-                payload=payload,
-                created_at="2026-08-09T00:00:00+00:00",
-            ),
-        )
+        storage.save_run_event(conversation.id, SimpleNamespace(run_id="run-1", event_id=event_id, type=event_type, payload=payload, created_at="2026-08-09T00:00:00+00:00"))
 
-    events = storage.list_run_events(
-        conversation.id,
-        event_types=ACTIVITY_EVENT_TYPES,
-        payload_keys=ACTIVITY_PAYLOAD_KEYS,
-    )
+    events = storage.list_run_events(conversation.id, event_types=ACTIVITY_EVENT_TYPES, payload_keys=ACTIVITY_PAYLOAD_KEYS)
     assert len(events) == 1
     event = events[0]
     assert event["run_id"] == "run-1"
@@ -289,11 +265,7 @@ def test_responses_are_buffered_and_optional_qml_values_are_guarded() -> None:
     worker_source = (ROOT / "src" / "workers.py").read_text(encoding="utf-8")
     transcript_source = (ROOT / "qml" / "Transcript.qml").read_text(encoding="utf-8")
     main_source = (ROOT / "qml" / "Main.qml").read_text(encoding="utf-8")
-    chunk_handler = backend_source[
-        backend_source.index("def onStreamChunk") : backend_source.index(
-            "def onStreamComplete"
-        )
-    ]
+    chunk_handler = backend_source[backend_source.index("def onStreamChunk") : backend_source.index("def onStreamComplete")]
 
     assert "_refresh_transcript" not in chunk_handler
     assert 'live_text=""' in backend_source
@@ -313,20 +285,8 @@ def test_agent_worker_delivers_one_answer_and_drops_large_transport_events() -> 
     events = (
         EventEnvelope(1, "run-1", "model.delta", "2026-08-09T00:00:00Z", {"text": "hel"}),
         EventEnvelope(2, "run-1", "model.delta", "2026-08-09T00:00:01Z", {"text": "lo"}),
-        EventEnvelope(
-            3,
-            "run-1",
-            "tool.output",
-            "2026-08-09T00:00:02Z",
-            {"request_id": "call-1", "tool": "read_file", "output": "x" * 50_000},
-        ),
-        EventEnvelope(
-            4,
-            "run-1",
-            "tool.requested",
-            "2026-08-09T00:00:03Z",
-            {"request_id": "call-2", "tool": "write_file"},
-        ),
+        EventEnvelope(3, "run-1", "tool.output", "2026-08-09T00:00:02Z", {"request_id": "call-1", "tool": "read_file", "output": "x" * 50_000}),
+        EventEnvelope(4, "run-1", "tool.requested", "2026-08-09T00:00:03Z", {"request_id": "call-2", "tool": "write_file"}),
         EventEnvelope(5, "run-1", "usage.updated", "2026-08-09T00:00:04Z", {"tokens": 9}),
     )
     worker = AgentWorker(SimpleNamespace(cancel=lambda: None), lambda _stop: iter(events))
@@ -336,9 +296,7 @@ def test_agent_worker_delivers_one_answer_and_drops_large_transport_events() -> 
     worker.chunk.connect(chunks.append)
     worker.eventReceived.connect(desktop_events.append)
     worker.complete.connect(lambda usage, cancelled: completions.append((usage, cancelled)))
-
     worker.run()
-
     assert chunks == ["hello"]
     assert [event.type for event in desktop_events] == ["tool.requested"]
     assert completions == [({"tokens": 9, "run_id": "run-1"}, False)]
@@ -346,27 +304,22 @@ def test_agent_worker_delivers_one_answer_and_drops_large_transport_events() -> 
 
 def test_gateway_token_is_used_from_memory_immediately_after_save() -> None:
     source = (ROOT / "src" / "qml_backend.py").read_text(encoding="utf-8")
-
     assert 'get_gateway_session_token() or get_gateway_token() or ""' in source
     assert "self._gateway_token = new_token" in source
     assert '"hasToken": bool(self._gateway_token)' in source
 
 
-def test_active_local_gateway_token_is_discovered_without_manual_entry(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_active_local_gateway_token_is_discovered_without_manual_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "app_data_dir", lambda: tmp_path)
     session_dir = tmp_path / "gateway-session"
     session_dir.mkdir()
     token = "a" * 43
     (session_dir / "gateway_token.txt").write_text(token, encoding="utf-8")
-
     assert settings.get_gateway_session_token() == token
 
 
 def test_catalog_autorefresh_waits_for_gateway_health_and_stays_nonblocking() -> None:
     source = (ROOT / "src" / "qml_backend.py").read_text(encoding="utf-8")
-
     assert "QTimer.singleShot(250, self.refreshCatalog)" not in source
     assert "result.state in {HealthState.READY, HealthState.DEGRADED}" in source
     assert "self._start_catalog_refresh(report_errors=False)" in source

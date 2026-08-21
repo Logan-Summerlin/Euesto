@@ -235,7 +235,7 @@ class GatewayService:
             raise GatewayServiceError("provider.key_required", "Configure an OpenRouter key first.", status=409)
         if not self.agent_runtime or request.workspace_id != self.config.workspace_id:
             raise GatewayServiceError("workspace.invalid", "Recreate the executor for the selected workspace.", status=409)
-        if request.approval_policy == "auto":
+        if request.approval_policy == "auto" and not request.investigation_model_id:
             assert self.executor is not None
             inspection = await self.executor.status()
             environment = inspection.get("environment") if isinstance(inspection, dict) else {}

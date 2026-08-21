@@ -35,3 +35,6 @@ The `small` profile reduces file/output/search limits. `coding` is the default. 
 6. Docker CPU, memory, PID, disk, and network isolation are outer containment controls; they never expand application limits.
 
 The effective limits reported by `/v1/status` are intended to make the active profile and source of each configured value inspectable.
+
+
+Investigation delegation is bounded to two calls per turn and half of the parent run remaining cost per call; it never creates an executor, staging, or publication authority.

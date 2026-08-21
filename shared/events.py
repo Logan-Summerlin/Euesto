@@ -44,6 +44,8 @@ EVENT_TYPES = frozenset(
         "checkpoint.created",
         "checkpoint.restored",
         "publication.failed",
+        "subagent.started", "subagent.tool_call", "subagent.tool_result",
+        "subagent.completed", "subagent.failed",
     }
 )
 

@@ -418,6 +418,7 @@ ApplicationWindow {
             gatewayToken.clear()
             apiKey.clear()
             systemPrompt.text = backend.systemPrompt
+            investigationModel.currentIndex = Math.max(0, investigationModel.model.indexOf(backend.investigationModel))
             let options = backend.modelOptions
             maxTokens.text = optionalText(options.max_tokens)
             temperature.text = optionalText(options.temperature)
@@ -469,6 +470,9 @@ ApplicationWindow {
                         Label { text: "OpenRouter API key"; font.pixelSize: 18; font.weight: Font.DemiBold }
                         TextField { id: apiKey; Layout.fillWidth: true; echoMode: TextInput.Password; placeholderText: backend.gatewaySettings.hasApiKey ? "Key already stored" : "sk-or-v1-…" }
                         Button { text: "Store API key"; onClicked: backend.saveApiKey(apiKey.text) }
+                        Label { text: "Investigation model (required for repository investigation)"; font.pixelSize: 18; font.weight: Font.DemiBold }
+                        ComboBox { id: investigationModel; Layout.fillWidth: true; model: backend.models.map(item => item.id); currentIndex: Math.max(0, model.indexOf(backend.investigationModel)) }
+                        Button { text: "Save investigation model"; onClicked: backend.saveInvestigationModel(currentText) }
                         Label { text: "Provider privacy"; font.pixelSize: 18; font.weight: Font.DemiBold }
                         CheckBox {
                             id: privacyDeny

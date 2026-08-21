@@ -4,8 +4,6 @@ name: Validate local gateway
 on:
   pull_request:
   push:
-    branches:
-      - '**'
 
 permissions:
   contents: read
@@ -13,12 +11,16 @@ permissions:
 jobs:
   gateway:
     runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
+      - name: Install Qt runtime dependencies
+        run: sudo apt-get update && sudo apt-get install --yes libegl1
       - name: Install test dependencies
         run: pip install -r requirements-dev.txt
       - name: Phase 6 regression matrix
@@ -43,8 +45,6 @@ jobs:
             tests/test_tooling_reporting_hardening.py \
             tests/test_narrow_tooling.py
       - name: Full pytest suite
-        env:
-          QT_QPA_PLATFORM: offscreen
         run: pytest
       - name: Ruff
         run: ruff check . --output-format=github

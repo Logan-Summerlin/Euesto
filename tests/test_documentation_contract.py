@@ -11,7 +11,7 @@ def test_public_tool_documentation_matches_registry() -> None:
     docs = (ROOT / "docs" / "TOOLS.md").read_text(encoding="utf-8")
     for name in sorted(TOOL_NAMES):
         assert f"`{name}`" in docs
-    assert TOOL_NAMES == {"read", "write", "edit", "bash", "grep", "find", "ls"}
+    assert TOOL_NAMES == {"read", "write", "edit", "bash", "grep", "find", "ls", "investigate_repository"}
 
 
 def test_limits_document_active_coding_defaults_and_ceilings() -> None:

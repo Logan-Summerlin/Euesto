@@ -304,6 +304,15 @@ class DesktopBridge(QObject):
             for key in ("web_search", "web_fetch", "datetime")
         }
 
+    @Property(str, notify=settingsChanged)
+    def investigationModel(self) -> str:
+        return self.storage.get_setting("investigation_model_id", "") or ""
+
+    @Slot(str)
+    def saveInvestigationModel(self, model_id: str) -> None:
+        self.storage.set_setting("investigation_model_id", str(model_id or "").strip())
+        self.settingsChanged.emit()
+
     @Property("QVariantMap", notify=settingsChanged)
     def gatewaySettings(self) -> dict[str, Any]:
         return {
@@ -953,6 +962,7 @@ class DesktopBridge(QObject):
                 skills=skills,
                 workspace_config=config,
                 provider_preferences=privacy,
+                investigation_model_id=self.investigationModel or None,
             )
             worker.eventReceived.connect(self.onAgentEvent)
         self.worker = worker

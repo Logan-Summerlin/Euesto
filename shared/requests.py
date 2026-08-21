@@ -4,6 +4,9 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
 
+DEFAULT_INVESTIGATION_MODEL = "xiaomi/mimo-v2.5"
+
+
 @dataclass(frozen=True, slots=True)
 class ChatMessage:
     role: Literal["system", "user", "assistant"]
@@ -101,6 +104,7 @@ class AgentRunRequest:
     max_cost: float = 1.0
     budget_profile: str = "coding"
     provider_preferences: dict[str, Any] = field(default_factory=dict)
+    investigation_model_id: str | None = DEFAULT_INVESTIGATION_MODEL
     approval_policy: Literal["prompt", "auto"] = "prompt"
 
     def __post_init__(self) -> None:
@@ -162,6 +166,7 @@ class AgentRunRequest:
             "max_cost": self.max_cost,
             "budget_profile": self.budget_profile,
             "provider_preferences": dict(self.provider_preferences),
+            "investigation_model_id": self.investigation_model_id,
         }
 
     @classmethod
@@ -170,7 +175,7 @@ class AgentRunRequest:
             "model", "messages", "mode", "workspace_id", "approval_policy", "session_id",
             "context_limit_tokens", "skills", "workspace_config", "max_iterations",
             "max_tool_calls", "max_wall_seconds", "max_cost", "budget_profile",
-            "provider_preferences",
+            "provider_preferences", "investigation_model_id",
         }
         if set(data) - expected:
             raise ValueError("Unknown agent run fields")
@@ -193,6 +198,7 @@ class AgentRunRequest:
             max_cost=float(data.get("max_cost") or 1.0),
             budget_profile=str(data.get("budget_profile") or "coding"),
             provider_preferences=_object(data.get("provider_preferences")),
+            investigation_model_id=str(data["investigation_model_id"]) if data.get("investigation_model_id") else DEFAULT_INVESTIGATION_MODEL,
         )
 
 

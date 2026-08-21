@@ -27,6 +27,7 @@ LOCAL_TOOL_SCHEMAS = [
     _tool("grep", "Search file contents.", {"query": {"type": "string"}, "path": {"type": "string"}, "regex": {"type": "boolean"}, "case_sensitive": {"type": "boolean"}, "include_glob": {"type": "string"}, "exclude_glob": {"type": "string"}, "max_results": {"type": "integer", "minimum": 1, "maximum": 5000}, "context_lines": {"type": "integer", "minimum": 0, "maximum": 5}, "include_metadata": {"type": "boolean"}, "cursor": {"type": "string"}}, ["query"]),
     _tool("find", "Recursively find files and directories.", {"path": {"type": "string"}, "glob": {"type": "string"}, "max_depth": {"type": "integer", "minimum": 0, "maximum": 20}, "max_results": {"type": "integer", "minimum": 1, "maximum": 2000}, "details": {"type": "boolean"}}),
     _tool("ls", "List a directory's immediate contents.", {"path": {"type": "string"}, "max_results": {"type": "integer", "minimum": 1, "maximum": 2000}, "details": {"type": "boolean"}}),
+    _tool("investigate_repository", "Delegate a read-only repository investigation. Put the complete investigation request in `query`, including relevant symptoms, suspected components or files, error messages, hypotheses, and useful context. The investigation model independently decides which read-only files and searches to inspect; do not provide separate path hints.", {"query": {"type": "string", "minLength": 1}}, ["query"]),
 ]
 
 
@@ -38,8 +39,8 @@ class AgentTurn:
     usage: dict[str, Any]
 
 
-async def agent_turn(model: str, messages: list[dict[str, Any]], api_key: str, mode: str, provider_preferences: dict[str, Any] | None = None) -> AgentTurn:
-    tools = [item for item in LOCAL_TOOL_SCHEMAS if item["function"]["name"] in {"read", "grep", "find", "ls"}] if mode == "plan" else LOCAL_TOOL_SCHEMAS
+async def agent_turn(model: str, messages: list[dict[str, Any]], api_key: str, mode: str, provider_preferences: dict[str, Any] | None = None, allowed_tools: set[str] | None = None) -> AgentTurn:
+    tools = [item for item in LOCAL_TOOL_SCHEMAS if item["function"]["name"] in (allowed_tools or {"read", "grep", "find", "ls"})] if mode == "plan" or allowed_tools is not None else LOCAL_TOOL_SCHEMAS
     privacy = dict(provider_preferences or {})
     payload = {"model": model, "messages": messages, "tools": tools, "tool_choice": "auto", "stream": False, "usage": {"include": True}, "provider": {"data_collection": "allow" if privacy.get("data_collection") == "allow" else "deny", "zdr": bool(privacy.get("zdr", False))}}
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "X-Title": "Local OpenRouter Chat"}

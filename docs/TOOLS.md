@@ -1,6 +1,6 @@
 # Tools
 
-This is the authoritative human-readable reference for the seven model-facing executor tools. The source of truth for dispatch is `shared/tools.py`; the model-facing JSON schemas live in `server/openrouter/agent.py`; executor limits and ceilings live in `executor/config.py`. Changes to one must be checked against the others.
+This is the authoritative human-readable reference for the eight model-facing tools. The source of truth for dispatch is `shared/tools.py`; the model-facing JSON schemas live in `server/openrouter/agent.py`; executor limits and ceilings live in `executor/config.py`. Changes to one must be checked against the others.
 
 ## Common contract
 
@@ -86,6 +86,18 @@ Every result contains `request_id`, `ok`, `output`, `data`, `error_code`, `trunc
 - **Hard maximum:** 2,000 results.
 - **Semantics:** immediate listing only; it does not recursively enumerate the whole tree.
 
+## `investigate_repository`
+
+- **Purpose:** delegate a bounded repository investigation to a cheaper model.
+- **Arguments:** `query` required; there are no separate path or hint arguments. Put the complete investigation request in `query`.
+- **Request guidance:** include relevant symptoms, error messages, suspected components or files, hypotheses, desired scope, and any other context that can help the investigator focus its search. Do not encode path hints separately; describe them naturally in the request. The investigation model decides whether to use `read`, `grep`, `find`, or `ls` and how to scope those tools.
+- **Modes:** Agent only.
+- **Permission:** read-only; it cannot mutate, execute commands, checkpoint, or publish.
+- **Model:** uses the investigation model configured in Settings; the primary model cannot select or override it.
+- **Budget:** each call receives at most 50% of the parent run's remaining cost and bounded iteration, tool-call, and wall-time limits; at most two calls are accepted per turn.
+- **Tools:** the nested investigation loop is restricted to `read`, `grep`, `find`, and `ls` and reuses the parent's executor session.
+- **Result:** returns `summary`, `files_examined`, and `truncated`; nested `subagent.*` events remain in the journal for replay/audit.
+
 ## Modes and permissions
 
 | Tool | Plan | Agent | Writes staging? |
@@ -97,5 +109,6 @@ Every result contains `request_id`, `ok`, `output`, `data`, `error_code`, `trunc
 | `grep` | yes | yes | no |
 | `find` | yes | yes | no |
 | `ls` | yes | yes | no |
+| `investigate_repository` | no | yes | no |
 
-The public seven-tool API is unchanged by this documentation. Check `shared/tools.py` and `server/openrouter/agent.py` when modifying schemas or dispatch.
+The public eight-tool model-facing API includes the scoped read-only `investigate_repository` tool. Check `shared/tools.py` and `server/openrouter/agent.py` when modifying schemas or dispatch.
