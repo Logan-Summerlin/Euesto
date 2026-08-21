@@ -358,7 +358,12 @@ class GatewayService:
         if self.agent_runtime:
             await self.agent_runtime.cancel(run_id)
         if task and not task.done():
-            task.cancel()
+            for _ in range(3):
+                if task.done():
+                    break
+                await asyncio.sleep(0)
+            if not task.done():
+                task.cancel()
         return True
 
     def pause(self, run_id: str) -> bool:
