@@ -234,8 +234,8 @@ class AgentRuntime:
                 "not exhaustively. You have a limited investigation budget and must stop researching once "
                 "you have enough evidence to answer the question. Return a concise factual synthesis as soon "
                 "as the evidence is sufficient. Do not keep searching merely to increase completeness. "
-                "The harness may force a final synthesis when the remaining budget is low, so preserve the "
-                "most relevant findings and file paths in context. "
+                "The harness will reserve one final iteration and one final tool-call slot for synthesis; "
+                "preserve the most relevant findings and file paths in context. "
                 f"Current child budget: {child.max_tool_calls} tool calls and {child.max_iterations} iterations. "
                 "Never intentionally spend the final available tool call on exploratory work; when one tool "
                 "call or one iteration remains, stop using repository tools and return your best-supported summary."
@@ -246,25 +246,25 @@ class AgentRuntime:
                 prompt += "\nPath hints: " + ", ".join(str(x) for x in hints[:20])
             submessages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}]
             files: set[str] = set()
-            force_finalize = False
+            forced_synthesis = child.max_iterations <= 1 or child.max_tool_calls <= 1
             await self.append(run_id, "subagent.started", {"parent_run_id": run_id, "parent_tool_call_id": request_id, "model": model, "budget": {"max_tool_calls": child.max_tool_calls, "max_iterations": child.max_iterations}})
-            while True:
-                if not force_finalize:
-                    child.consume_iteration()
-                allowed_tools = set() if force_finalize else set(PLAN_TOOLS)
-                if force_finalize:
-                    submessages.append({"role": "system", "content": "Stop repository exploration now. Use the evidence already gathered and return the final concise investigation summary. Do not call any tools."})
-                turn = await agent_turn(model, submessages, self._api_keys[run_id], "plan", request.provider_preferences, allowed_tools=allowed_tools)
+
+            while not forced_synthesis:
+                child.consume_iteration()
+                turn = await agent_turn(model, submessages, self._api_keys[run_id], "plan", request.provider_preferences, allowed_tools=set(PLAN_TOOLS))
                 child.add_usage(turn.usage)
                 parent_budget.add_usage(turn.usage)
                 submessages.append(turn.message)
                 if not turn.tool_calls:
-                    payload = {"summary": str(turn.content or "")[:32_000], "files_examined": sorted(files)[:200], "truncated": force_finalize}
+                    payload = {"summary": str(turn.content or "")[:32_000], "files_examined": sorted(files)[:200], "truncated": False}
                     await self.append(run_id, "subagent.completed", {"parent_run_id": run_id, "parent_tool_call_id": request_id, "usage": child.usage(), **payload})
                     result = ToolResult(request_id, True, output=json.dumps(payload), data=payload)
                     messages.append({"role": "tool", "tool_call_id": request_id, "content": result.output})
                     return False
                 for call in turn.tool_calls:
+                    if child.remaining_tool_calls <= 1:
+                        forced_synthesis = True
+                        break
                     child.consume_tool_call()
                     fn = call.get("function") if isinstance(call.get("function"), dict) else {}
                     sub_id = str(call.get("id") or uuid.uuid4())
@@ -280,10 +280,23 @@ class AgentRuntime:
                     await self.append(run_id, "subagent.tool_result", {"parent_run_id": run_id, "parent_tool_call_id": request_id, "result": result.to_dict()})
                     submessages.append({"role": "tool", "tool_call_id": sub_id, "content": self._model_tool_result(run_id, sub_name, result)})
                     if child.remaining_tool_calls <= 1 or child.remaining_iterations <= 1:
-                        force_finalize = True
+                        forced_synthesis = True
                         break
-                if force_finalize:
-                    continue
+
+            if forced_synthesis:
+                child.consume_iteration()
+                submessages.append({"role": "system", "content": "Stop repository exploration now. Use the evidence already gathered and return the final concise investigation summary. Do not call any tools."})
+                turn = await agent_turn(model, submessages, self._api_keys[run_id], "plan", request.provider_preferences, allowed_tools=set())
+                child.add_usage(turn.usage)
+                parent_budget.add_usage(turn.usage)
+                submessages.append(turn.message)
+                if turn.tool_calls:
+                    raise RuntimeError("synthesis turn unexpectedly returned tool calls")
+                payload = {"summary": str(turn.content or "")[:32_000], "files_examined": sorted(files)[:200], "truncated": True}
+                await self.append(run_id, "subagent.completed", {"parent_run_id": run_id, "parent_tool_call_id": request_id, "usage": child.usage(), **payload})
+                result = ToolResult(request_id, True, output=json.dumps(payload), data=payload)
+                messages.append({"role": "tool", "tool_call_id": request_id, "content": result.output})
+                return False
         except BudgetExceededError as exc:
             message = f"Investigation budget exhausted after partial repository analysis ({exc.used:g}/{exc.limit:g} {exc.unit})."
             payload = {"summary": message, "files_examined": sorted(files)[:200], "truncated": True, "budget_exhausted": True, "error": str(exc)}
