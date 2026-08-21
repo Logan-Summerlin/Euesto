@@ -30,3 +30,7 @@ A host file changed after the agent's snapshot, or a supplied optimistic concurr
 - A failed mutation is rolled back before control returns to the agent.
 - A stale publication baseline is rejected.
 - Discarding staging removes unpublished changes without changing the host workspace.
+
+## Broker bounds
+
+The desktop broker (`src/workspace_broker.py`) enforces its own limits on top of manifest validation: at most 500 operations and 32,000,000 bytes of staged content per publication, exact path-set agreement with the user-approved path list, unique non-aliased relative paths, and rejection of host files whose current hash no longer matches the reviewed base hash. Workspaces must be ordinary directories nested below a drive root; drive roots, the user-profile root, and protected system/credential/cloud-sync directories are refused. Recovery copies are written outside the workspace before any host file is modified.

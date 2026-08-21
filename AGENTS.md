@@ -13,16 +13,17 @@ Desktop -> authenticated gateway -> Unix-socket executor -> ephemeral staging ->
 ```
 
 - Desktop owns UI, history, approvals, runtime management, and host publication.
-- Gateway owns provider calls, agent loops, budgets, sessions, and events; it has no workspace mount.
+- Gateway owns provider calls, agent loops, budgets, sessions, journals, skills, and events; it has no workspace mount.
 - Executor owns bounded workspace access and staging; it has no network and never publishes to the host.
 - `shared/` owns framework-neutral protocol structures.
 
 ## Public tools
 
-The only model-facing local tools are `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls`.
+The model-facing local tools are `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`, and `investigate_repository`.
 
 - Plan: `read`, `grep`, `find`, `ls` only.
-- Agent: all seven; mutations remain in staging.
+- Agent: all eight; mutations remain in staging.
+- `investigate_repository` is Agent-only, read-only, capped at two calls per turn, and restricted to the Plan tool set inside its nested loop.
 - Do not add aliases, legacy compatibility tools, hidden capabilities, or alternate public vocabularies.
 
 See `docs/TOOLS.md` for the contract and `docs/LIMITS.md` for limits.
@@ -34,7 +35,7 @@ See `docs/TOOLS.md` for the contract and `docs/LIMITS.md` for limits.
 - Keep executor non-root, network-disabled, capability-restricted, and without host publication authority.
 - Keep the source mount read-only and mutations in ephemeral staging.
 - Checkpoint mutations and roll them back on failure, cancellation, or timeout.
-- Keep Bash non-interactive and bounded.
+- Keep Bash non-interactive and bounded (fixed base environment; user env is filtered and bounded).
 - Require approved, path-bounded, hash-validated publication through the desktop broker.
 
 ## Change discipline
@@ -56,7 +57,29 @@ pyside6-qmllint qml/Main.qml qml/Sidebar.qml qml/Transcript.qml qml/Composer.qml
 
 Unit tests must not require provider credentials. Container/security checks must continue to verify non-root execution, blocked egress, mounts, resource limits, traversal/link rejection, staging recovery, and exact tool-mode boundaries.
 
-
 ## Scoped investigation
 
 Read-only repository investigation delegation is in scope through `investigate_repository`. It uses the parent executor session and budget, has no mutation, command, or publication authority, and is limited to two calls per turn. General multi-agent orchestration, independent sessions, and concurrent staging remain out of scope.
+
+## Repository map
+
+Concise guide to each top-level folder:
+
+| Path | Contents |
+|---|---|
+| `.github/` | CI workflows: container security checks and release packaging. |
+| `ARCHIVED DOC/` | Superseded or fully implemented historical documents. Not normative. |
+| `assets/` | Application icon and screenshot used by the desktop app and README. |
+| `build/` | PyInstaller spec and version metadata for Windows packaging. |
+| `docker/` | Gateway/executor images, Compose topology, secrets wiring, and the container operator guide (`README.container.md`). |
+| `docs/` | Authoritative architecture, tools, limits, publication, contributor, and troubleshooting references. |
+| `executor/` | The sandboxed eight-tool service: dispatch, path safety, staging, checkpoints, resource limits. |
+| `installer/` | Inno Setup script for the Windows installer. |
+| `qml/` | Qt Quick UI (main window, sidebar, transcript, composer). |
+| `scripts/` | Developer helpers: dev up/down, install/uninstall, protocol check, icons/screenshots/mockups. |
+| `server/` | Loopback gateway: HTTP API, auth, agent runtime, budgets, journal store, OpenRouter client, skills/capabilities extensions. |
+| `shared/` | Framework-neutral protocol: tool registry, requests/responses, permissions, events, publish manifests. |
+| `src/` | Desktop application code: QML backend, controllers, storage/migrations, gateway client, runtime manager, publication broker. |
+| `tests/` | Unit, integration, contract, regression, and security tests (no provider credentials required). |
+
+Root files: `app.py` (desktop entry point), `AGENTS.md` (durable invariants), `README.md` (product overview), `PROJECT_PLAN.md` (status roadmap), `CHANGELOG.md` (release summary), `pyproject.toml` / `requirements*.txt` (Python configuration).

@@ -30,9 +30,11 @@ A portable ZIP is also supported. Docker Desktop is the required external runtim
 |---|---|---|---|
 | Chat | none | none | none |
 | Plan | `read`, `grep`, `find`, `ls` | no | no |
-| Agent | all seven | staging only | desktop broker, after approval/validation |
+| Agent | all eight | staging only | desktop broker, after approval/validation |
 
-The seven-tool public API is `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls`. Mode restrictions are enforced in code, not only in prompts. Agent Auto mode can reduce repeated prompts but does not grant network, host-path, shell, or publication authority to the executor.
+The eight-tool public API is `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`, and `investigate_repository`. Mode restrictions are enforced in code, not only in prompts. Agent Auto mode can reduce repeated prompts but does not grant network, host-path, shell, or publication authority to the executor.
+
+`investigate_repository` delegates a bounded, read-only repository investigation to a separately configured cheaper model. The nested loop can use only the Plan tools through the same executor session, debits the parent run's budget, and is capped at two calls per turn.
 
 ## Example: editing a file
 
@@ -99,21 +101,27 @@ Unit tests do not require provider credentials. Container/security checks are pa
 app.py              Desktop entry point
 src/                Desktop/runtime/publication code
 server/             Gateway and agent runtime
-executor/            Seven-tool executor, staging, checkpoints, limits
-shared/              Framework-neutral tool/protocol structures
-qml/                 Qt Quick UI
-docker/              Container images, compose, security checks
-tests/               Unit, integration, security, and contract tests
-docs/                Authoritative architecture/operator/contributor docs
-PROJECT_PLAN.md      Status-oriented roadmap
-AGENTS.md            Durable agent invariants
-CHANGELOG.md         Release/change summary
+executor/           Eight-tool executor, staging, checkpoints, limits
+shared/             Framework-neutral tool/protocol structures
+qml/                Qt Quick UI
+docker/             Container images, compose, security checks
+tests/              Unit, integration, security, and contract tests
+docs/               Authoritative architecture/operator/contributor docs
+scripts/            Developer helpers (dev up/down, install, protocol check)
+installer/          Windows installer definition
+build/              Packaging spec and version metadata
+assets/             Icon and screenshot
+.github/            CI workflows (container checks, release)
+ARCHIVED DOC/       Superseded/implemented historical documents (not normative)
+PROJECT_PLAN.md     Status-oriented roadmap
+AGENTS.md           Durable agent invariants and repository map
+CHANGELOG.md        Release/change summary
 ```
 
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md) — current components, boundaries, and data flow.
-- [Tools](docs/TOOLS.md) — authoritative seven-tool reference.
+- [Tools](docs/TOOLS.md) — authoritative eight-tool reference.
 - [Limits](docs/LIMITS.md) — effective defaults, hard ceilings, and precedence.
 - [Publication](docs/PUBLICATION.md) — staging, approval, publication, conflicts, and recovery.
 - [Contributing](docs/CONTRIBUTING.md) — development and safe tool changes.

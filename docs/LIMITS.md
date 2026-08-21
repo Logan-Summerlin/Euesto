@@ -4,7 +4,7 @@ Limits below describe the current `coding` executor profile. `executor/config.py
 
 | Area | Coding default | Hard maximum | Notes |
 |---|---:|---:|---|
-| `read` bytes | 1,000,000 | 8,000,000 | Exact byte values: 1,000,000 / 8,000,000. Requested value is clamped to effective limit. |
+| `read` bytes | 1,000,000 | 8,000,000 | Exact byte values: 1,000,000 / 8,000,000. Requested value is clamped to effective limit. The `read` tool additionally clamps every call to 256,000 bytes (64,000 default) regardless of profile. |
 | `write` bytes | 1,000,000 | 8,000,000 | Exact byte values: 1,000,000 / 8,000,000. UTF-8 text content. |
 | `edit` target | 2,000,000 | 16,000,000 | Exact byte values: 2,000,000 / 16,000,000. Target file size. |
 | `edit` result | 2,000,000 | 16,000,000 | Exact byte values: 2,000,000 / 16,000,000. Resulting file size. |
@@ -20,6 +20,19 @@ Limits below describe the current `coding` executor profile. `executor/config.py
 | Staging bytes | 2.5 GB (2,500,000,000 bytes) | 4 GB (4,000,000,000 bytes) | Exact decimal byte values: 2,500,000,000 / 4,000,000,000. Must fit the work-volume resource model. |
 | Checkpoint bytes | 2.5 GB (2,500,000,000 bytes) | 3.5 GB (3,500,000,000 bytes) | Exact decimal byte values: 2,500,000,000 / 3,500,000,000. Shares work-volume capacity with staging/temp headroom. |
 | Work capacity | 8 GB (8,000,000,000 bytes) | 8 GB (8,000,000,000 bytes) | Exact configured/ceiling value: 8,000,000,000 bytes. Actual container capacity must be greater than configured capacity and required headroom. |
+| Required temp headroom | 1 GB (1,000,000,000 bytes) | 1 GB (1,000,000,000 bytes) | Fixed resource-model constant; staging + checkpoint + headroom must fit strictly below work capacity. |
+
+## Agent run budgets
+
+Separate from executor limits, each Agent run is bounded by a budget profile (`server/agent/budgets.py`):
+
+| Profile | Iterations | Tool calls | Wall time | Cost |
+|---|---:|---:|---:|---:|
+| `coding` (default) | 600 | 900 | 1,800 s | $2.00 |
+| `extended-coding` | 1,200 | 1,800 | 3,600 s | $4.00 |
+| `large-coding` | 1,800 | 2,700 | 5,400 s | $8.00 |
+
+A profile that exceeds twice the standard `coding` value on tool calls, wall time, or cost requires explicit user approval before the session runs. Investigation delegation adds its own caps of at most two calls per turn and 36 iterations / 36 tool calls per nested loop, debited against the parent run's remaining budget.
 
 ## Profiles
 
@@ -36,5 +49,6 @@ The `small` profile reduces file/output/search limits. `coding` is the default. 
 
 The effective limits reported by `/v1/status` are intended to make the active profile and source of each configured value inspectable.
 
+## Investigation delegation
 
-Investigation delegation is bounded to two calls per turn and half of the parent run remaining cost per call; it never creates an executor, staging, or publication authority.
+Investigation delegation is bounded to two calls per turn and half of the parent run's remaining cost per call, with 36-iteration and 36-tool-call nested caps; it never creates an executor, staging, or publication authority.

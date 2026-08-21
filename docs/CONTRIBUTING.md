@@ -25,17 +25,17 @@ Container changes should also be checked with the repository's container workflo
 
 ## Tool/schema synchronization
 
-The seven public tools are defined in three places that must agree:
+The eight public tools are defined in three places that must agree:
 
-1. `shared/tools.py` — public names, request/result protocol, and publish data structures;
+1. `shared/tools.py` — public names, request/result protocol, permission sets (`PLAN_TOOLS`, `MUTATION_TOOLS`, `READ_TOOLS`, `INVESTIGATION_TOOLS`), and publish data structures;
 2. `server/openrouter/agent.py` — model-facing JSON schemas and Plan/Agent tool selection;
 3. `executor/app.py` — dispatch to the real implementations.
 
-Permissions are enforced by `executor/permissions.py`; resource defaults and hard ceilings are in `executor/config.py`. Update tests when any schema, mode rule, limit, result field, or dispatch behavior changes.
+The nested investigation loop lives in `server/agent/runtime.py`; its Plan-tool allowlist is enforced in code there. Permissions are enforced by `executor/permissions.py`; resource defaults and hard ceilings are in `executor/config.py`. Update tests when any schema, mode rule, limit, result field, or dispatch behavior changes.
 
 ## Safely modifying tools
 
-- Keep the public vocabulary exactly seven tools unless the project plan explicitly changes it.
+- Keep the public vocabulary exactly the eight registered tools unless the project plan explicitly changes it.
 - Do not add legacy aliases or compatibility wrappers for removed public tools.
 - Keep Plan read-only in code, not just in prompts.
 - Keep Agent mutations in staging; never give the executor host publication authority.
