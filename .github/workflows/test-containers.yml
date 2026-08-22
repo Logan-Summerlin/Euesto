@@ -29,8 +29,8 @@ jobs:
       - name: Slow test suite
         shell: bash
         run: |
-          pytest -m "slow and not docker"
-          code=$?
+          pytest -m "slow and not docker" || code=$?
+          code=${code:-0}
           if [ "$code" -eq 5 ]; then
             echo "No slow tests collected; treating as a pass."
             exit 0
