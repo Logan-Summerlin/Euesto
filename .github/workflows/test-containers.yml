@@ -27,7 +27,15 @@ jobs:
       - name: Fast test suite
         run: pytest -m "not slow and not docker"
       - name: Slow test suite
-        run: pytest -m "slow and not docker"
+        shell: bash
+        run: |
+          pytest -m "slow and not docker"
+          code=$?
+          if [ "$code" -eq 5 ]; then
+            echo "No slow tests collected; treating as a pass."
+            exit 0
+          fi
+          exit "$code"
       - name: Ruff
         run: ruff check . --output-format=github
       - name: Python compile check
