@@ -112,7 +112,7 @@ installer/          Windows installer definition
 build/              Packaging spec and version metadata
 assets/             Icon and screenshot
 .github/            CI workflows (container checks, release)
-ARCHIVED DOC/       Superseded/implemented historical documents (not normative)
+archived-doc/       Superseded/implemented historical documents (not normative)
 PROJECT_PLAN.md     Status-oriented roadmap
 AGENTS.md           Durable agent invariants and repository map
 CHANGELOG.md        Release/change summary
