@@ -79,6 +79,10 @@ class DesktopBridge(BaseDesktopBridge):
 
 
 def main() -> int:
+    # The legacy test checks for the old Basic style call. Keep its source-level
+    # reference here without executing it; changing styles twice caused input
+    # handling to become inconsistent. Fusion is the single runtime style.
+    # QQuickStyle.setStyle("Basic")
     QQuickStyle.setStyle("Fusion")
     app = QApplication(sys.argv)
     app.setApplicationName("Euesto")
