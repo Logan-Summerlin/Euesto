@@ -33,10 +33,15 @@ class FakeProvider:
 
 
 class SlowProvider:
+    def __init__(self, started: asyncio.Event, finished: asyncio.Event):
+        self.started = started
+        self.finished = finished
+
     async def stream_chat(self, _request, _key, cancel_event):
         yield ProviderEvent(text="partial")
-        while not cancel_event.is_set():
-            await asyncio.sleep(0.01)
+        self.started.set()
+        await cancel_event.wait()
+        self.finished.set()
 
 
 def config(tmp_path: Path) -> GatewayConfig:
@@ -119,21 +124,17 @@ def test_chat_stream_journals_usage_and_replays_after_last_event(tmp_path: Path)
 def test_cancellation_preserves_partial_events(tmp_path: Path) -> None:
     async def scenario() -> None:
         cfg = config(tmp_path)
-        service = GatewayService(cfg, provider_factory=SlowProvider)
+        started = asyncio.Event()
+        finished = asyncio.Event()
+        service = GatewayService(cfg, provider_factory=lambda: SlowProvider(started, finished))
         service.configure_client_key("sk-or-v1-test-key")
         request = ChatRequest.from_dict(
             {"model": "vendor/model", "messages": [{"role": "user", "content": "work"}]}
         )
         run_id = await service.start_chat(request)
-        for _ in range(100):
-            if any(event.type == "model.delta" for event in service.journal.events_after(run_id)):
-                break
-            await asyncio.sleep(0.01)
+        await started.wait()
         assert await service.cancel(run_id)
-        for _ in range(100):
-            if service.journal.is_terminal(run_id):
-                break
-            await asyncio.sleep(0.01)
+        await finished.wait()
         events = service.journal.events_after(run_id)
         assert any(event.type == "model.delta" and event.payload["text"] == "partial" for event in events)
         assert events[-1].type == "run.cancelled"

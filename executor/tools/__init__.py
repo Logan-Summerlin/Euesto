@@ -1,4 +1,4 @@
-"""Canonical seven-tool executor surface."""
+"""Executor-implemented local tools; the gateway delegates investigation separately."""
 
 from .bash import bash
 from .edit import edit

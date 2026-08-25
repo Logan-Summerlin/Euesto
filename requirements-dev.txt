@@ -1,4 +1,6 @@
 -r requirements.txt
 pytest>=8.3,<9
+pytest-asyncio>=0.24,<1
+pytest-timeout>=2.3,<3
 ruff>=0.9,<1
 Pillow>=11,<13

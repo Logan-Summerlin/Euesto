@@ -2,6 +2,17 @@
 
 This document describes the implementation on the current branch. Older architecture notes and phase history are not normative.
 
+## Ownership and dependency direction
+
+| Area | Owner | Dependency rule |
+|---|---|---|
+| Presentation | `qml/` | Qt Quick composition; no security or persistence policy. |
+| Desktop adapter and services | `src/` | May use `shared/`; coordinates gateway and publication through explicit clients. |
+| Bootstrap | `app.py` | Wires the desktop application; contains no domain policy. |
+| Gateway | `server/` | Owns provider and agent behavior; has no workspace mount. |
+| Executor | `executor/` | Owns bounded workspace execution; does not import desktop or gateway internals. |
+| Protocol | `shared/` | Framework-neutral; must not import `src/` or `server/`. |
+
 ## Components
 
 - **Desktop** — PySide6/Qt Quick UI (`app.py`, `src/`, `qml/`), local SQLite history/settings, runtime management, approvals, and the trusted publication broker. It is the only component allowed to publish changes into the selected host workspace.

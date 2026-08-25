@@ -68,7 +68,7 @@ Concise guide to each top-level folder:
 | Path | Contents |
 |---|---|
 | `.github/` | CI workflows: container security checks and release packaging. |
-| `ARCHIVED DOC/` | Superseded or fully implemented historical documents. Not normative. |
+| `archived-doc/` | Superseded or fully implemented historical documents. Not normative. |
 | `assets/` | Application icon and screenshot used by the desktop app and README. |
 | `build/` | PyInstaller spec and version metadata for Windows packaging. |
 | `docker/` | Gateway/executor images, Compose topology, secrets wiring, and the container operator guide (`README.container.md`). |

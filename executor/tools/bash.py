@@ -178,7 +178,12 @@ class BashRunner:
             sections.append(f"[stdout: {stdout.total} bytes]\n{stdout.bytes().decode('utf-8', errors='replace')}")
         if stderr.total:
             sections.append(f"[stderr: {stderr.total} bytes]\n{stderr.bytes().decode('utf-8', errors='replace')}")
-        return "\n".join(sections).encode("utf-8")[:max_output].decode("utf-8", errors="replace")
+        combined = "\n".join(sections).encode("utf-8")
+        if len(combined) <= max_output:
+            return combined.decode("utf-8", errors="replace")
+        marker = b"\n... [output truncated] ...\n"
+        budget = max(0, max_output - len(marker))
+        return (combined[:budget] + marker).decode("utf-8", errors="replace")
 
     @staticmethod
     def _environment(requested: object) -> dict[str, str]:
