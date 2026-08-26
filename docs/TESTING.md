@@ -10,7 +10,18 @@ Euesto tests public contracts at four levels:
 
 ## Tiers and markers
 
-The default `pytest` command is the fast, local-safe tier and excludes `slow` and `docker` tests. Tests are marked only when they genuinely need extra time or a container runtime; ordinary temporary-directory and subprocess tests are fast tests.
+The repository-owned validator is the canonical entry point. It uses the active Python interpreter, reports unavailable tools explicitly, and never forwards provider credentials.
+
+```text
+python scripts/validate.py preflight
+python scripts/validate.py fast
+python scripts/validate.py slow
+python scripts/validate.py qml
+python scripts/validate.py docker
+python scripts/validate.py all
+```
+
+The default `pytest` command collects all tests; use the validator (or the explicit expressions below) for a selected tier. Tests are marked only when they genuinely need extra time or a container runtime; ordinary temporary-directory and subprocess tests are fast tests.
 
 ```text
 pytest                         # fast: not slow and not docker

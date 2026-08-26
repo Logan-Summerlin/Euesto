@@ -43,6 +43,8 @@ EVENT_TYPES = frozenset(
         "budget.exhausted",
         "checkpoint.created",
         "checkpoint.restored",
+        "mutation.rollback",
+        "approval.timeout",
         "publication.failed",
         "subagent.started", "subagent.tool_call", "subagent.tool_result",
         "subagent.completed", "subagent.failed",

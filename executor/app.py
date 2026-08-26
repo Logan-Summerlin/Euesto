@@ -46,7 +46,7 @@ class ExecutorService:
                 output, data = await bash(request.request_id, root, request.arguments, max_seconds=self.config.effective_limit("max_command_seconds"), max_output=self.config.effective_limit("max_bash_output_bytes"), max_command_bytes=self.config.effective_limit("max_command_bytes"), max_stdin_bytes=self.config.effective_limit("max_bash_stdin_bytes"), max_checkpoint_files=self.config.max_staged_files, max_checkpoint_bytes=self.config.max_checkpoint_bytes)
             elif request.tool == "grep":
                 requested_results = request.arguments.get("max_results")
-                output, data = grep(root, request.arguments, max_bytes=self.config.effective_limit("max_grep_scan_bytes"), max_results=self.config.effective_limit("max_search_results", requested_results))
+                output, data = grep(root, request.arguments, max_bytes=self.config.effective_limit("max_grep_scan_bytes"), max_seconds=self.config.max_search_seconds, max_results=self.config.effective_limit("max_search_results", requested_results))
             elif request.tool == "find":
                 requested_results = request.arguments.get("max_results")
                 output, data = find(root, request.arguments, max_results=self.config.effective_limit("max_find_results", requested_results))

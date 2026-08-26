@@ -38,6 +38,12 @@ def is_staging_excluded(value: str) -> bool:
     return any(part.casefold() in STAGING_EXCLUDED_PARTS for part in PurePosixPath(value).parts)
 
 
+def is_tool_excluded(value: str) -> bool:
+    """Return whether read-oriented tools must omit this path."""
+    parts = PurePosixPath(value).parts
+    return is_secret_path(value) or is_staging_excluded(value) or any(part.startswith(".local-chat-") for part in parts)
+
+
 def normalize_relative(value: str, *, allow_secret: bool = False) -> str:
     if not isinstance(value, str) or "\x00" in value:
         raise UnsafePath("Path must be text without NUL bytes")

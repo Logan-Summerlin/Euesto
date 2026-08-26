@@ -105,6 +105,7 @@ class AgentRunRequest:
     budget_profile: str = "coding"
     provider_preferences: dict[str, Any] = field(default_factory=dict)
     investigation_model_id: str | None = DEFAULT_INVESTIGATION_MODEL
+    investigation_call_budget: int = 4
     approval_policy: Literal["prompt", "auto"] = "prompt"
 
     def __post_init__(self) -> None:
@@ -112,6 +113,8 @@ class AgentRunRequest:
             raise ValueError("Plan/Agent mode, model, and workspace identity are required")
         if not self.budget_profile.strip():
             raise ValueError("Agent budget profile is required")
+        if not isinstance(self.investigation_call_budget, int) or isinstance(self.investigation_call_budget, bool) or not 1 <= self.investigation_call_budget <= 4:
+            raise ValueError("Investigation call budget must be an integer from 1 to 4")
         if self.approval_policy not in {"prompt", "auto"}:
             raise ValueError("Unknown agent approval policy")
         if self.mode != "agent" and self.approval_policy != "prompt":
@@ -167,6 +170,7 @@ class AgentRunRequest:
             "budget_profile": self.budget_profile,
             "provider_preferences": dict(self.provider_preferences),
             "investigation_model_id": self.investigation_model_id,
+            "investigation_call_budget": self.investigation_call_budget,
         }
 
     @classmethod
@@ -175,7 +179,7 @@ class AgentRunRequest:
             "model", "messages", "mode", "workspace_id", "approval_policy", "session_id",
             "context_limit_tokens", "skills", "workspace_config", "max_iterations",
             "max_tool_calls", "max_wall_seconds", "max_cost", "budget_profile",
-            "provider_preferences", "investigation_model_id",
+            "provider_preferences", "investigation_model_id", "investigation_call_budget",
         }
         if set(data) - expected:
             raise ValueError("Unknown agent run fields")
@@ -199,6 +203,7 @@ class AgentRunRequest:
             budget_profile=str(data.get("budget_profile") or "coding"),
             provider_preferences=_object(data.get("provider_preferences")),
             investigation_model_id=str(data["investigation_model_id"]) if data.get("investigation_model_id") else DEFAULT_INVESTIGATION_MODEL,
+            investigation_call_budget=int(data.get("investigation_call_budget") or 4),
         )
 
 

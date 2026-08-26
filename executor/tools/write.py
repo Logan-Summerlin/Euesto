@@ -3,6 +3,7 @@ from __future__ import annotations
 import codecs
 from pathlib import Path
 
+from ..atomic_io import atomic_write_text
 from ..mutations import bounded_diff, bounded_edit_diff, create_mutation_checkpoint, guard_shrink, rollback_mutation, sha256
 from ..paths import safe_path
 
@@ -70,7 +71,7 @@ def write(root: Path, arguments: dict, *, max_bytes: int, max_checkpoint_files: 
         target = safe_path(root, relative, must_exist=False)
         if target.exists() and (target.is_symlink() or not target.is_file() or target.stat().st_nlink > 1):
             raise ValueError("write target must be a regular, non-hard-linked file")
-        target.write_text(content, encoding="utf-8", newline="")
+        atomic_write_text(target, content)
     except Exception:
         rollback_mutation(root, checkpoint_id)
         raise
@@ -82,7 +83,7 @@ def write(root: Path, arguments: dict, *, max_bytes: int, max_checkpoint_files: 
         "path": relative, "old_sha256": old_hash, "new_sha256": new_hash, "checkpoint_id": checkpoint_id,
         "size_bytes": requested_bytes, "requested_write_bytes": requested_bytes, "max_write_bytes": max_bytes,
         "staging_capacity_bytes": max_staging_bytes, "diff": diff,
-        "atomicity": "validated-before-write-with-checkpoint-rollback",
+        "atomicity": "tempfile-fsync-atomic-replace-with-checkpoint-rollback",
     }
 
 

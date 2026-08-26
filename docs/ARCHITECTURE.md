@@ -51,11 +51,11 @@ The gateway may communicate with the model provider, but cannot read the workspa
 
 **Chat** has no local workspace tools. **Plan** exposes only `read`, `grep`, `find`, and `ls`, against the read-only source. **Agent** exposes all eight tools, with mutations confined to staging. Publication is a separate desktop-authorized operation.
 
-Agent runs additionally carry an approval policy (`prompt` or `auto`) and a budget profile. Auto mode auto-allows otherwise-valid tool calls but does not grant network, host-path, shell, or publication authority to the executor.
+Agent runs additionally carry an approval policy (`prompt` or `auto`) and a budget profile. Prompted approvals use the remaining wall-clock budget as their deadline; expiry is journaled as `approval.timeout` and cannot leave a run waiting indefinitely. Auto mode auto-allows otherwise-valid tool calls but does not grant network, host-path, shell, or publication authority to the executor.
 
 ## Investigation delegation
 
-`investigate_repository` is an eighth public tool available in Agent mode. It opens a bounded nested agent loop that uses a separately configured investigation model and may call only the Plan tool set through the parent's existing executor session. Its cost debits the parent run's budget; at most two calls are accepted per turn; nested activity is journaled as `subagent.*` events for replay and audit. The delegation grants no mutation, command, staging, or publication authority.
+`investigate_repository` is an eighth public tool available in Agent mode. It opens a bounded nested agent loop that uses a separately configured investigation model and may call only the Plan tool set through the parent's existing executor session. Its cost debits the parent run's budget; up to four calls are accepted per turn; nested activity is journaled as `subagent.*` events for replay and audit. The delegation grants no mutation, command, staging, or publication authority.
 
 ## Budgets and journaling
 

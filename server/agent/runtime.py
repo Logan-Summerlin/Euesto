@@ -14,7 +14,7 @@ from server.openrouter.errors import ProviderError
 from shared.permissions import PermissionDecision, PermissionRule, resolve_permission
 from shared.requests import DEFAULT_INVESTIGATION_MODEL, AgentRunRequest
 from shared.tools import INVESTIGATION_TOOLS, MUTATION_TOOLS, PLAN_TOOLS, READ_TOOLS, ToolRequest, ToolResult
-from .approvals import ApprovalCoordinator
+from .approvals import ApprovalCoordinator, ApprovalTimeoutError
 from .budgets import BudgetExceededError, RunBudget, requires_budget_approval, resolve_budget_profile
 from .context import compact_agent_context, estimate_message_tokens
 
@@ -24,6 +24,8 @@ SessionSaver = Callable[[str, str, str, list[dict[str, Any]], list[dict[str, Any
 
 INVESTIGATION_MAX_ITERATIONS = 36
 INVESTIGATION_MAX_TOOL_CALLS = 36
+INVESTIGATION_HARD_CALL_CEILING = 4
+DEFAULT_INVESTIGATION_CALL_BUDGET = 4
 
 
 class AgentRuntime:
@@ -41,6 +43,7 @@ class AgentRuntime:
         self._tool_result_bytes: dict[str, int] = {}
         self._approved_budget_sessions: set[str] = set()
         self._investigation_calls: dict[str, int] = {}
+        self._investigation_call_budget: dict[str, int] = {}
         self._api_keys: dict[str, str] = {}
 
     async def run(self, run_id: str, request: AgentRunRequest, api_key: str, *, initial_messages=None, visible_messages=None, budget_state=None, resumed=False) -> None:
@@ -59,7 +62,7 @@ class AgentRuntime:
                 if session_key not in self._approved_budget_sessions:
                     approval_id = str(uuid.uuid4())
                     await self.append(run_id, "approval.required", {"approval_id": approval_id, "kind": "budget", "budget_profile": profile.name, "standard_profile": "coding", "budgets": {"max_iterations": profile.max_iterations, "max_tool_calls": profile.max_tool_calls, "max_wall_seconds": profile.max_wall_seconds, "max_cost": profile.max_cost}, "approval_reason": "This profile exceeds the standard coding profile by more than 2x on at least one approved resource budget.", "available_decisions": ["deny", "allow_run"]})
-                    decision = await self.approvals.wait(run_id, approval_id)
+                    decision = await self.approvals.wait(run_id, approval_id, timeout=budget.remaining_wall_seconds)
                     if decision != PermissionDecision.ALLOW_RUN:
                         raise RuntimeError(f"Budget profile '{profile.name}' requires explicit user approval before the session can run.")
                     self._approved_budget_sessions.add(session_key)
@@ -112,6 +115,9 @@ class AgentRuntime:
                 if request.session_id and self.session_saver:
                     self.session_saver(request.session_id, request.workspace_id, request.mode, messages, partial)
                 self._save_snapshot(run_id, request, messages, partial, budget, True)
+        except ApprovalTimeoutError as exc:
+            await self.append(run_id, "approval.timeout", {"approval_id": exc.approval_id, "message": str(exc), "reason": "wall_time_budget", "budget": budget.snapshot()})
+            await self.append(run_id, "run.failed", {"code": "approval.timeout", "message": str(exc), "retryable": False, "budget": budget.snapshot()})
         except ProviderError as exc:
             await self.append(run_id, "run.failed", {"code": exc.code, "message": str(exc), "retryable": exc.retryable, "budget": budget.snapshot()})
         except Exception as exc:
@@ -122,6 +128,7 @@ class AgentRuntime:
             self._run_rules.pop(run_id, None)
             self._tool_result_bytes.pop(run_id, None)
             self._investigation_calls.pop(run_id, None)
+            self._investigation_call_budget.pop(run_id, None)
             self._api_keys.pop(run_id, None)
 
     async def _execute_tool_call(self, run_id: str, request: AgentRunRequest, raw_call: dict[str, Any], messages: list[dict[str, Any]], budget: RunBudget) -> bool:
@@ -154,7 +161,7 @@ class AgentRuntime:
         if decision == PermissionDecision.ASK:
             approval_id = str(uuid.uuid4())
             await self.append(run_id, "approval.required", {"approval_id": approval_id, "kind": "tool", "tool": name, "arguments": arguments, "mutation": name in MUTATION_TOOLS, "available_decisions": ["deny", "allow_once", "allow_run", "allow_rule"]})
-            decision = await self.approvals.wait(run_id, approval_id, tool_request, request.workspace_id)
+            decision = await self.approvals.wait(run_id, approval_id, tool_request, request.workspace_id, budget.remaining_wall_seconds)
             if decision == PermissionDecision.ALLOW_RUN:
                 self._run_rules.setdefault(run_id, []).append(_rule_for_request(tool_request, request.workspace_id))
         if decision == PermissionDecision.DENY:
@@ -164,6 +171,8 @@ class AgentRuntime:
             result = await self.executor.execute(tool_request)
             self.active_request.pop(run_id, None)
         await self.append(run_id, "tool.output", result.to_dict())
+        if name == "bash" and bool(result.data.get("rolled_back")):
+            await self.append(run_id, "mutation.rollback", {"request_id": request_id, "tool": name, "reason": "nonzero_exit", "checkpoint_id": result.data.get("checkpoint_id")})
         if result.data.get("checkpoint_id"):
             await self.append(run_id, "checkpoint.created", {"checkpoint_id": str(result.data["checkpoint_id"]), "request_id": request_id, "tool": name})
         messages.append({"role": "tool", "tool_call_id": request_id, "content": self._model_tool_result(run_id, name, result)})
@@ -220,8 +229,14 @@ class AgentRuntime:
         """Run a bounded, read-only loop through the parent's executor session."""
         count = self._investigation_calls.get(run_id, 0)
         self._investigation_calls[run_id] = count + 1
-        if count >= 2:
-            result = ToolResult(request_id, False, output=json.dumps({"error": "At most two repository investigations are allowed per turn.", "fallback": "Continue with the repository tools directly."}), error_code="investigation.call_limit", data={"fallback": "direct_tools"})
+        requested_budget = getattr(request, "investigation_call_budget", DEFAULT_INVESTIGATION_CALL_BUDGET)
+        try:
+            budget_limit = max(1, min(INVESTIGATION_HARD_CALL_CEILING, int(requested_budget)))
+        except (TypeError, ValueError):
+            budget_limit = DEFAULT_INVESTIGATION_CALL_BUDGET
+        self._investigation_call_budget[run_id] = budget_limit
+        if count >= budget_limit:
+            result = ToolResult(request_id, False, output=json.dumps({"error": f"Investigation call budget exhausted ({budget_limit} calls per turn).", "remaining": 0, "fallback": "Continue with the repository tools directly."}), error_code="investigation.call_limit", data={"fallback": "direct_tools", "budget": budget_limit, "calls_used": count})
             messages.append({"role": "tool", "tool_call_id": request_id, "content": result.output})
             return False
         try:
@@ -373,7 +388,7 @@ def _render_executor_context(status: dict[str, Any], mode: str, approval_policy:
         lines.append("- Tools write an ephemeral staged copy; host publication is pending review unless session Auto is active.")
         lines.append("- After mutations, the tool reports created/modified/deleted files and permission changes; checkpoint hashes are audit metadata.")
         lines.append("- Bash runs non-interactively with bounded environment, output, timeout, and process cleanup.")
-        lines.append("- Prefer one investigate_repository call; use a second only if the first failed or was clearly unusable. Code enforces a hard cap of two per turn.")
+        lines.append("- Prefer one investigate_repository call; use follow-ups only when needed. The configurable budget is capped at four calls per parent turn and resets for each turn.")
     else:
         lines.append("- Plan mode reads the selected source workspace; mutation and command tools are unavailable.")
     limits = environment.get("limits")

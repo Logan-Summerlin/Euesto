@@ -36,6 +36,7 @@ class ExecutorConfig:
     max_find_results: int = 500
     max_ls_results: int = 500
     max_grep_scan_bytes: int = 64_000_000
+    max_search_seconds: int = 30
     work_capacity_bytes: int = 8_000_000_000
 
     REQUIRED_TEMP_HEADROOM_BYTES: ClassVar[int] = 1_000_000_000
@@ -55,6 +56,7 @@ class ExecutorConfig:
         "max_find_results": 2_000,
         "max_ls_results": 2_000,
         "max_grep_scan_bytes": 256_000_000,
+        "max_search_seconds": 300,
         "work_capacity_bytes": 8_000_000_000,
     }
     _LIMIT_FIELDS: ClassVar[tuple[str, ...]] = tuple(HARD_CEILINGS)
@@ -143,6 +145,7 @@ class ExecutorConfig:
             "max_find_results": 500,
             "max_ls_results": 500,
             "max_grep_scan_bytes": 64_000_000,
+            "max_search_seconds": 30,
             "work_capacity_bytes": 8_000_000_000,
         }
         return {

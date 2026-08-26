@@ -14,7 +14,7 @@ class ExecutorToolError(Exception):
         return self.message
 
 
-_ABSOLUTE_PATH = re.compile(r"(?:[A-Za-z]:[\\/]|/)[^\s,;)]*")
+_ABSOLUTE_PATH = re.compile(r"(?:[A-Za-z]:[\\/]|\\\\[^\s,;)]*|/)[^\s,;)]*")
 
 
 def safe_message(value: object) -> str:

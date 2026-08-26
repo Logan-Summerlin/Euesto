@@ -16,6 +16,8 @@ ACTIVITY_EVENT_TYPES = frozenset(
         "run.paused",
         "checkpoint.created",
         "checkpoint.restored",
+        "mutation.rollback",
+        "approval.timeout",
         "publication.failed",
     }
 )
@@ -216,13 +218,17 @@ def _activity_items(events: Iterable[dict[str, object]]) -> list[dict[str, Any]]
                 continue
             title = _activity_title(event_type, payload)
             attention = True
-        elif event_type in {"run.failed", "run.paused", "publication.failed"}:
+        elif event_type in {"run.failed", "run.paused", "publication.failed", "mutation.rollback", "approval.timeout"}:
             title = (
                 "Run failed"
                 if event_type == "run.failed"
                 else "Run paused"
                 if event_type == "run.paused"
                 else "Host publication unavailable"
+                if event_type == "publication.failed"
+                else "Changes discarded (rollback)"
+                if event_type == "mutation.rollback"
+                else "Approval timed out"
             )
             attention = True
         elif event_type in {"checkpoint.created", "checkpoint.restored"}:
@@ -238,6 +244,8 @@ def _activity_items(events: Iterable[dict[str, object]]) -> list[dict[str, Any]]
             {
                 "key": f"{event.get('run_id', '')}:{event.get('event_id', '')}",
                 "title": title,
+                "eventType": event_type,
+                "rollback": event_type == "mutation.rollback",
                 "attention": attention,
             }
         )
@@ -276,6 +284,8 @@ def _activity_needs_attention(events: Iterable[dict[str, object]]) -> bool:
             "run.failed",
             "run.paused",
             "publication.failed",
+            "mutation.rollback",
+            "approval.timeout",
         }
         for event in events
     )

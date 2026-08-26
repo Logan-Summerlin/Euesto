@@ -5,7 +5,7 @@ import fnmatch
 from pathlib import Path
 from typing import Iterator
 
-from ..paths import is_secret_path, safe_path
+from ..paths import is_tool_excluded, safe_path
 
 MAX_CURSOR_OFFSET = 100_000
 
@@ -45,7 +45,7 @@ def _iter_matches(root: Path, directory: Path, scope: Path, depth: int, max_dept
     for path in children:
         if path.is_symlink(): continue
         relative = path.relative_to(root).as_posix()
-        if is_secret_path(relative) or any(part.startswith(".local-chat-") for part in path.relative_to(root).parts): continue
+        if is_tool_excluded(relative): continue
         if fnmatch.fnmatch(path.relative_to(scope).as_posix(), pattern) or fnmatch.fnmatch(path.name, pattern): yield path
         if path.is_dir() and depth < max_depth: yield from _iter_matches(root, path, scope, depth + 1, max_depth, pattern)
 

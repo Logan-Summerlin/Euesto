@@ -1,5 +1,13 @@
 # Troubleshooting
 
+## Validation: unavailable versus failed
+
+Run `python scripts/validate.py preflight --json validation-report.json`. **Unavailable** means a
+required executable or dependency is absent (or a pytest tier collected no tests); install the
+locked development dependencies or use `--allow-unavailable` only for diagnostics. **Failed** means
+the tool ran and returned an error, timed out, or the environment violated a prerequisite and must
+be investigated. A full validation run does not silently convert either result into a pass.
+
 ## Docker failures
 
 Confirm Docker Desktop is running with Linux containers and that the required runtime images are available. Re-run the runtime setup after stopping stale containers. If a container starts but the app does not enable Plan/Agent, verify gateway health and exact executor/workspace identity.
@@ -34,9 +42,9 @@ A stale manifest means the publication baseline changed. Discard/reseed staging 
 
 ## Investigation failures
 
-- `investigation.call_limit`: more than two `investigate_repository` calls were attempted in one turn. Continue with the direct tools instead.
+- `investigation.call_limit`: more than four `investigate_repository` calls were attempted in one turn. Continue with the direct tools instead.
 - `investigation.tool_not_permitted`: the nested loop tried a non-Plan tool; enforcement is in code, so this indicates the investigator model attempted an out-of-scope call.
-- `investigation.failed`: the nested loop errored (provider, budget, or tool failure). The parent is told to fall back to direct `read`/`grep`/`find`/`ls` use. A failed call still counts toward the two-call cap.
+- `investigation.failed`: the nested loop errored (provider, budget, or tool failure). The parent is told to fall back to direct `read`/`grep`/`find`/`ls` use. A failed call still counts toward the four-call cap.
 - Truncated or thin summaries: the child budget ran out and forced synthesis. Re-run with a narrower query or investigate directly.
 
 ## Resource-limit failures
@@ -46,3 +54,17 @@ The effective value is the minimum of the request, configured profile, and hard 
 ## Recovery/reset
 
 To abandon unpublished Agent work, use the staging discard/recovery controls. To recover from a publication interruption, use the recovery state maintained by the desktop broker. Resetting local application data is a last resort because it can remove local history, settings, and credentials; preserve recovery data first when investigating a publication incident.
+
+## Disappearing transcript text (Windows)
+
+Euesto supports an opt-in scene-graph diagnostic. Start the application with
+`EUESTO_RENDER_DIAGNOSTIC=software`; this sets `QSG_RHI_BACKEND=software` before
+Qt initializes. Compare the same long, scrolled transcript with and without
+this setting. If the issue only occurs on the normal backend, GPU/RHI glyph
+cache pressure is a likely contributor. The software backend is diagnostic
+only and is not the default because it can reduce UI performance.
+
+Transcript rich text uses Qt native text rendering as the low-risk mitigation.
+When reporting a remaining issue, record whether the delegate exists, its
+HTML is populated, its geometry is non-zero, and whether software rendering
+changes the result.

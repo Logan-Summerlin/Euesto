@@ -54,10 +54,8 @@ def read(root: Path, arguments: dict, *, max_bytes: int) -> tuple[str, dict]:
                 f"line range is outside file: start_line={start_line}, end_line={end_line or line_count}, line_count={line_count}"
             )
         requested_end = end_line or line_count
-        if requested_end > line_count:
-            raise ValueError(
-                f"line range is outside file: start_line={start_line}, end_line={requested_end}, line_count={line_count}"
-            )
+        range_clipped = requested_end > line_count
+        requested_end = min(requested_end, line_count)
         raw = _read_bounded(path, start_offset, min(byte_limit, max(0, end_offset - start_offset)))
         text, consumed_bytes = _decode_bounded(raw)
         next_offset = start_offset + consumed_bytes
@@ -76,6 +74,7 @@ def read(root: Path, arguments: dict, *, max_bytes: int) -> tuple[str, dict]:
             next_start_line=next_line if truncated else None,
             truncated=truncated,
         )
+        data["range_clipped"] = range_clipped
         return text, data
 
     offset = arguments.get("offset", 0)

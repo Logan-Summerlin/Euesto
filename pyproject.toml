@@ -1,6 +1,6 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q --timeout=60 -m 'not slow and not docker'"
+addopts = "-q --timeout=60"
 pythonpath = ["."]
 markers = [
     "slow: tests that are unsuitable for the default fast feedback loop",

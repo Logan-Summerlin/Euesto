@@ -50,6 +50,14 @@ Rectangle {
         activityOverrides = next
     }
 
+    function openExternalLink(destination) {
+        let value = String(destination || "")
+        if (!/^(https?:|mailto:)/i.test(value))
+            return
+        linkDialog.destination = value
+        linkDialog.open()
+    }
+
     onConversationIdChanged: {
         activityOverrides = ({})
         followingTail = true
@@ -64,16 +72,18 @@ Rectangle {
         onTriggered: root.followTail()
     }
 
-    Flickable {
+    ListView {
         id: viewport
         objectName: "transcriptViewport"
         anchors.fill: parent
         anchors.margins: 18
         clip: true
         contentWidth: width
-        contentHeight: Math.ceil(transcriptColumn.implicitHeight)
         boundsBehavior: Flickable.StopAtBounds
-        flickableDirection: Flickable.VerticalFlick
+        flickDirection: Flickable.VerticalFlick
+        reuseItems: true
+        cacheBuffer: 320
+        spacing: 12
         pixelAligned: true
 
         ScrollBar.vertical: ScrollBar {
@@ -116,21 +126,13 @@ Rectangle {
                 tailTimer.restart()
         }
 
-        Column {
-            id: transcriptColumn
-            width: Math.max(0, viewport.width - transcriptScrollBar.width - 8)
-            spacing: 12
-
-            Repeater {
-                id: transcriptRepeater
-                objectName: "transcriptRepeater"
-                model: transcriptModel
-
-                delegate: Rectangle {
+        model: transcriptModel
+        delegate: Rectangle {
+                    objectName: "transcriptDelegate"
                     id: card
                     required property var rowData
                     readonly property var value: rowData || ({})
-                    width: transcriptColumn.width
+                    width: Math.max(0, viewport.width - transcriptScrollBar.width - 8)
                     height: Math.ceil(content.implicitHeight + 24)
                     radius: 12
                     color: card.value.role === "user" ? root.userColor : root.cardColor
@@ -151,6 +153,7 @@ Rectangle {
                                     : card.value.role === "activity"
                                       ? "Legacy activity" : "Assistant"
                                 color: root.mutedColor
+                                renderType: Text.NativeRendering
                                 font.weight: Font.DemiBold
                             }
                             Item { Layout.fillWidth: true }
@@ -158,6 +161,7 @@ Rectangle {
                                 visible: card.value.streaming === true
                                 text: "Working"
                                 color: root.accentColor
+                                renderType: Text.NativeRendering
                             }
                             ToolButton {
                                 visible: card.value.role === "assistant"
@@ -212,6 +216,7 @@ Rectangle {
                                             text: activityEvent.value.title || "tool"
                                             color: activityEvent.value.attention === true
                                                 ? "#e57373" : root.mutedColor
+                                            renderType: Text.NativeRendering
                                             font.weight: Font.DemiBold
                                             elide: Text.ElideRight
                                         }
@@ -228,12 +233,14 @@ Rectangle {
                             visible: String(card.value.content || "").length > 0
                             text: card.value.html || ""
                             textFormat: TextEdit.RichText
+                            // Native glyph rendering avoids GPU glyph-cache eviction in long transcripts.
+                            renderType: Text.NativeRendering
                             readOnly: true
                             selectByMouse: true
                             wrapMode: TextEdit.Wrap
                             verticalAlignment: TextEdit.AlignTop
                             color: root.textColor
-                            onLinkActivated: link => Qt.openUrlExternally(link)
+                            onLinkActivated: link => root.openExternalLink(String(link))
                         }
 
                         RowLayout {
@@ -245,6 +252,7 @@ Rectangle {
                                 text: card.value.metadata || ""
                                 color: root.mutedColor
                                 font.pixelSize: 11
+                                renderType: Text.NativeRendering
                                 elide: Text.ElideRight
                             }
                             ToolButton {
@@ -259,15 +267,14 @@ Rectangle {
                         }
                     }
                 }
-            }
         }
-    }
 
     Label {
         anchors.centerIn: parent
-        visible: transcriptRepeater.count === 0
+        visible: viewport.count === 0
         text: "Start a conversation"
         color: root.mutedColor
+        renderType: Text.NativeRendering
         font.pixelSize: 18
     }
 
@@ -276,6 +283,38 @@ Rectangle {
         function onTranscriptChanged() {
             if (root.followingTail && !root.userScrolling)
                 tailTimer.restart()
+        }
+    }
+
+    Dialog {
+        id: linkDialog
+        property string destination: ""
+        title: "Open external link?"
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(680, root.width - 60)
+        standardButtons: Dialog.Open | Dialog.Cancel
+        onAccepted: Qt.openUrlExternally(destination)
+        contentItem: Column {
+            spacing: 10
+            padding: 16
+            Label {
+                text: "Destination"
+                color: root.mutedColor
+                font.weight: Font.DemiBold
+            }
+            Text {
+                width: parent.width
+                text: linkDialog.destination
+                color: root.textColor
+                wrapMode: Text.Wrap
+                selectByMouse: true
+            }
+            Label {
+                text: "Only open this link if you recognize and trust the destination."
+                color: root.mutedColor
+                wrapMode: Text.Wrap
+            }
         }
     }
 

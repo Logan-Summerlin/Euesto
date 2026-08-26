@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -79,6 +80,9 @@ class DesktopBridge(BaseDesktopBridge):
 
 
 def main() -> int:
+    # Opt-in diagnostic requested by the QoL plan; must be set before Qt initializes.
+    if os.environ.get("EUESTO_RENDER_DIAGNOSTIC", "").casefold() == "software":
+        os.environ.setdefault("QSG_RHI_BACKEND", "software")
     # The legacy test checks for the old Basic style call. Keep its source-level
     # reference here without executing it; changing styles twice caused input
     # handling to become inconsistent. Fusion is the single runtime style.
