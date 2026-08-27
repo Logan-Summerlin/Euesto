@@ -75,7 +75,7 @@ jobs:
       - name: Run container security tier
         shell: bash
         run: |
-          trap 'docker compose --file docker/compose.yaml --profile agent down --volumes --remove-orphans || true; rm -rf -- "$LOCAL_CHAT_CI_ROOT"' EXIT
+          trap 'docker compose --file docker/compose.yaml --profile agent down --volumes --remove-orphans || true' EXIT
           python scripts/validate.py docker
       - name: Compose policy rendering
         shell: bash
@@ -90,3 +90,9 @@ jobs:
         with:
           name: container-compose-report
           path: compose.yaml
+      - name: Cleanup disposable fixtures
+        if: always()
+        shell: bash
+        run: |
+          source scripts/docker-fixtures.sh
+          cleanup_docker_fixtures
