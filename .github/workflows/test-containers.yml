@@ -84,8 +84,8 @@ jobs:
           set -euo pipefail
           : "${LOCAL_CHAT_SECRETS_DIR:?LOCAL_CHAT_SECRETS_DIR was not preserved from fixture setup}"
           : "${LOCAL_CHAT_WORKSPACE:?LOCAL_CHAT_WORKSPACE was not preserved from fixture setup}"
-          docker compose --file docker/compose.yaml config > compose.yaml
-          docker compose --file docker/compose.yaml config --format json > compose.json
+          docker compose --file docker/compose.yaml --profile agent config > compose.yaml
+          docker compose --file docker/compose.yaml --profile agent config --format json > compose.json
           python - <<'PY'
           import json
           from pathlib import Path
@@ -94,6 +94,7 @@ jobs:
           services = compose.get("services", {})
           executor = services.get("executor", {})
           assert executor.get("network_mode") == "none", executor
+          assert services, compose
           assert all(service.get("read_only") is True for service in services.values()), services
           assert all(
               "no-new-privileges:true" in service.get("security_opt", [])
