@@ -85,10 +85,22 @@ jobs:
           : "${LOCAL_CHAT_SECRETS_DIR:?LOCAL_CHAT_SECRETS_DIR was not preserved from fixture setup}"
           : "${LOCAL_CHAT_WORKSPACE:?LOCAL_CHAT_WORKSPACE was not preserved from fixture setup}"
           docker compose --file docker/compose.yaml config > compose.yaml
-          grep -Eq 'network_mode:[[:space:]]*"?none"?[[:space:]]*$' compose.yaml
-          grep -Eq 'read_only:[[:space:]]*"?true"?[[:space:]]*$' compose.yaml
-          grep -Eq '^[[:space:]]*-[[:space:]]*no-new-privileges:true[[:space:]]*$' compose.yaml
-          ! grep -Fq '/var/run/docker.sock' compose.yaml
+          python - <<'PY'
+          import yaml
+
+          with open("compose.yaml", encoding="utf-8") as stream:
+              compose = yaml.safe_load(stream)
+
+          services = compose.get("services", {})
+          executor = services.get("executor", {})
+          assert executor.get("network_mode") == "none", executor
+          assert all(service.get("read_only") is True for service in services.values()), services
+          assert all(
+              "no-new-privileges:true" in service.get("security_opt", [])
+              for service in services.values()
+          ), services
+          assert "/var/run/docker.sock" not in open("compose.yaml", encoding="utf-8").read()
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
