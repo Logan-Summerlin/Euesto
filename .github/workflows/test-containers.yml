@@ -69,6 +69,7 @@ jobs:
         run: |
           source scripts/docker-fixtures.sh
           setup_fixtures
+          echo "LOCAL_CHAT_CI_ROOT=$LOCAL_CHAT_CI_ROOT" >> "$GITHUB_ENV"
           echo "LOCAL_CHAT_SECRETS_DIR=$LOCAL_CHAT_SECRETS_DIR" >> "$GITHUB_ENV"
           echo "LOCAL_CHAT_WORKSPACE=$LOCAL_CHAT_WORKSPACE" >> "$GITHUB_ENV"
           echo "LOCAL_CHAT_WORKSPACE_ID=ci-workspace" >> "$GITHUB_ENV"
@@ -80,7 +81,10 @@ jobs:
       - name: Compose policy rendering
         shell: bash
         run: |
-          LOCAL_CHAT_SECRETS_DIR="$LOCAL_CHAT_SECRETS_DIR" docker compose --file docker/compose.yaml config > compose.yaml
+          set -euo pipefail
+          : "${LOCAL_CHAT_SECRETS_DIR:?LOCAL_CHAT_SECRETS_DIR was not preserved from fixture setup}"
+          : "${LOCAL_CHAT_WORKSPACE:?LOCAL_CHAT_WORKSPACE was not preserved from fixture setup}"
+          docker compose --file docker/compose.yaml config > compose.yaml
           grep -F 'network_mode: none' compose.yaml
           grep -F 'read_only: true' compose.yaml
           grep -F 'no-new-privileges:true' compose.yaml
