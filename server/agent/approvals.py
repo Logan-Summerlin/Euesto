@@ -36,7 +36,7 @@ class ApprovalCoordinator:
                 raise ApprovalTimeoutError("Approval deadline has expired.", approval_id)
             try:
                 return await asyncio.wait_for(future, timeout=timeout)
-            except asyncio.TimeoutError as exc:
+            except TimeoutError as exc:
                 raise ApprovalTimeoutError("Approval deadline expired before a decision was received.", approval_id) from exc
         finally:
             self.pending.pop((run_id, approval_id), None)

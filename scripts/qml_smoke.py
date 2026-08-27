@@ -15,7 +15,7 @@ try:
     from PySide6.QtGui import QGuiApplication
 except ImportError as exc:
     print(f"unavailable: PySide6 ({exc})", file=sys.stderr)
-    raise SystemExit(127)
+    raise SystemExit(127) from exc
 
 app = QGuiApplication(sys.argv)
 engine = QQmlApplicationEngine()
