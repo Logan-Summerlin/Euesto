@@ -20,8 +20,15 @@ setup_fixtures() {
 }
 
 cleanup_docker_fixtures() {
+  local ci_root="${LOCAL_CHAT_CI_ROOT:-}"
+  if [[ -z "$ci_root" && -n "${LOCAL_CHAT_SECRETS_DIR:-}" ]]; then
+    ci_root="${LOCAL_CHAT_SECRETS_DIR%/secrets}"
+  fi
+  if [[ -z "$ci_root" ]]; then
+    ci_root="${TMPDIR:-/tmp}/euesto-validation"
+  fi
   docker compose --file docker/compose.yaml --profile agent down --volumes --remove-orphans >/dev/null 2>&1 || true
-  rm -rf -- "$LOCAL_CHAT_CI_ROOT"
+  rm -rf -- "$ci_root"
 }
 
 # Preserve executable-script behavior while allowing the workflow to source this
