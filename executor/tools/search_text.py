@@ -29,8 +29,9 @@ def search_text(root: Path, arguments: dict, *, max_bytes: int, max_results: int
         if not _matches_glob(relative, include) or (exclude and _matches_glob(relative, exclude)): continue
         files_considered += 1
         size = path.stat().st_size
-        if cumulative_bytes + size > max_bytes:
-            truncated = True; truncation_reason = "cumulative_bytes"; break
+        if size > max_bytes:
+            skipped_large += 1
+            continue
         try: text = path.read_text(encoding="utf-8")
         except (UnicodeError, OSError): continue
         files_searched += 1; cumulative_bytes += size; text_lines = text.splitlines()
@@ -59,7 +60,7 @@ def _iter_files(root: Path, scope: Path):
     if scope.is_file(): yield scope; return
     for directory, dirnames, filenames in os.walk(scope, topdown=True):
         current = Path(directory)
-        dirnames[:] = sorted(name for name in dirnames if not (is_secret_path(current.joinpath(name).relative_to(root).as_posix()) or any(part.startswith(".local-chat-") for part in current.joinpath(name).relative_to(root).parts)))
+        dirnames[:] = sorted(name for name in dirnames if not is_tool_excluded(current.joinpath(name).relative_to(root).as_posix()))
         for name in sorted(filenames, key=str.casefold): yield current / name
 
 
