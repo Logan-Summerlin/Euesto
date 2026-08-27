@@ -24,7 +24,7 @@ def resource_path(relative: str) -> Path:
     return base / relative
 
 
-class DesktopBridge(BaseDesktopBridge):
+class _DesktopBridge(BaseDesktopBridge):
     """Desktop bridge with a concrete, persistent investigation-model setting."""
 
     _MIMO_MODEL = INVESTIGATION_MODEL
@@ -77,6 +77,9 @@ class DesktopBridge(BaseDesktopBridge):
     @Slot()
     def loadPermissionRules(self) -> None:
         QTimer.singleShot(0, super().loadPermissionRules)
+
+
+DesktopBridge = _DesktopBridge
 
 
 def main() -> int:
