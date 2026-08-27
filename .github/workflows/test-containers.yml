@@ -85,9 +85,9 @@ jobs:
           : "${LOCAL_CHAT_SECRETS_DIR:?LOCAL_CHAT_SECRETS_DIR was not preserved from fixture setup}"
           : "${LOCAL_CHAT_WORKSPACE:?LOCAL_CHAT_WORKSPACE was not preserved from fixture setup}"
           docker compose --file docker/compose.yaml config > compose.yaml
-          grep -F 'network_mode: none' compose.yaml
-          grep -F 'read_only: true' compose.yaml
-          grep -F 'no-new-privileges:true' compose.yaml
+          grep -Eq '^[[:space:]-]*network_mode:[[:space:]]*"?none"?[[:space:]]*$' compose.yaml
+          grep -Eq '^[[:space:]]*read_only:[[:space:]]*"?true"?[[:space:]]*$' compose.yaml
+          grep -Eq '^[[:space:]-]*no-new-privileges:true[[:space:]]*$' compose.yaml
           ! grep -Fq '/var/run/docker.sock' compose.yaml
       - uses: actions/upload-artifact@v4
         if: always()
