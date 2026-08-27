@@ -75,7 +75,7 @@ jobs:
       - name: Run container security tier
         shell: bash
         run: |
-          trap 'docker compose --file docker/compose.yaml --profile agent down --volumes --remove-orphans || true' EXIT
+          trap 'docker compose --file docker/compose.yaml --profile agent down --volumes --remove-orphans || true; rm -rf -- "$LOCAL_CHAT_CI_ROOT"' EXIT
           python scripts/validate.py docker
       - name: Compose policy rendering
         shell: bash
