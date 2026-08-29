@@ -116,7 +116,9 @@ jobs:
       - name: Bootstrap locked validation environment
         run: python scripts/bootstrap.py
       - name: Validate non-container application
-        run: python scripts/validate.py fast
+        shell: bash
+        run: |
+          python scripts/validate.py fast
           python scripts/validate.py slow --allow-unavailable
           python scripts/validate.py ruff
           python scripts/validate.py compile
