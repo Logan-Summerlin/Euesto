@@ -23,9 +23,21 @@ EXECUTABLES = ("pyside6-qmllint", "docker", "docker compose", "pyinstaller")
 
 def _safe_env() -> dict[str, str]:
     """Only pass validation variables; credentials and user configuration are excluded."""
-    return {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": str(ROOT),
-            "PYTHONIOENCODING": "utf-8", "QT_QPA_PLATFORM": "offscreen",
-            "QT_QUICK_BACKEND": "software"}
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "PYTHONPATH": str(ROOT),
+        "PYTHONIOENCODING": "utf-8",
+        "QT_QPA_PLATFORM": "offscreen",
+        "QT_QUICK_BACKEND": "software",
+    }
+    if os.name == "nt":
+        # Windows subprocesses need these OS-level variables for DLL and
+        # service-provider resolution (including asyncio/WinSock startup).
+        for var in ("SYSTEMROOT", "SYSTEMDRIVE", "TEMP", "TMP"):
+            value = os.environ.get(var)
+            if value:
+                env[var] = value
+    return env
 
 
 def _version(command: list[str], runner: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> tuple[str, str]:
@@ -126,6 +138,3 @@ def main(argv: list[str] | None = None) -> int:
     for check in report["checks"]:
         print(f"{check['status']:11} {check['name']}: {check.get('detail', '')}")
     return code
-
-
-if __name__ == "__main__": raise SystemExit(main())
