@@ -32,7 +32,7 @@ Separate from executor limits, each Agent run is bounded by a budget profile (`s
 | `extended-coding` | 1,200 | 1,800 | 3,600 s | $4.00 |
 | `large-coding` | 1,800 | 2,700 | 5,400 s | $8.00 |
 
-A profile that exceeds twice the standard `coding` value on tool calls, wall time, or cost requires explicit user approval before the session runs. Investigation delegation adds its own caps of at most two calls per turn and 36 iterations / 36 tool calls per nested loop, debited against the parent run's remaining budget.
+A profile that exceeds twice the standard `coding` value on tool calls, wall time, or cost requires explicit user approval before the session runs. Investigation delegation adds its own caps of up to four calls per turn and 36 iterations / 36 tool calls per nested loop, debited against the parent run's remaining budget.
 
 ## Profiles
 
@@ -51,4 +51,4 @@ The effective limits reported by `/v1/status` are intended to make the active pr
 
 ## Investigation delegation
 
-Investigation delegation is bounded to two calls per turn and half of the parent run's remaining cost per call, with 36-iteration and 36-tool-call nested caps; it never creates an executor, staging, or publication authority.
+Investigation delegation is bounded to four calls per turn and half of the parent run's remaining cost per call, with 36-iteration and 36-tool-call nested caps; it never creates an executor, staging, or publication authority.

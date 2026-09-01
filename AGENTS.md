@@ -23,7 +23,7 @@ The model-facing local tools are `read`, `write`, `edit`, `bash`, `grep`, `find`
 
 - Plan: `read`, `grep`, `find`, `ls` only.
 - Agent: all eight; mutations remain in staging.
-- `investigate_repository` is Agent-only, read-only, capped at two calls per turn, and restricted to the Plan tool set inside its nested loop.
+- `investigate_repository` is Agent-only, read-only, capped at four calls per turn, and restricted to the Plan tool set inside its nested loop.
 - Do not add aliases, legacy compatibility tools, hidden capabilities, or alternate public vocabularies.
 
 See `docs/TOOLS.md` for the contract and `docs/LIMITS.md` for limits.
@@ -46,7 +46,7 @@ When changing publication or security behavior, update the authoritative documen
 
 ## Checks
 
-Run the applicable checks after changes:
+The canonical validation entry point is `python scripts/validate.py`; use `preflight` to report missing dependencies explicitly and the named tiers (`fast`, `slow`, `qml`, `docker`, `all`) for execution. Run the applicable checks after changes:
 
 ```text
 pytest
@@ -59,7 +59,7 @@ Unit tests must not require provider credentials. Container/security checks must
 
 ## Scoped investigation
 
-Read-only repository investigation delegation is in scope through `investigate_repository`. It uses the parent executor session and budget, has no mutation, command, or publication authority, and is limited to two calls per turn. General multi-agent orchestration, independent sessions, and concurrent staging remain out of scope.
+Read-only repository investigation delegation is in scope through `investigate_repository`. It uses the parent executor session and budget, has no mutation, command, or publication authority, and is limited to four calls per turn. General multi-agent orchestration, independent sessions, and concurrent staging remain out of scope.
 
 ## Repository map
 

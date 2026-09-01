@@ -4,7 +4,7 @@ import base64
 import heapq
 from pathlib import Path
 
-from ..paths import is_secret_path, safe_path
+from ..paths import is_tool_excluded, safe_path
 
 MAX_CURSOR_OFFSET = 100_000
 
@@ -23,7 +23,7 @@ def ls(root: Path, arguments: dict, *, max_results: int = 500) -> tuple[str, dic
         for path in directory.iterdir():
             if path.is_symlink(): continue
             relative_path = path.relative_to(root).as_posix()
-            if is_secret_path(relative_path) or any(part.startswith(".local-chat-") for part in path.relative_to(root).parts): continue
+            if is_tool_excluded(relative_path): continue
             yield path
     children = heapq.nsmallest(needed, visible(), key=lambda item: item.name.casefold()); page = children[cursor:cursor + maximum]; has_more = len(children) > cursor + maximum
     lines = []

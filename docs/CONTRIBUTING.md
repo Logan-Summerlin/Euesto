@@ -12,6 +12,8 @@ python -m pip install -r requirements-dev.txt
 
 ## Required checks
 
+The canonical validation entry point is `python scripts/validate.py`. Bootstrap with `python -m venv .venv` and `python -m pip install -r requirements-dev.lock`, then run `python scripts/validate.py preflight --json validation-report.json` to distinguish unavailable tools from failed checks. Use `fast`, `slow`, `qml`, `docker`, or `all` for explicit tiers.
+
 Run the repository checks that apply to the change:
 
 ```powershell

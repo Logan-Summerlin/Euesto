@@ -18,7 +18,7 @@ All tools operate on relative POSIX paths that are normalized and contained bene
 - **Permission:** read-only.
 - **Defaults:** each call returns at most 64,000 bytes unless `max_bytes` raises it; the tool clamps any request to 256,000 bytes per call regardless of the configured profile limit.
 - **Hard maximum:** 8,000,000 bytes at the protocol/config layer; the 256,000-byte per-call tool ceiling applies on top.
-- **Semantics:** Plan reads the read-only source snapshot; Agent reads staged workspace content. Line ranges and byte offsets cannot be combined. Reads past the end of the file are rejected rather than returning an empty result, and byte offsets must land on UTF-8 character boundaries.
+- **Semantics:** Plan reads the read-only source snapshot; Agent reads staged workspace content. Line ranges and byte offsets cannot be combined. An end-line past the end of the file is clipped to the final available line and reported as `range_clipped`; invalid start lines and offsets remain rejected, and byte offsets must land on UTF-8 character boundaries.
 - **Truncation/cursors:** results report `truncated`, `byte_offset`, `next_offset`, and `next_start_line`; continue with the next line range or offset instead of assuming a whole file fits in one response.
 - **Errors:** invalid path, invalid range, invalid offset, non-UTF-8 or binary content, missing file, and resource-limit failures are classified.
 
@@ -100,7 +100,7 @@ All tools operate on relative POSIX paths that are normalized and contained bene
 - **Modes:** Agent only.
 - **Permission:** read-only; it cannot mutate, execute commands, checkpoint, or publish, and it never requires an approval prompt.
 - **Model:** uses the investigation model configured in Settings (default `xiaomi/mimo-v2.5`); the primary model cannot select or override it.
-- **Budget:** each call receives at most 50% of the parent run's remaining cost (calls fail closed below a $0.01 floor) and inherits bounded iteration, tool-call (36/36 caps), and wall-time limits from the parent's remaining budgets; at most two calls are accepted per turn, and a failed call still counts toward the cap.
+- **Budget:** each call receives at most 50% of the parent run's remaining cost (calls fail closed below a $0.01 floor) and inherits bounded iteration, tool-call (36/36 caps), and wall-time limits from the parent's remaining budgets; up to four calls are accepted per turn, and a failed call still counts toward the cap.
 - **Tools:** the nested investigation loop is restricted to `read`, `grep`, `find`, and `ls` through the parent's executor session, so it observes current staged state. Non-Plan tool calls inside the loop are rejected in code.
 - **Synthesis:** the harness reserves the final iteration and tool-call slot to force a summary instead of further exploration.
 - **Result:** returns `summary`, `files_examined`, and `truncated`; nested `subagent.*` events remain in the journal for replay/audit. On failure the parent is told to fall back to direct tool use.
@@ -121,3 +121,10 @@ All tools operate on relative POSIX paths that are normalized and contained bene
 Read-only tools run without approval prompts in both prompt and Auto sessions; mutation and command tools require approval under the `prompt` policy and are auto-allowed under `auto`. Plan-mode mutation denial is enforced twice: once in `shared/tools.py` request validation and again by `executor/permissions.py`.
 
 The public eight-tool model-facing API includes the scoped read-only `investigate_repository` tool. Check `shared/tools.py` and `server/openrouter/agent.py` when modifying schemas or dispatch.
+
+
+## Permission matching
+
+Permission scopes use case-insensitive canonical relative paths with both slash styles accepted. Invalid, absolute, drive, UNC, and traversal paths do not match a rule and remain subject to executor validation. When multiple non-restrictive rules match, the longest normalized path prefix wins; restrictive decisions retain the ordering `DENY > ASK > ALLOW`.
+
+Approval prompts are bounded by the active agent run's remaining wall-clock budget. An unanswered prompt produces an `approval.timeout` event and fails the run rather than waiting indefinitely.

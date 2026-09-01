@@ -8,6 +8,17 @@ This guide runs Local OpenRouter Chat v1.1 developer services with Docker Deskto
 loopback gateway. Plan and Agent add a separate executor that has no network, sees one selected
 workspace read-only, and writes only to an ephemeral in-container staging area.
 
+## Validation profile
+
+Validation is separate from the production images. From the repository root, run
+`python scripts/bootstrap.py`, then `python scripts/validate.py preflight` and
+`python scripts/validate.py all`. QML checks use PySide6's `pyside6-qmllint` with offscreen/software
+settings; `python scripts/qml_smoke.py` is an optional deterministic startup check. Container
+security checks must run on Linux with Docker and use disposable fixtures from
+`scripts/docker-fixtures.sh`; the script removes its temporary workspace and Compose volumes on
+success, failure, or cancellation. Missing Docker/Qt is reported as unavailable, never silently
+skipped; use `--allow-unavailable` only for local diagnostics.
+
 ## 1. Prerequisites
 
 - Windows 10/11 with a supported, fully patched Docker Desktop using Linux containers

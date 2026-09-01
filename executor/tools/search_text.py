@@ -4,12 +4,13 @@ import base64
 import fnmatch
 import os
 import re
+import time
 from pathlib import Path
 
-from ..paths import is_secret_path, safe_path
+from ..paths import is_tool_excluded, safe_path
 
 
-def search_text(root: Path, arguments: dict, *, max_bytes: int, max_results: int = 200) -> tuple[str, dict]:
+def search_text(root: Path, arguments: dict, *, max_bytes: int, max_results: int = 200, max_seconds: float = 30.0) -> tuple[str, dict]:
     scope = safe_path(root, str(arguments.get("path") or "."), must_exist=True)
     query = str(arguments.get("query") or "")
     if not query or len(query) > 1000: raise ValueError("A bounded search query is required")
@@ -17,18 +18,23 @@ def search_text(root: Path, arguments: dict, *, max_bytes: int, max_results: int
     try: pattern = re.compile(query if arguments.get("regex") else re.escape(query), flags)
     except re.error as exc: raise ValueError(f"Invalid search regex: {exc}") from exc
     include = str(arguments.get("include_glob") or "*"); exclude = str(arguments.get("exclude_glob") or "")
-    files = _iter_files(root, scope); matches: list[dict[str, object]] = []; files_considered = files_searched = skipped_large = 0; truncated = False
+    files = _iter_files(root, scope); started = time.monotonic(); cumulative_bytes = 0; matches: list[dict[str, object]] = []; files_considered = files_searched = skipped_large = 0; truncated = False; truncation_reason = None
     context_lines = min(5, max(0, int(arguments.get("context_lines") or 0))); include_metadata = bool(arguments.get("include_metadata")); skipped_matches = _decode_cursor(arguments.get("cursor")); seen_matches = 0
     for path in files:
+        if time.monotonic() - started >= max_seconds:
+            truncated = True; truncation_reason = "time_budget"; break
         if not path.is_file() or path.is_symlink(): continue
         relative = path.relative_to(root).as_posix()
-        if is_secret_path(relative) or any(part.startswith(".local-chat-") for part in path.relative_to(root).parts): continue
+        if is_tool_excluded(relative): continue
         if not _matches_glob(relative, include) or (exclude and _matches_glob(relative, exclude)): continue
         files_considered += 1
-        if path.stat().st_size > max_bytes: skipped_large += 1; continue
+        size = path.stat().st_size
+        if size > max_bytes:
+            skipped_large += 1
+            continue
         try: text = path.read_text(encoding="utf-8")
         except (UnicodeError, OSError): continue
-        files_searched += 1; text_lines = text.splitlines()
+        files_searched += 1; cumulative_bytes += size; text_lines = text.splitlines()
         for number, line in enumerate(text_lines, 1):
             if pattern.search(line):
                 seen_matches += 1
@@ -41,6 +47,10 @@ def search_text(root: Path, arguments: dict, *, max_bytes: int, max_results: int
         if truncated: break
     output = "\n".join(f"{item['path']}:{item['line']}:{item['text']}" for item in matches)
     data: dict[str, object] = {"matches_returned": len(matches), "files_considered": files_considered, "files_searched": files_searched, "files_scanned": files_searched, "truncated": truncated, "files_skipped_too_large": skipped_large, "scan_scope_complete": not skipped_large and not truncated}
+    if truncated:
+        data["truncation_reason"] = truncation_reason or "result_limit"
+        data["cumulative_bytes_scanned"] = cumulative_bytes
+        data["elapsed_seconds"] = time.monotonic() - started
     if truncated: data["next_cursor"] = _encode_cursor(max(0, seen_matches - 1))
     if context_lines: data["context_lines"] = context_lines; data["matches"] = matches
     return output, data
@@ -50,7 +60,7 @@ def _iter_files(root: Path, scope: Path):
     if scope.is_file(): yield scope; return
     for directory, dirnames, filenames in os.walk(scope, topdown=True):
         current = Path(directory)
-        dirnames[:] = sorted(name for name in dirnames if not (is_secret_path(current.joinpath(name).relative_to(root).as_posix()) or any(part.startswith(".local-chat-") for part in current.joinpath(name).relative_to(root).parts)))
+        dirnames[:] = sorted(name for name in dirnames if not is_tool_excluded(current.joinpath(name).relative_to(root).as_posix()))
         for name in sorted(filenames, key=str.casefold): yield current / name
 
 

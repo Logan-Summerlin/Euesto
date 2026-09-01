@@ -75,7 +75,7 @@ class WorkspaceBroker:
             return PublishResult(checkpoint_id, tuple(completed))
         except Exception as exc:
             (checkpoint / "partial.json").write_text(json.dumps({"completed": completed}), encoding="utf-8")
-            if isinstance(exc, (BrokerError, UnsafePath)): raise BrokerError(str(exc)) from exc
+            if isinstance(exc, BrokerError | UnsafePath): raise BrokerError(str(exc)) from exc
             raise BrokerError(f"Publication stopped after {len(completed)} operation(s): {exc}") from exc
 
     def undo(self, checkpoint_id: str) -> PublishResult:

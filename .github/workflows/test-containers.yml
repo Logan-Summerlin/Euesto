@@ -1,4 +1,4 @@
-# Validate gateway and executor behavior on every branch update.
+# Shared local/CI validation plus real Linux container security checks.
 name: Validate local gateway
 
 on:
@@ -9,104 +9,107 @@ permissions:
   contents: read
 
 jobs:
-  gateway:
+  validation:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      QT_QPA_PLATFORM: offscreen
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: requirements-dev.lock
       - name: Install Qt runtime dependencies
         run: sudo apt-get update && sudo apt-get install --yes libegl1
-      - name: Install test dependencies
-        run: pip install -r requirements-dev.txt
-      - name: Fast test suite
-        run: pytest -m "not slow and not docker"
-      - name: Slow test suite
-        shell: bash
-        run: |
-          pytest -m "slow and not docker" || code=$?
-          code=${code:-0}
-          if [ "$code" -eq 5 ]; then
-            echo "No slow tests collected; treating as a pass."
-            exit 0
-          fi
-          exit "$code"
+      - name: Bootstrap locked validation environment
+        run: python scripts/bootstrap.py
+      - name: Preflight
+        run: python scripts/validate.py preflight --json validation-preflight.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-preflight
+          path: validation-preflight.json
+      - name: Fast tests
+        run: python scripts/validate.py fast
+      - name: Slow tests
+        run: python scripts/validate.py slow --allow-unavailable
       - name: Ruff
-        run: ruff check . --output-format=github
-      - name: Python compile check
-        run: python -m compileall -q app.py src server shared executor tests scripts
-      - name: QML lint
-        run: pyside6-qmllint qml/Main.qml qml/Sidebar.qml qml/Transcript.qml qml/Composer.qml
-      - name: Render hardened Compose profile
+        run: python scripts/validate.py ruff
+      - name: Compile
+        run: python scripts/validate.py compile
+      - name: QML lint and compile
+        run: |
+          python scripts/validate.py qml
+          python -m compileall -q app.py src server shared executor tests scripts
+          python scripts/qml_smoke.py
+
+  containers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: validation
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - name: Bootstrap locked validation environment
+        run: python scripts/bootstrap.py
+      - name: Preflight Docker
+        run: python scripts/validate.py preflight --json docker-preflight.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: docker-preflight
+          path: docker-preflight.json
+      - name: Create disposable fixtures
         shell: bash
         run: |
-          mkdir -p /tmp/local-chatbot-ci-secrets
-          mkdir -p /tmp/local-chatbot-ci-workspace
-          printf '%s' 'safe fixture' > /tmp/local-chatbot-ci-workspace/fixture.txt
-          printf '%s' 'ci-token-with-at-least-thirty-two-bytes-0001' > /tmp/local-chatbot-ci-secrets/gateway_token.txt
-          printf '%s' 'ci-executor-token-with-at-least-thirty-two-bytes-0001' > /tmp/local-chatbot-ci-secrets/executor_token.txt
-          LOCAL_CHAT_SECRETS_DIR=/tmp/local-chatbot-ci-secrets docker compose --file docker/compose.yaml config > /tmp/local-chatbot-compose.yaml
-          grep -F '127.0.0.1:8765' /tmp/local-chatbot-compose.yaml
-          grep -F 'cap_drop:' /tmp/local-chatbot-compose.yaml
-          grep -F 'no-new-privileges:true' /tmp/local-chatbot-compose.yaml
-          grep -F 'read_only: true' /tmp/local-chatbot-compose.yaml
-          if grep -Fq '/var/run/docker.sock' /tmp/local-chatbot-compose.yaml; then exit 1; fi
-          if grep -Fq 'privileged: true' /tmp/local-chatbot-compose.yaml; then exit 1; fi
-          if grep -Fq 'network_mode: host' /tmp/local-chatbot-compose.yaml; then exit 1; fi
-      - name: Build and boot gateway
+          source scripts/docker-fixtures.sh
+          setup_fixtures
+          echo "LOCAL_CHAT_CI_ROOT=$LOCAL_CHAT_CI_ROOT" >> "$GITHUB_ENV"
+          echo "LOCAL_CHAT_SECRETS_DIR=$LOCAL_CHAT_SECRETS_DIR" >> "$GITHUB_ENV"
+          echo "LOCAL_CHAT_WORKSPACE=$LOCAL_CHAT_WORKSPACE" >> "$GITHUB_ENV"
+          echo "LOCAL_CHAT_WORKSPACE_ID=ci-workspace" >> "$GITHUB_ENV"
+      - name: Run container security tier
         shell: bash
         run: |
-          export LOCAL_CHAT_SECRETS_DIR=/tmp/local-chatbot-ci-secrets
-          trap 'docker compose --file docker/compose.yaml down --volumes' EXIT
-          docker compose --file docker/compose.yaml up --detach --build
-          for attempt in $(seq 1 30); do
-            if curl --fail --silent http://127.0.0.1:8765/health >/dev/null; then break; fi
-            sleep 1
-          done
-          curl --fail --silent http://127.0.0.1:8765/health
-          status=$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8765/v1/status)
-          test "$status" = "401"
-      - name: Validate isolated executor
+          trap 'docker compose --file docker/compose.yaml --profile agent down --volumes --remove-orphans || true' EXIT
+          python scripts/validate.py docker
+      - name: Compose policy rendering
         shell: bash
         run: |
-          export LOCAL_CHAT_SECRETS_DIR=/tmp/local-chatbot-ci-secrets
-          export LOCAL_CHAT_WORKSPACE=/tmp/local-chatbot-ci-workspace
-          export LOCAL_CHAT_WORKSPACE_ID=ci-workspace
-          trap 'docker compose --file docker/compose.yaml --profile agent down --volumes' EXIT
-          docker compose --file docker/compose.yaml --profile agent up --detach --build
-          for attempt in $(seq 1 30); do
-            if docker compose --file docker/compose.yaml exec -T executor test -S /run/ipc/executor.sock; then break; fi
-            sleep 1
-          done
-          test "$(docker inspect local-openrouter-chat-executor-1 --format '{{.HostConfig.NetworkMode}}')" = "none"
-          docker compose --file docker/compose.yaml exec -T gateway test ! -e /source
-          docker compose --file docker/compose.yaml exec -T executor sh -c 'test -r /source/fixture.txt && test ! -w /source/fixture.txt && test -w /work'
-          docker compose --file docker/compose.yaml exec -T executor python - <<'PY'
-          import socket
-          targets = [("127.0.0.1", 8765), ("169.254.169.254", 80), ("1.1.1.1", 53)]
-          for target in targets:
-              try:
-                  socket.create_connection(target, timeout=0.3)
-              except OSError:
-                  pass
-              else:
-                  raise SystemExit(f"unexpected executor network access: {target}")
-          try:
-              socket.getaddrinfo("example.com", 443)
-          except OSError:
-              pass
-          else:
-              raise SystemExit("unexpected executor DNS access")
-          udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-          try:
-              udp.sendto(b"x", ("1.1.1.1", 53))
-          except OSError:
-              pass
-          else:
-              raise SystemExit("unexpected executor UDP access")
+          set -euo pipefail
+          : "${LOCAL_CHAT_SECRETS_DIR:?LOCAL_CHAT_SECRETS_DIR was not preserved from fixture setup}"
+          : "${LOCAL_CHAT_WORKSPACE:?LOCAL_CHAT_WORKSPACE was not preserved from fixture setup}"
+          docker compose --file docker/compose.yaml --profile agent config > compose.yaml
+          docker compose --file docker/compose.yaml --profile agent config --format json > compose.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          compose = json.loads(Path("compose.json").read_text(encoding="utf-8"))
+          services = compose.get("services", {})
+          executor = services.get("executor", {})
+          assert executor.get("network_mode") == "none", executor
+          assert services, compose
+          assert all(service.get("read_only") is True for service in services.values()), services
+          assert all(
+              "no-new-privileges:true" in service.get("security_opt", [])
+              for service in services.values()
+          ), services
+          assert "/var/run/docker.sock" not in Path("compose.yaml").read_text(encoding="utf-8")
           PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: container-compose-report
+          path: compose.yaml
+      - name: Cleanup disposable fixtures
+        if: always()
+        shell: bash
+        run: |
+          source scripts/docker-fixtures.sh
+          cleanup_docker_fixtures

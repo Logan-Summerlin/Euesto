@@ -37,17 +37,6 @@ def render_markdown(source: str) -> str:
         protocols={"http", "https", "mailto"},
         strip=True,
     )
-    return f"""
-    <style>
-      body {{ font-family: 'Segoe UI'; font-size: 10.5pt; line-height: 1.45; }}
-      p {{ margin: 0 0 10px 0; }}
-      pre {{ background: #111827; color: #e5e7eb; padding: 12px;
-             border-radius: 7px; white-space: pre-wrap; }}
-      code {{ font-family: 'Cascadia Code', Consolas, monospace; }}
-      blockquote {{ border-left: 3px solid #64748b; margin-left: 0;
-                    padding-left: 12px; color: #64748b; }}
-      table {{ border-collapse: collapse; }}
-      th, td {{ border: 1px solid #64748b; padding: 5px 8px; }}
-      a {{ color: #4f7cff; }}
-    </style>{safe}
-    """
+    # Shared styling is supplied by the QML transcript; avoid a per-message
+    # document stylesheet, which creates unnecessary rich-text/font variation.
+    return safe
