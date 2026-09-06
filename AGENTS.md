@@ -34,7 +34,7 @@ See `docs/TOOLS.md` for the contract and `docs/LIMITS.md` for limits.
 - Preserve link/device/reparse-point protections and UTF-8 text semantics.
 - Keep executor non-root, network-disabled, capability-restricted, and without host publication authority.
 - Keep the source mount read-only and mutations in ephemeral staging.
-- Checkpoint mutations and roll them back on failure, cancellation, or timeout.
+- Checkpoint mutations and roll them back on failure, cancellation, or timeout; Bash may explicitly retain partial progress on a non-zero exit only when `rollback_on_failure: false` is requested, while timeouts and cancellation always roll back.
 - Keep Bash non-interactive and bounded (fixed base environment; user env is filtered and bounded).
 - Require approved, path-bounded, hash-validated publication through the desktop broker.
 

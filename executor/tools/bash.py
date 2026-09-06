@@ -107,6 +107,10 @@ class BashRunner:
             raise ValueError("timeout_seconds must be an integer")
         timeout = min(MAX_COMMAND_SECONDS, max_seconds, max(1, raw_timeout))
 
+        rollback_on_failure = arguments.get("rollback_on_failure", True)
+        if not isinstance(rollback_on_failure, bool):
+            raise ValueError("rollback_on_failure must be a boolean")
+
         stdin_text = arguments.get("stdin")
         stdin_limit = min(max_stdin_bytes, MAX_STDIN_BYTES)
         if stdin_text is not None and (not isinstance(stdin_text, str) or "\x00" in stdin_text or len(stdin_text.encode("utf-8")) > stdin_limit):
@@ -142,7 +146,7 @@ class BashRunner:
 
             stdout = stdout_result[0]
             stderr = stderr_result[0]
-            rolled_back = process.returncode != 0
+            rolled_back = process.returncode != 0 and rollback_on_failure
             if rolled_back:
                 rollback_mutation(root, checkpoint_id)
             combined = self._model_output(stdout, stderr, max_output)
@@ -162,6 +166,8 @@ class BashRunner:
                 "truncated": stdout.truncated or stderr.truncated,
                 "cancelled": request_id in self._cancelled,
                 "rolled_back": rolled_back,
+                "rollback_on_failure": rollback_on_failure,
+                "rollback_reason": "nonzero_exit" if rolled_back else "none",
             }
         except Exception:
             if process is None:

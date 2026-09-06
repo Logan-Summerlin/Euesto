@@ -59,7 +59,7 @@ All tools operate on relative POSIX paths that are normalized and contained bene
 - **Execution:** `/bin/bash -lc`, non-interactive, no network, restricted environment, process-group cleanup.
 - **Environment:** a fixed base environment (`PATH`, `HOME`, locale, UTF-8 Python flags) is always applied. User-supplied `env` is limited to 64 variables with POSIX-identifier names and ≤16,384-byte values; `PATH`, `HOME`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, and `BASH_ENV*` are refused.
 - **Output:** stdout/stderr is bounded; oversized output is retained as a bounded head/tail preview with a truncation marker. Command event cursors are exposed separately through the executor event endpoint.
-- **Failure:** timed-out, cancelled, and non-zero-exit commands roll staged filesystem changes back to their checkpoint (`rolled_back` is reported).
+- **Failure:** timed-out and cancelled commands always roll staged filesystem changes back to their checkpoint. Non-zero-exit commands roll back by default; set `rollback_on_failure: false` when retaining partial progress is intentional. Results separate the process `exit_code` from checkpoint outcome with `rolled_back` and `rollback_reason` (`nonzero_exit` or `none`).
 
 ## `grep`
 
