@@ -172,7 +172,7 @@ class AgentRuntime:
             self.active_request.pop(run_id, None)
         await self.append(run_id, "tool.output", result.to_dict())
         if name == "bash" and bool(result.data.get("rolled_back")):
-            await self.append(run_id, "mutation.rollback", {"request_id": request_id, "tool": name, "reason": "nonzero_exit", "checkpoint_id": result.data.get("checkpoint_id")})
+            await self.append(run_id, "mutation.rollback", {"request_id": request_id, "tool": name, "reason": result.data.get("rollback_reason", "unknown"), "checkpoint_id": result.data.get("checkpoint_id")})
         if result.data.get("checkpoint_id"):
             await self.append(run_id, "checkpoint.created", {"checkpoint_id": str(result.data["checkpoint_id"]), "request_id": request_id, "tool": name})
         messages.append({"role": "tool", "tool_call_id": request_id, "content": self._model_tool_result(run_id, name, result)})

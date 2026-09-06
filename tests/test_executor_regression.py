@@ -176,10 +176,37 @@ def test_bash_failure_and_timeout_roll_back_staging(tmp_path: Path) -> None:
     target = root / "state"
     target.write_text("before", encoding="utf-8")
     _, result = asyncio.run(BashRunner().run("failure", root, {"command": "printf after > state; exit 7"}, max_seconds=10, max_output=100))
-    assert result["rolled_back"] is True and target.read_text(encoding="utf-8") == "before"
+    assert result["rolled_back"] is True and result["rollback_reason"] == "nonzero_exit" and target.read_text(encoding="utf-8") == "before"
+    _, retained = asyncio.run(BashRunner().run("retained", root, {"command": "printf retained > state; exit 7", "rollback_on_failure": False}, max_seconds=10, max_output=100))
+    assert retained["exit_code"] == 7 and retained["rolled_back"] is False and retained["rollback_reason"] == "none"
+    assert target.read_text(encoding="utf-8") == "retained"
+    target.write_text("before", encoding="utf-8")
     with pytest.raises(TimeoutError):
         asyncio.run(BashRunner().run("timeout", root, {"command": "printf after > state; sleep 5", "timeout_seconds": 1}, max_seconds=1, max_output=100))
     assert target.read_text(encoding="utf-8") == "before"
+
+
+def test_failed_bash_preserves_previous_staged_changes(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    previous = root / "previous.txt"
+    target = root / "state"
+    previous.write_text("earlier staged work", encoding="utf-8")
+    target.write_text("before", encoding="utf-8")
+
+    _, result = asyncio.run(BashRunner().run(
+        "failed-after-previous",
+        root,
+        {"command": "printf changed > state; printf new > created.txt; exit 7"},
+        max_seconds=10,
+        max_output=100,
+    ))
+
+    assert result["exit_code"] == 7
+    assert result["rolled_back"] is True
+    assert previous.read_text(encoding="utf-8") == "earlier staged work"
+    assert target.read_text(encoding="utf-8") == "before"
+    assert not (root / "created.txt").exists()
 
 
 def test_budget_iteration_tool_wall_and_cost_exhaustion_and_remaining_reporting(monkeypatch: pytest.MonkeyPatch) -> None:

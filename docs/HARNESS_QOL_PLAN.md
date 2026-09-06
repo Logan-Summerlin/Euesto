@@ -52,7 +52,7 @@ Acceptance criteria:
 - It does not expose secrets or unrestricted environment variables.
 - It works without provider credentials.
 
-### 5. Clarify mutation transaction and rollback status
+### 5. Clarify mutation transaction and rollback status (implemented)
 
 Separate command-level failure, mutation-transaction rollback, and current staged-workspace state in tool responses.
 
