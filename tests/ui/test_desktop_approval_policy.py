@@ -24,10 +24,10 @@ def bridge(tmp_path: Path):
     workspace = tmp_path / "projects" / "demo"
     workspace.mkdir(parents=True)
     backend = DesktopBridge(storage)
-    backend.health_timer.stop()
-    backend.workspace_path = str(workspace.resolve())
-    backend.runtime_state = "manual"
-    backend.last_gateway_status = SimpleNamespace(
+    backend.runtime.health_timer.stop()
+    backend.runtime.workspace_path = str(workspace.resolve())
+    backend.runtime.state = "manual"
+    backend.runtime.last_status = SimpleNamespace(
         ready=True,
         executor_present=True,
         executor_status="ready",
@@ -41,7 +41,7 @@ def bridge(tmp_path: Path):
     backend.errorRequested.connect(lambda title, _body: errors.append(title))
     backend.selectMode("agent")
     yield backend, confirmations, errors
-    backend.health_timer.stop()
+    backend.runtime.health_timer.stop()
     storage.close()
 
 
@@ -85,7 +85,7 @@ def test_accept_edits_resets_on_mode_change(bridge) -> None:
 
 def test_accept_edits_unavailable_without_gateway_capability(bridge) -> None:
     backend, confirmations, errors = bridge
-    backend.last_gateway_status.capabilities = ({"name": "agent_auto"},)
+    backend.runtime.last_status.capabilities = ({"name": "agent_auto"},)
     assert backend.acceptEditsAvailable is False
     backend.requestAcceptEdits(True)
     assert confirmations == [] and errors == ["Accept edits unavailable"]
@@ -111,9 +111,9 @@ def test_agent_run_request_carries_the_selected_policy(bridge, monkeypatch) -> N
         def start(self) -> None:
             captured["started"] = True
 
-    monkeypatch.setattr("src.qml_backend.AgentWorker", FakeWorker)
-    monkeypatch.setattr("src.qml_backend.get_api_key", lambda: "key")
-    backend._gateway_token = "t" * 43
+    monkeypatch.setattr("src.desktop.generation.AgentWorker", FakeWorker)
+    monkeypatch.setattr("src.desktop.generation.get_api_key", lambda: "key")
+    backend.runtime.gateway_token = "t" * 43
     backend.sendMessage("change the file", False)
     assert captured["approval_policy"] == "accept_edits"
     assert captured["started"] is True

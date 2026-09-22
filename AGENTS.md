@@ -81,7 +81,7 @@ Concise guide to each top-level folder:
 | `scripts/` | Developer helpers: dev up/down, install/uninstall, protocol check, icons/screenshots/mockups. |
 | `server/` | Loopback gateway: HTTP API, auth, agent runtime, budgets, journal store, OpenRouter client, skills/capabilities extensions. |
 | `shared/` | Framework-neutral protocol: tool registry, requests/responses, permissions, events, publish manifests. |
-| `src/` | Desktop application code: QML backend, controllers, storage/migrations, gateway client, runtime manager, publication broker. |
+| `src/` | Desktop application code: thin QML adapter (`qml_backend.py`) over the services in `src/desktop/`, controllers, storage/migrations, gateway client, runtime manager, publication broker. |
 | `tests/` | Unit, integration, contract, regression, and security tests (no provider credentials required). |
 
 Root files: `app.py` (desktop entry point), `AGENTS.md` (durable invariants), `README.md` (product overview), `PROJECT_PLAN.md` (status roadmap), `CHANGELOG.md` (release summary), `pyproject.toml` / `requirements*.txt` (Python configuration).

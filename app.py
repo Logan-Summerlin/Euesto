@@ -72,7 +72,7 @@ class _DesktopBridge(BaseDesktopBridge):
         self.storage.set_setting("investigation_model_id", model_id)
         self._reload_models()
         self.settingsChanged.emit()
-        self._set_status(f"Investigation model saved: {model_id}")
+        self.set_status(f"Investigation model saved: {model_id}")
 
     @Slot()
     def loadPermissionRules(self) -> None:

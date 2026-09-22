@@ -261,23 +261,24 @@ def test_transcript_never_loads_tool_outputs_into_qml_activity(tmp_path: Path) -
 
 
 def test_responses_are_buffered_and_optional_qml_values_are_guarded() -> None:
-    backend_source = (ROOT / "src" / "qml_backend.py").read_text(encoding="utf-8")
+    generation_source = (ROOT / "src" / "desktop" / "generation.py").read_text(encoding="utf-8")
+    conversation_source = (ROOT / "src" / "desktop" / "conversations.py").read_text(encoding="utf-8")
     worker_source = (ROOT / "src" / "workers.py").read_text(encoding="utf-8")
     transcript_source = (ROOT / "qml" / "Transcript.qml").read_text(encoding="utf-8")
     main_source = (ROOT / "qml" / "Main.qml").read_text(encoding="utf-8")
-    chunk_handler = backend_source[backend_source.index("def onStreamChunk") : backend_source.index("def onStreamComplete")]
+    chunk_handler = generation_source[generation_source.index("def on_stream_chunk") : generation_source.index("def on_stream_complete")]
 
-    assert "_refresh_transcript" not in chunk_handler
-    assert 'live_text=""' in backend_source
-    assert 'if event_type not in {"model.delta", "tool.output", "tool.completed"}' in backend_source
+    assert "refresh_transcript" not in chunk_handler
+    assert 'live_text=""' in conversation_source
+    assert 'if event_type not in {"model.delta", "tool.output", "tool.completed"}' in generation_source
     assert 'self.chunk.emit("".join(chunks))' in worker_source
     assert 'if event.type in {"tool.output", "tool.completed"}' in worker_source
     assert "card.value.streaming === true" in transcript_source
     assert 'String(card.value.metadata || "").length' in transcript_source
     assert "policy: ScrollBar.AlwaysOn" in transcript_source
     assert "minimumSize: 0.08" in transcript_source
-    assert "self._schedule_transcript_refresh()" in backend_source
-    assert "TranscriptListModel" in backend_source
+    assert "self.host.history.schedule_transcript_refresh()" in generation_source
+    assert "TranscriptListModel" in conversation_source
     assert "enabled: presetBox.currentIndex >= 0" in main_source
 
 
@@ -303,10 +304,11 @@ def test_agent_worker_delivers_one_answer_and_drops_large_transport_events() -> 
 
 
 def test_gateway_token_is_used_from_memory_immediately_after_save() -> None:
-    source = (ROOT / "src" / "qml_backend.py").read_text(encoding="utf-8")
-    assert 'get_gateway_session_token() or get_gateway_token() or ""' in source
-    assert "self._gateway_token = new_token" in source
-    assert '"hasToken": bool(self._gateway_token)' in source
+    runtime_source = (ROOT / "src" / "desktop" / "runtime.py").read_text(encoding="utf-8")
+    preferences_source = (ROOT / "src" / "desktop" / "preferences.py").read_text(encoding="utf-8")
+    assert 'get_gateway_session_token() or get_gateway_token() or ""' in runtime_source
+    assert "self.gateway_token = new_token" in runtime_source
+    assert '"hasToken": bool(self.host.runtime.gateway_token)' in preferences_source
 
 
 def test_active_local_gateway_token_is_discovered_without_manual_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -319,7 +321,8 @@ def test_active_local_gateway_token_is_discovered_without_manual_entry(tmp_path:
 
 
 def test_catalog_autorefresh_waits_for_gateway_health_and_stays_nonblocking() -> None:
-    source = (ROOT / "src" / "qml_backend.py").read_text(encoding="utf-8")
-    assert "QTimer.singleShot(250, self.refreshCatalog)" not in source
-    assert "result.state in {HealthState.READY, HealthState.DEGRADED}" in source
-    assert "self._start_catalog_refresh(report_errors=False)" in source
+    runtime_source = (ROOT / "src" / "desktop" / "runtime.py").read_text(encoding="utf-8")
+    preferences_source = (ROOT / "src" / "desktop" / "preferences.py").read_text(encoding="utf-8")
+    assert "QTimer.singleShot(250" not in runtime_source + preferences_source
+    assert "result.state in {HealthState.READY, HealthState.DEGRADED}" in runtime_source
+    assert "self.start_catalog_refresh(report_errors=False)" in preferences_source

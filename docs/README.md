@@ -15,7 +15,7 @@ Euesto is a local-first Windows chatbot. The desktop talks to an authenticated g
 | Concern | Owner | Notes |
 |---|---|---|
 | Qt Quick presentation | `qml/` | Views and composition only; call the bridge rather than implementing policy. |
-| Desktop state and adapters | `src/` | Controllers, persistence, gateway client, runtime, approvals, and publication coordination. `qml_backend.py` is the QML adapter. |
+| Desktop state and adapters | `src/` | Controllers, persistence, gateway client, runtime, approvals, and publication coordination. `qml_backend.py` is the thin QML adapter; behavior belongs in the matching service under `src/desktop/` (runtime, settings, conversations, generation, staging/publication). |
 | Process/bootstrap wiring | `app.py` | Application startup and dependency wiring only. |
 | Provider and agent behavior | `server/` | Gateway, OpenRouter, budgets, journals, sessions, and agent loops. |
 | Workspace tools and staging | `executor/` | Bounded, network-disabled filesystem execution; never publication. |
