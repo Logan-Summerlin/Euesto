@@ -41,7 +41,7 @@ jobs:
       - name: QML lint and compile
         run: |
           python scripts/validate.py qml
-          python -m compileall -q app.py src server shared executor tests scripts
+          python -m compileall -q app.py src server shared executor egress tests scripts
           python scripts/qml_smoke.py
 
   containers:
@@ -76,7 +76,7 @@ jobs:
       - name: Run container security tier
         shell: bash
         run: |
-          trap 'docker compose --file docker/compose.yaml --profile agent down --volumes --remove-orphans || true' EXIT
+          trap 'docker compose --file docker/compose.yaml --file docker/compose.egress.yaml --profile agent down --volumes --remove-orphans || true' EXIT
           python scripts/validate.py docker
       - name: Compose policy rendering
         shell: bash

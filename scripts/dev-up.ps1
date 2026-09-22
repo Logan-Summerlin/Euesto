@@ -1,6 +1,9 @@
 param(
     [Parameter(Mandatory=$false)]
-    [string]$Workspace
+    [string]$Workspace,
+    # Opt-in prototype: route package downloads through the allowlisted egress proxy
+    # (docs/EGRESS.md). Without it the executor keeps network_mode: none.
+    [switch]$AllowlistedEgress
 )
 
 $ErrorActionPreference = "Stop"
@@ -34,8 +37,14 @@ if ($Workspace) {
     try {
         $env:LOCAL_CHAT_WORKSPACE_ID = ([BitConverter]::ToString($Sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Normalized)))).Replace("-", "").ToLowerInvariant()
     } finally { $Sha.Dispose() }
-    docker compose --file $Compose --profile agent up --detach --build
-    Write-Host "Gateway and no-network executor started for: $Resolved"
+    if ($AllowlistedEgress) {
+        $EgressOverlay = Join-Path $ProjectRoot "docker\compose.egress.yaml"
+        docker compose --file $Compose --file $EgressOverlay --profile agent up --detach --build
+        Write-Host "Gateway and executor with allowlisted package egress started for: $Resolved"
+    } else {
+        docker compose --file $Compose --profile agent up --detach --build
+        Write-Host "Gateway and no-network executor started for: $Resolved"
+    }
 } else {
     Remove-Item Env:LOCAL_CHAT_WORKSPACE -ErrorAction SilentlyContinue
     Remove-Item Env:LOCAL_CHAT_WORKSPACE_ID -ErrorAction SilentlyContinue

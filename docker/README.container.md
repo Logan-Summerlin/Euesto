@@ -84,7 +84,7 @@ approval. Agent can create or replace files, make exact-string edits, run non-in
 commands inside the container, and delegate read-only repository investigations to a configured
 cheaper model. Approving an edit or command lets it mutate files in ephemeral staging only; it does
 not permit a host write. Host publication requires a second approval showing the exact manifest.
-See `docs/TOOLS.md` for the full eight-tool contract and `docs/LIMITS.md` for effective limits.
+See `docs/TOOLS.md` for the full ten-tool contract and `docs/LIMITS.md` for effective limits.
 
 ## 5. Verify the isolation before trusting it
 
@@ -119,6 +119,21 @@ Expected results:
 
 Do not add `privileged`, host networking, writable source mounts, devices, Docker socket mounts,
 added capabilities, or unconfined security profiles to “fix” a launch problem.
+
+## 5a. Optional: allowlisted package installs (prototype)
+
+The default executor has no network. To let `pip install` reach PyPI (and npm reach its registry)
+without opening anything else, add the egress overlay:
+
+```powershell
+.\scripts\dev-up.ps1 -Workspace "C:\Users\you\Projects\example" -AllowlistedEgress
+```
+
+The executor then joins an internal-only Docker network whose only other member is a CONNECT proxy
+that allows `pypi.org`, `files.pythonhosted.org`, and `registry.npmjs.org` (override with
+`LOCAL_CHAT_EGRESS_ALLOWED_HOSTS`), refuses IP literals and non-public resolutions, and writes a JSON
+audit line per request (`docker compose --file docker\compose.yaml --file docker\compose.egress.yaml logs egress-proxy`).
+Requires Docker Compose 2.24 or later. See `docs/EGRESS.md` for the design, limits, and residual risks.
 
 ## 6. Approval and recovery rules
 

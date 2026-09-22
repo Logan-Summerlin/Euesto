@@ -19,10 +19,11 @@ Desktop -> authenticated gateway -> Unix-socket executor -> ephemeral staging ->
 
 ## Public tools
 
-The model-facing local tools are `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`, and `investigate_repository`.
+The model-facing local tools are `read`, `write`, `edit`, `patch`, `bash`, `grep`, `find`, `ls`, `status`, and `investigate_repository`.
 
 - Plan: `read`, `grep`, `find`, `ls` only.
-- Agent: all eight; mutations remain in staging.
+- Agent: all ten; mutations (`write`, `edit`, `patch`, `bash`) remain in staging; `status` is read-only staged-change review.
+- Consecutive read-only calls in one turn may run concurrently; mutations stay serialized in call order.
 - `investigate_repository` is Agent-only, read-only, capped at four calls per turn, and restricted to the Plan tool set inside its nested loop.
 - Do not add aliases, legacy compatibility tools, hidden capabilities, or alternate public vocabularies.
 
@@ -32,11 +33,11 @@ See `docs/TOOLS.md` for the contract and `docs/LIMITS.md` for limits.
 
 - Normalize and contain paths beneath the selected workspace.
 - Preserve link/device/reparse-point protections and UTF-8 text semantics.
-- Keep executor non-root, network-disabled, capability-restricted, and without host publication authority.
+- Keep executor non-root, network-disabled, capability-restricted, and without host publication authority. The only exception is the opt-in allowlisted-egress overlay (`docs/EGRESS.md`): an internal-only network to a CONNECT proxy that allows named registries; the default profile keeps `network_mode: none`.
 - Keep the source mount read-only and mutations in ephemeral staging.
 - Checkpoint mutations and roll them back on failure, cancellation, or timeout; Bash may explicitly retain partial progress on a non-zero exit only when `rollback_on_failure: false` is requested, while timeouts and cancellation always roll back.
 - Keep Bash non-interactive and bounded (fixed base environment; user env is filtered and bounded).
-- Require approved, path-bounded, hash-validated publication through the desktop broker.
+- Require approved, path-bounded, hash-validated publication through the desktop broker; larger changesets publish as separately approved, all-or-nothing batches, and binary files travel byte-exact as `content_base64`.
 
 ## Change discipline
 
@@ -51,7 +52,7 @@ The canonical validation entry point is `python scripts/validate.py`; use `prefl
 ```text
 pytest
 ruff check .
-python -m compileall -q app.py src server shared executor tests scripts
+python -m compileall -q app.py src server shared executor egress tests scripts
 pyside6-qmllint qml/Main.qml qml/Sidebar.qml qml/Transcript.qml qml/Composer.qml
 ```
 
@@ -73,7 +74,8 @@ Concise guide to each top-level folder:
 | `build/` | PyInstaller spec and version metadata for Windows packaging. |
 | `docker/` | Gateway/executor images, Compose topology, secrets wiring, and the container operator guide (`README.container.md`). |
 | `docs/` | Authoritative architecture, tools, limits, publication, contributor, and troubleshooting references. |
-| `executor/` | The sandboxed eight-tool service: dispatch, path safety, staging, checkpoints, resource limits. |
+| `egress/` | Opt-in allowlisted HTTPS egress proxy (standard library only) for the install-capable executor profile. |
+| `executor/` | The sandboxed tool service: dispatch, path safety, staging, checkpoints, resource limits. |
 | `installer/` | Inno Setup script for the Windows installer. |
 | `qml/` | Qt Quick UI (main window, sidebar, transcript, composer). |
 | `scripts/` | Developer helpers: dev up/down, install/uninstall, protocol check, icons/screenshots/mockups. |

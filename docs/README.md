@@ -7,7 +7,7 @@ Euesto is a local-first Windows chatbot. The desktop talks to an authenticated g
 1. [Architecture](ARCHITECTURE.md) — system boundaries and dependency direction.
 2. [Contributing](CONTRIBUTING.md) — setup, workflow, and review rules.
 3. [Testing](TESTING.md) — test taxonomy, markers, and required checks.
-4. [Tools](TOOLS.md), [Limits](LIMITS.md), and [Publication](PUBLICATION.md) — contracts and security-sensitive behavior.
+4. [Tools](TOOLS.md), [Limits](LIMITS.md), [Publication](PUBLICATION.md), and [Egress](EGRESS.md) — contracts and security-sensitive behavior.
 5. [Troubleshooting](TROUBLESHOOTING.md) — operational failures and recovery.
 
 ## Where to make a change
@@ -19,6 +19,7 @@ Euesto is a local-first Windows chatbot. The desktop talks to an authenticated g
 | Process/bootstrap wiring | `app.py` | Application startup and dependency wiring only. |
 | Provider and agent behavior | `server/` | Gateway, OpenRouter, budgets, journals, sessions, and agent loops. |
 | Workspace tools and staging | `executor/` | Bounded, network-disabled filesystem execution; never publication. |
+| Opt-in package egress | `egress/`, `docker/compose.egress.yaml` | Allowlisted CONNECT proxy for the install-capable profile; never loaded by default. |
 | Protocol and registries | `shared/` | Framework-neutral structures; no desktop or gateway orchestration. |
 | Tests | `tests/` | Follow the taxonomy in `TESTING.md`; security and container tests must remain credential-free. |
 
@@ -33,6 +34,6 @@ pytest
 pytest -m "slow and not docker"
 pytest -m docker
 ruff check .
-python -m compileall -q app.py src server shared executor tests scripts
+python -m compileall -q app.py src server shared executor egress tests scripts
 pyside6-qmllint qml/Main.qml qml/Sidebar.qml qml/Transcript.qml qml/Composer.qml
 ```

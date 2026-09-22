@@ -17,7 +17,7 @@ This document describes the implementation on the current branch. Older architec
 
 - **Desktop** — PySide6/Qt Quick UI (`app.py`, `src/`, `qml/`), local SQLite history/settings, runtime management, approvals, and the trusted publication broker. It is the only component allowed to publish changes into the selected host workspace.
 - **Gateway** — a loopback-authenticated service in Docker (`server/`). It owns OpenRouter access, the agent loop, sessions, budget profiles, journals, permission rules, skills, and provider-facing policy. It has no workspace mount.
-- **Executor** — a separate Docker service reached through authenticated Unix-socket IPC. It exposes exactly eight local tools: `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`, and `investigate_repository`. It has no network access, runs as a non-root user, and never publishes to the host.
+- **Executor** — a separate Docker service reached through authenticated Unix-socket IPC. Together with the gateway it serves exactly ten model-facing tools: `read`, `write`, `edit`, `patch`, `bash`, `grep`, `find`, `ls`, `status`, and `investigate_repository` (the last is a gateway-driven nested loop over the Plan tools). It has no network access (an opt-in overlay can route package installs through an allowlisted proxy; see `EGRESS.md`), runs as a non-root user, and never publishes to the host.
 - **Workspace mount** — the selected host workspace is presented to the executor as a read-only source snapshot. Agent mutations happen in an ephemeral writable staging area.
 - **Staging/checkpoints** — staging is the mutable working copy for Agent mode. Mutations checkpoint first; failed, cancelled, or timed-out mutations are rolled back. Successful mutations remain staged until publication.
 - **Publication broker** — the desktop compares the staged state with the source snapshot, obtains approval, validates the manifest and hashes, applies path-bounded changes to the host, and retains recovery information.
@@ -49,13 +49,13 @@ The gateway may communicate with the model provider, but cannot read the workspa
 
 ## Modes
 
-**Chat** has no local workspace tools. **Plan** exposes only `read`, `grep`, `find`, and `ls`, against the read-only source. **Agent** exposes all eight tools, with mutations confined to staging. Publication is a separate desktop-authorized operation.
+**Chat** has no local workspace tools. **Plan** exposes only `read`, `grep`, `find`, and `ls`, against the read-only source. **Agent** exposes all ten tools, with mutations confined to staging; consecutive read-only calls in one turn run concurrently while mutations stay serialized. Publication is a separate desktop-authorized operation.
 
 Agent runs additionally carry an approval policy (`prompt` or `auto`) and a budget profile. Prompted approvals use the remaining wall-clock budget as their deadline; expiry is journaled as `approval.timeout` and cannot leave a run waiting indefinitely. Auto mode auto-allows otherwise-valid tool calls but does not grant network, host-path, shell, or publication authority to the executor.
 
 ## Investigation delegation
 
-`investigate_repository` is an eighth public tool available in Agent mode. It opens a bounded nested agent loop that uses a separately configured investigation model and may call only the Plan tool set through the parent's existing executor session. Its cost debits the parent run's budget; up to four calls are accepted per turn; nested activity is journaled as `subagent.*` events for replay and audit. The delegation grants no mutation, command, staging, or publication authority.
+`investigate_repository` is a public tool available in Agent mode. It opens a bounded nested agent loop that uses a separately configured investigation model and may call only the Plan tool set through the parent's existing executor session. Its cost debits the parent run's budget; up to four calls are accepted per turn; nested activity is journaled as `subagent.*` events for replay and audit. The delegation grants no mutation, command, staging, or publication authority.
 
 ## Budgets and journaling
 
@@ -77,4 +77,4 @@ Path handling rejects absolute/drive/UNC paths, traversal segments, Windows alia
 
 ## Current versus historical design
 
-The current architecture is the eight-tool executor, ephemeral staging, scoped investigation delegation, and desktop publication broker described above. Earlier plans that referenced alternate public tool names, compatibility aliases, mandatory hashes, or direct executor publication are historical and must not be treated as current behavior.
+The current architecture is the ten-tool surface, ephemeral staging, scoped investigation delegation, and desktop publication broker described above. Earlier plans that referenced alternate public tool names, compatibility aliases, mandatory hashes, or direct executor publication are historical and must not be treated as current behavior.

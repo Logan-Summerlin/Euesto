@@ -365,6 +365,8 @@ succeeding when the underlying bytes happen to be valid UTF-8.
 
 ### P1-1. Native staged status/diff tool (no raw Git exposure)
 
+**Status: implemented** — read-only Agent tool `status` (`executor/tools/status.py`); see `docs/TOOLS.md`.
+
 **Files (new/changed):** a new `executor/tools/status.py` (or extend `checkpoints.inspect_checkpoint`
 into a model-facing operation), `executor/app.py` dispatcher, `server/openrouter/agent.py` schema,
 `shared/tools.py`, `docs/TOOLS.md`
@@ -407,6 +409,8 @@ raw `git` in `bash`.)*
 ---
 
 ### P1-2. Structured multi-file patch operation + advisory shrink guard
+
+**Status: implemented** — mutation tool `patch` (`executor/tools/patch.py`; named `patch` because `apply_patch` is a removed legacy name the regression suite forbids), advisory shrink guard for confirmed changes, and `edit` newline policy/diagnostics.
 
 **Files:** new `executor/tools/patch.py` (or similar), `executor/mutations.py`, `executor/app.py`,
 `server/openrouter/agent.py`, `shared/tools.py`, `docs/TOOLS.md`
@@ -458,6 +462,8 @@ diagnostics and newline handling") and 3 ("Provide an auditable structured patch
 
 ### P1-3. Publication ceiling blocks legitimate multi-file codemods
 
+**Status: implemented** — ordered, separately approved, all-or-nothing batches with a durable ledger and content-free baseline receipts; see `docs/PUBLICATION.md`.
+
 **File:** `src/workspace_broker.py`
 
 **Verified:**
@@ -491,6 +497,8 @@ per-batch limits.
 ---
 
 ### P1-4. Checkpoint/status cost is a full-tree SHA-256 hash on *every* mutating call, not just at session start
+
+**Status: implemented (fixes 1 and 2)** — stat-signature digest cache in `visible_files()`, object-store checks without re-hashing, and post-mutation status reuses the checkpoint walk. Fix 3 (copy-on-write staging) remains future work.
 
 **Files:** `executor/staging.py` (`visible_files`), `executor/checkpoints.py` (`create_checkpoint`),
 `executor/app.py`
@@ -551,6 +559,8 @@ large repositories.
 
 ### P1-5. Executor has no dependency-install or network path at all
 
+**Status: implemented as an opt-in prototype** — `docs/EGRESS.md`, `egress/`, `docker/compose.egress.yaml`; the default profile keeps `network_mode: none`.
+
 **Files:** `docker/compose.yaml`, `docker/Dockerfile.executor`
 
 **Context:** `network_mode: none` on the executor container is confirmed, and the base image is
@@ -584,6 +594,8 @@ no egress).
 
 ### P1-6. Binary/non-UTF-8 files have no path through the pipeline, even via `bash`
 
+**Status: implemented** — `PublishOperation.content_base64`, carried byte-exact by the executor manifest and the broker.
+
 **Files:** `executor/tools/read.py`, `executor/tools/write.py`, `shared/tools.py`
 (`PublishOperation.content: str | None`), `src/workspace_broker.py`
 
@@ -611,6 +623,8 @@ publication paths and their tests entirely unaffected.
 ---
 
 ### P1-7. Tool calls within a turn execute sequentially even when read-only and independent
+
+**Status: implemented** — consecutive read-only calls run concurrently (`server/agent/runtime.py::tool_call_groups`); the executor serves them off its event loop.
 
 **File:** `server/agent/runtime.py`
 

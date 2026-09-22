@@ -459,6 +459,12 @@ def _render_executor_context(status: dict[str, Any], mode: str, approval_policy:
         lines.append("- Use patch for multi-file changes: its operations apply atomically, all or none.")
         lines.append("- Independent read-only calls (read, grep, find, ls, status) issued together in one turn run concurrently.")
         lines.append("- Bash runs non-interactively with bounded environment, output, timeout, and process cleanup.")
+        egress = environment.get("egress")
+        if isinstance(egress, dict) and egress.get("enabled"):
+            hosts = ", ".join(str(item) for item in (egress.get("allowed_hosts") or [])[:8]) or "allowlisted registries"
+            lines.append(f"- Network: none, except HTTPS package downloads through the allowlisted proxy ({hosts}); install into a virtualenv such as .venv (never published).")
+        else:
+            lines.append("- Network: none; dependency installs and network-dependent tests are unavailable.")
         lines.append("- Prefer one investigate_repository call; use follow-ups only when needed. The configurable budget is capped at four calls per parent turn and resets for each turn.")
     else:
         lines.append("- Plan mode reads the selected source workspace; mutation and command tools are unavailable.")

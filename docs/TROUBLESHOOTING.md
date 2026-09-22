@@ -26,7 +26,7 @@ Check that the loopback gateway is healthy and that the desktop is using the cur
 
 ## Executor failures
 
-Check `/v1/status` and its reported workspace identity, snapshot identity, tool list, and effective limits. Executor authentication requires the current credential plus a fresh nonce. A Plan request for `write`, `edit`, or `bash` is intentionally rejected.
+Check `/v1/status` and its reported workspace identity, snapshot identity, tool list, and effective limits. Executor authentication requires the current credential plus a fresh nonce. A Plan request for `write`, `edit`, `patch`, `bash`, or `status` is intentionally rejected.
 
 ## Staging failures
 

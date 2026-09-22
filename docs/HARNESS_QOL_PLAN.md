@@ -18,7 +18,9 @@ Acceptance criteria:
 - The response reports the actual returned range and whether clipping occurred.
 - Existing byte and path safety limits remain authoritative.
 
-### 2. Improve exact-edit diagnostics and newline handling
+### 2. Improve exact-edit diagnostics and newline handling (implemented)
+
+Implemented in `executor/tools/edit.py`; the newline policy and diagnostic codes are documented in `docs/TOOLS.md` (`edit`).
 
 Make exact edits robust to normal newline representation while retaining exact-content safety. On a failed match, report useful bounded diagnostics, such as the number of matches found and a short escaped context preview.
 
@@ -29,7 +31,9 @@ Acceptance criteria:
 - The error identifies whether the failure was zero matches, too many matches, hash conflict, or malformed context.
 - Matching remains path-bounded and hash-validated.
 
-### 3. Provide an auditable structured patch operation
+### 3. Provide an auditable structured patch operation (implemented)
+
+Implemented as the `patch` tool (`executor/tools/patch.py`); see `docs/TOOLS.md` (`patch`).
 
 Add a harness-native way to apply a bounded multi-file patch, instead of requiring a Bash/Python script for routine source changes. It should use the same staging, checkpoint, path, size, and rollback primitives as existing mutations.
 
@@ -63,7 +67,9 @@ Acceptance criteria:
 - Status output is internally consistent with the staged workspace.
 - Regression tests cover failed Bash commands, failed writes, and unavailable validation commands.
 
-### 6. Add native staged status and diff inspection
+### 6. Add native staged status and diff inspection (implemented)
+
+Implemented as the read-only `status` tool (`executor/tools/status.py`); see `docs/TOOLS.md` (`status`).
 
 Provide harness-native status and diff inspection, independent of the presence of Git. These should summarize created, modified, deleted, and permission-changed files and expose bounded textual diffs.
 

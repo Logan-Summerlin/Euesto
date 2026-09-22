@@ -8,6 +8,7 @@ import time
 from collections import deque
 from pathlib import Path
 
+from ..egress import proxy_environment
 from ..mutations import create_mutation_checkpoint, rollback_mutation
 from ..paths import safe_path
 
@@ -197,7 +198,8 @@ class BashRunner:
             raise ValueError("env must be an object")
         if len(requested) > MAX_ENV_VARS:
             raise ValueError("env contains too many variables")
-        environment = dict(BASE_ENVIRONMENT)
+        # Empty unless the opt-in allowlisted-egress profile configured a proxy for this executor.
+        environment = {**BASE_ENVIRONMENT, **proxy_environment()}
         for key, value in requested.items():
             if not isinstance(key, str) or not key or len(key) > 128 or "\x00" in key or not key.replace("_", "").isalnum() or key[0].isdigit():
                 raise ValueError("env variable names must be POSIX identifiers")

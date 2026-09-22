@@ -19,7 +19,7 @@ Run the repository checks that apply to the change:
 ```powershell
 pytest
 ruff check .
-python -m compileall -q app.py src server shared executor tests scripts
+python -m compileall -q app.py src server shared executor egress tests scripts
 pyside6-qmllint qml/Main.qml qml/Sidebar.qml qml/Transcript.qml qml/Composer.qml
 ```
 
@@ -27,9 +27,9 @@ Container changes should also be checked with the repository's container workflo
 
 ## Tool/schema synchronization
 
-The eight public tools are defined in three places that must agree:
+The ten public tools are defined in three places that must agree:
 
-1. `shared/tools.py` — public names, request/result protocol, permission sets (`PLAN_TOOLS`, `MUTATION_TOOLS`, `READ_TOOLS`, `INVESTIGATION_TOOLS`), and publish data structures;
+1. `shared/tools.py` — public names, request/result protocol, permission sets (`PLAN_TOOLS`, `MUTATION_TOOLS`, `READ_TOOLS`, `INVESTIGATION_TOOLS`, `STAGING_READ_TOOLS`, `PARALLEL_SAFE_TOOLS`), and publish data structures;
 2. `server/openrouter/agent.py` — model-facing JSON schemas and Plan/Agent tool selection;
 3. `executor/app.py` — dispatch to the real implementations.
 
@@ -37,7 +37,7 @@ The nested investigation loop lives in `server/agent/runtime.py`; its Plan-tool 
 
 ## Safely modifying tools
 
-- Keep the public vocabulary exactly the eight registered tools unless the project plan explicitly changes it.
+- Keep the public vocabulary exactly the ten registered tools unless the project plan explicitly changes it.
 - Do not add legacy aliases or compatibility wrappers for removed public tools.
 - Keep Plan read-only in code, not just in prompts.
 - Keep Agent mutations in staging; never give the executor host publication authority.

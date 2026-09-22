@@ -72,7 +72,7 @@ Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `ve
 - **Permission:** mutation-capable; checkpointed and staged.
 - **Defaults:** 300 seconds, 1,000,000 bytes of command text, stdin, and output in `coding`.
 - **Hard maximums:** 900 seconds; 1,000,000 command bytes; 8,000,000 stdin/output bytes.
-- **Execution:** `/bin/bash -lc`, non-interactive, no network, restricted environment, process-group cleanup.
+- **Execution:** `/bin/bash -lc`, non-interactive, no network, restricted environment, process-group cleanup. Under the opt-in allowlisted-egress profile (`docs/EGRESS.md`) the base environment also carries `HTTPS_PROXY`/`HTTP_PROXY` for the allowlisted registry proxy; nothing else becomes reachable.
 - **Environment:** a fixed base environment (`PATH`, `HOME`, locale, UTF-8 Python flags) is always applied. User-supplied `env` is limited to 64 variables with POSIX-identifier names and ≤16,384-byte values; `PATH`, `HOME`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, and `BASH_ENV*` are refused.
 - **Output:** stdout/stderr is bounded; oversized output is retained as a bounded head/tail preview with a truncation marker. Command event cursors are exposed separately through the executor event endpoint.
 - **Failure:** timed-out and cancelled commands always roll staged filesystem changes back to their checkpoint. Non-zero-exit commands roll back by default; set `rollback_on_failure: false` when retaining partial progress is intentional. Results separate the process `exit_code` from checkpoint outcome with `rolled_back` and `rollback_reason` (`nonzero_exit` or `none`).
@@ -153,11 +153,11 @@ Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `ve
 
 Read-only tools run without approval prompts in both prompt and Auto sessions; mutation and command tools require approval under the `prompt` policy and are auto-allowed under `auto`. Plan-mode mutation denial is enforced twice: once in `shared/tools.py` request validation and again by `executor/permissions.py`.
 
-The public ten-tool model-facing API includes the scoped read-only `investigate_repository` tool.
+The public ten-tool model-facing API includes the scoped read-only `investigate_repository` tool. Check `shared/tools.py` and `server/openrouter/agent.py` when modifying schemas or dispatch.
 
 ## Concurrency within a turn
 
-When one model turn issues several calls, consecutive independent read-only calls (`read`, `grep`, `find`, `ls`, `status`) run concurrently (at most 8 at a time) and the executor serves them off its event loop. Mutations (`write`, `edit`, `patch`, `bash`) and `investigate_repository` run one at a time in their original order, so each keeps its own checkpoint and a read issued after a write observes it. Results are always returned to the model in the original call order. Check `shared/tools.py` and `server/openrouter/agent.py` when modifying schemas or dispatch.
+When one model turn issues several calls, consecutive independent read-only calls (`read`, `grep`, `find`, `ls`, `status`) run concurrently (at most 8 at a time) and the executor serves them off its event loop. Mutations (`write`, `edit`, `patch`, `bash`) and `investigate_repository` run one at a time in their original order, so each keeps its own checkpoint and a read issued after a write observes it. Results are always returned to the model in the original call order.
 
 
 ## Permission matching

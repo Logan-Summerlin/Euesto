@@ -17,6 +17,7 @@ from starlette.routing import Route
 from shared.tools import MUTATION_TOOLS, TOOL_NAMES, PublicationReceipt, PublishManifest, PublishOperation, ToolRequest, ToolResult
 from .checkpoints import checkpoint_files, discard_staging
 from .config import ExecutorConfig
+from .egress import egress_status
 from .errors import classify_error
 from .permissions import enforce_capability
 from .staging import Snapshot, WorkspaceChange, advance_published_staging, load_snapshot, publication_batches, refresh_visible_files, seed_staging, workspace_changes
@@ -197,4 +198,4 @@ def _environment_context(config: ExecutorConfig, snapshot: Snapshot) -> dict[str
     except (OSError, ValueError): unpublished_changes = True
     try: headroom = shutil.disk_usage(config.work_root).free
     except OSError: headroom = None
-    return {"capability_schema_version": 2, "mode": "plan_reads_source_agent_uses_ephemeral_staging", "workspace_root": ".", "platform": platform.system().casefold(), "python_version": platform.python_version(), "network_access": False, "gpu_access": False, "command_style": "bash -lc", "developer_executables": available, "agent_snapshot": {"snapshot_id": snapshot.snapshot_id, "file_count": len(snapshot.hashes), "total_bytes": snapshot.total_bytes}, "workspace_empty": snapshot.empty, "source_snapshot_id": snapshot.snapshot_id, "staging_lifetime": "same_executor_instance", "unpublished_changes": unpublished_changes, "publication_status": "host_publication_pending_review" if unpublished_changes else "no_unpublished_changes", "storage_headroom_bytes": headroom, "limits": config.limits_status()}
+    return {"capability_schema_version": 2, "mode": "plan_reads_source_agent_uses_ephemeral_staging", "workspace_root": ".", "platform": platform.system().casefold(), "python_version": platform.python_version(), "network_access": False, "egress": egress_status(), "gpu_access": False, "command_style": "bash -lc", "developer_executables": available, "agent_snapshot": {"snapshot_id": snapshot.snapshot_id, "file_count": len(snapshot.hashes), "total_bytes": snapshot.total_bytes}, "workspace_empty": snapshot.empty, "source_snapshot_id": snapshot.snapshot_id, "staging_lifetime": "same_executor_instance", "unpublished_changes": unpublished_changes, "publication_status": "host_publication_pending_review" if unpublished_changes else "no_unpublished_changes", "storage_headroom_bytes": headroom, "limits": config.limits_status()}

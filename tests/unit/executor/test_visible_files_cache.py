@@ -161,3 +161,44 @@ def test_large_workspace_mutation_is_dominated_by_the_write_not_the_tree_hash(tm
     assert result.ok, result.to_dict()
     assert len(counter.paths) <= 4
     assert elapsed < cold_seconds * 2, (elapsed, cold_seconds)
+
+
+def test_prune_reads_manifests_after_a_cold_reference_cache(tmp_path: Path) -> None:
+    root = tmp_path / "work"
+    root.mkdir()
+    (root / "a.txt").write_text("one\n", encoding="utf-8")
+    first = create_checkpoint(root, max_checkpoints=2)
+    (root / "a.txt").write_text("two\n", encoding="utf-8")
+    checkpoints_module._reference_cache.clear()
+    second = create_checkpoint(root, max_checkpoints=2)
+    (root / "a.txt").write_text("three\n", encoding="utf-8")
+    checkpoints_module._reference_cache.clear()
+    create_checkpoint(root, max_checkpoints=2)
+    stored = {path.name for path in (root / ".local-chat-checkpoints" / "objects").iterdir()}
+    # The oldest checkpoint was pruned together with the only object it referenced.
+    assert not (root / ".local-chat-checkpoints" / first).exists()
+    assert len(stored) == 2
+    restore_checkpoint(root, second)
+    assert (root / "a.txt").read_text(encoding="utf-8") == "two\n"
+
+
+def test_executor_serves_read_only_tools_concurrently(tmp_path: Path, monkeypatch) -> None:
+    import executor.app as app_module
+
+    source = tmp_path / "source"
+    source.mkdir()
+    service = ExecutorService(_config(source, tmp_path / "work"))
+
+    def slow_ls(root, arguments, **_kwargs):
+        time.sleep(0.3)
+        return "", {"count": 0}
+
+    monkeypatch.setattr(app_module, "ls", slow_ls)
+
+    async def scenario() -> float:
+        started = time.perf_counter()
+        results = await asyncio.gather(*(service.execute(ToolRequest(f"ls-{index}", "run", "ls", "agent", {})) for index in range(4)))
+        assert all(result.ok for result in results)
+        return time.perf_counter() - started
+
+    assert asyncio.run(scenario()) < 0.9

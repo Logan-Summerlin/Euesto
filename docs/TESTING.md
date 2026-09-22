@@ -50,7 +50,7 @@ pytest
 pytest -m "slow and not docker"
 pytest -m docker
 ruff check .
-python -m compileall -q app.py src server shared executor tests scripts
+python -m compileall -q app.py src server shared executor egress tests scripts
 pyside6-qmllint qml/Main.qml qml/Sidebar.qml qml/Transcript.qml qml/Composer.qml
 ```
 

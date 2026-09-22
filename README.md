@@ -22,7 +22,7 @@ A portable ZIP is also supported. Docker Desktop is the required external runtim
 - **Agent** can inspect and modify an ephemeral staging copy, then request publication through the trusted desktop broker.
 - Local SQLite stores conversation/settings data; credentials use the Windows credential store where supported.
 - The gateway is loopback-authenticated and can reach OpenRouter but has no workspace mount.
-- The executor is network-disabled, non-root, and has a read-only source mount plus bounded writable staging.
+- The executor is network-disabled, non-root, and has a read-only source mount plus bounded writable staging. An opt-in developer profile can route package installs through an allowlisted egress proxy ([docs/EGRESS.md](docs/EGRESS.md)); the default stays network-free.
 
 ## Modes and permissions
 
@@ -30,11 +30,11 @@ A portable ZIP is also supported. Docker Desktop is the required external runtim
 |---|---|---|---|
 | Chat | none | none | none |
 | Plan | `read`, `grep`, `find`, `ls` | no | no |
-| Agent | all eight | staging only | desktop broker, after approval/validation |
+| Agent | all ten | staging only | desktop broker, after approval/validation |
 
-The eight-tool public API is `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`, and `investigate_repository`. Mode restrictions are enforced in code, not only in prompts. Agent Auto mode can reduce repeated prompts but does not grant network, host-path, shell, or publication authority to the executor.
+The ten-tool public API is `read`, `write`, `edit`, `patch`, `bash`, `grep`, `find`, `ls`, `status`, and `investigate_repository`. `patch` applies a multi-file change atomically and `status` reviews everything staged (with bounded diffs) before publication. Mode restrictions are enforced in code, not only in prompts. Agent Auto mode can reduce repeated prompts but does not grant network, host-path, shell, or publication authority to the executor.
 
-`investigate_repository` delegates a bounded, read-only repository investigation to a separately configured cheaper model. The nested loop can use only the Plan tools through the same executor session, debits the parent run's budget, and is capped at two calls per turn.
+`investigate_repository` delegates a bounded, read-only repository investigation to a separately configured cheaper model. The nested loop can use only the Plan tools through the same executor session, debits the parent run's budget, and is capped at four calls per turn.
 
 ## Example: editing a file
 
@@ -121,7 +121,8 @@ CHANGELOG.md        Release/change summary
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md) — current components, boundaries, and data flow.
-- [Tools](docs/TOOLS.md) — authoritative eight-tool reference.
+- [Tools](docs/TOOLS.md) — authoritative ten-tool reference.
+- [Egress](docs/EGRESS.md) — opt-in allowlisted package-install profile.
 - [Limits](docs/LIMITS.md) — effective defaults, hard ceilings, and precedence.
 - [Publication](docs/PUBLICATION.md) — staging, approval, publication, conflicts, and recovery.
 - [Contributing](docs/CONTRIBUTING.md) — development and safe tool changes.

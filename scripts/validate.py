@@ -98,7 +98,7 @@ def commands(tier: str) -> list[tuple[str, list[str]]]:
     if tier == "docker": return [("docker", pytest + ["-m", "docker"])]
     if tier == "qml": return [("qml", ["pyside6-qmllint", *QML_FILES])]
     if tier == "ruff": return [("ruff", [sys.executable, "-m", "ruff", "check", "."])]
-    if tier == "compile": return [("compile", [sys.executable, "-m", "compileall", "-q", "app.py", "src", "server", "shared", "executor", "tests", "scripts"])]
+    if tier == "compile": return [("compile", [sys.executable, "-m", "compileall", "-q", "app.py", "src", "server", "shared", "executor", "egress", "tests", "scripts"])]
     if tier == "all": return [*commands("fast"), *commands("slow"), *commands("ruff"), *commands("compile"), *commands("qml"), *commands("docker")]
     raise ValueError(f"unknown validation tier: {tier}")
 

@@ -27,7 +27,7 @@ cleanup_docker_fixtures() {
   if [[ -z "$ci_root" ]]; then
     ci_root="${TMPDIR:-/tmp}/euesto-validation"
   fi
-  docker compose --file docker/compose.yaml --profile agent down --volumes --remove-orphans >/dev/null 2>&1 || true
+  docker compose --file docker/compose.yaml --file docker/compose.egress.yaml --profile agent down --volumes --remove-orphans >/dev/null 2>&1 || true
   rm -rf -- "$ci_root"
 }
 

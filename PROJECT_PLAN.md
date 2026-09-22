@@ -4,7 +4,7 @@ This document is a status-oriented roadmap. It is not the authoritative architec
 
 ## Completed
 
-- Eight-tool model-facing executor API: `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`, and scoped read-only `investigate_repository` delegation.
+- Ten-tool model-facing API: `read`, `write`, `edit`, `patch`, `bash`, `grep`, `find`, `ls`, `status`, and scoped read-only `investigate_repository` delegation.
 - Plan/Agent capability separation with Plan mutation denial enforced in code.
 - Incremental file inspection and localized editing for larger files.
 - Bounded Bash execution, output, stdin, command time, process cleanup, and rollback.
@@ -20,7 +20,7 @@ This document is a status-oriented roadmap. It is not the authoritative architec
 
 ## Active
 
-- Keep schemas, dispatch, permissions, limits, tests, and documentation synchronized as the eight-tool API evolves.
+- Keep schemas, dispatch, permissions, limits, tests, and documentation synchronized as the ten-tool API evolves.
 - Maintain container and QML checks alongside the Python test/lint/compile checks.
 - Continue release/runtime validation for Windows packaging and digest-pinned container images.
 
@@ -43,4 +43,4 @@ The project does not seek to become an unrestricted remote-control agent, a brow
 
 ## Acceptance baseline
 
-The current baseline is considered complete only when the eight-tool API remains stable, Plan is read-only, Agent mutations remain staged, the executor cannot publish or reach the network, source mounts remain read-only, failed mutations roll back, publication remains approved and hash-validated, effective limits are internally consistent, and the documented pytest/ruff/compile/QML/container checks pass.
+The current baseline is considered complete only when the ten-tool API remains stable, Plan is read-only, Agent mutations remain staged, the executor cannot publish or reach the network (outside the opt-in allowlisted-egress overlay), source mounts remain read-only, failed mutations roll back, publication remains approved and hash-validated, effective limits are internally consistent, and the documented pytest/ruff/compile/QML/container checks pass.

@@ -219,3 +219,15 @@ def test_gateway_serves_next_batches_and_content_free_receipts(tmp_path: Path) -
 
     asyncio.run(scenario())
     assert calls == [("manifest", "run", "pub", 2), ("mark", "PublicationReceipt", 2)]
+
+
+def test_approval_and_activity_displays_describe_batches_binaries_and_patches() -> None:
+    from src.approval_display import approval_display
+    from src.transcript import compact_activity_event
+
+    summary, _ = approval_display("publish", "tool", {"batch_index": 2, "batch_count": 3, "operations": [{"operation": "create", "path": "icon.png", "content_base64": "AA=="}]})
+    assert "batch 2 of 3" in summary and "create: icon.png [binary]" in summary
+    summary, _ = approval_display("tool", "patch", {"operations": [{"operation": "edit", "path": "a.py"}, {"operation": "delete", "path": "b.py"}]})
+    assert "2 operation(s), applied all-or-nothing" in summary and "delete: b.py" in summary
+    event = compact_activity_event({"run_id": "r", "event_id": 1, "type": "tool.requested", "payload": {"tool": "patch", "arguments": {"operations": [{"operation": "edit", "path": "src/a.py"}, {"operation": "write", "path": "b.py"}]}}})
+    assert event["payload"]["file_name"] == "src/a.py (+1 more)"
