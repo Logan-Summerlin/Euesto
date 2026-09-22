@@ -8,13 +8,16 @@ from pathlib import Path, PurePosixPath
 
 RESERVED = frozenset({"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))})
 SECRET_PARTS = frozenset({".env", ".aws", ".azure", ".ssh", ".gnupg", ".npmrc", ".pypirc", "credentials", "id_rsa", "id_ed25519"})
+# Matched against every path segment, so only names that are unambiguously metadata,
+# dependency, or cache directories belong here. A bare "env" is deliberately absent:
+# real source trees use env/ for configuration and loaders, and silently dropping it
+# would hide it from staging, tools, and publication. Name virtualenvs .venv or venv.
 STAGING_EXCLUDED_PARTS = frozenset({
     ".git",
     ".hg",
     ".svn",
     ".venv",
     "venv",
-    "env",
     ".tox",
     ".nox",
     "node_modules",

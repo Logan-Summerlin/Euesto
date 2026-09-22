@@ -24,6 +24,8 @@ SessionSaver = Callable[[str, str, str, list[dict[str, Any]], list[dict[str, Any
 
 INVESTIGATION_MAX_ITERATIONS = 36
 INVESTIGATION_MAX_TOOL_CALLS = 36
+INVESTIGATION_MIN_WALL_SECONDS = 10
+INVESTIGATION_MAX_WALL_SECONDS = 300
 INVESTIGATION_HARD_CALL_CEILING = 4
 DEFAULT_INVESTIGATION_CALL_BUDGET = 4
 
@@ -107,6 +109,9 @@ class AgentRuntime:
                         await self._offer_publish(run_id, request.approval_policy)
                     await self.append(run_id, "run.completed", {"iterations": budget.iterations, "tool_calls": budget.tool_calls, **budget.usage(), "budget": budget.snapshot()})
                     return
+                # The investigation call cap is per turn: each model turn starts with a fresh allowance.
+                self._investigation_calls.pop(run_id, None)
+                self._investigation_call_budget.pop(run_id, None)
                 for raw_call in turn.tool_calls:
                     budget.consume_tool_call()
                     run_mutated = (await self._execute_tool_call(run_id, request, raw_call, messages, budget)) or run_mutated
@@ -250,7 +255,7 @@ class AgentRuntime:
             allowance = parent_budget.remaining_cost * 0.5
             if allowance < 0.01:
                 raise RuntimeError("parent budget is too small for an investigation")
-            child = RunBudget(min(parent_budget.remaining_iterations, INVESTIGATION_MAX_ITERATIONS), max(10, int(parent_budget.remaining_wall_seconds)), allowance, min(parent_budget.remaining_tool_calls, INVESTIGATION_MAX_TOOL_CALLS), "investigation")
+            child = RunBudget(min(parent_budget.remaining_iterations, INVESTIGATION_MAX_ITERATIONS), investigation_wall_seconds(parent_budget), allowance, min(parent_budget.remaining_tool_calls, INVESTIGATION_MAX_TOOL_CALLS), "investigation")
             system_prompt = (
                 "You are the repository investigation subagent in a bounded plan-mode harness. "
                 "You are strictly read-only: use only read, grep, find, and ls. Never write, edit, "
@@ -260,7 +265,7 @@ class AgentRuntime:
                 "as the evidence is sufficient. Do not keep searching merely to increase completeness. "
                 "The harness will reserve one final iteration and one final tool-call slot for synthesis; "
                 "preserve the most relevant findings and file paths in context. "
-                f"Current child budget: {child.max_tool_calls} tool calls and {child.max_iterations} iterations. "
+                f"Current child budget: {child.max_tool_calls} tool calls, {child.max_iterations} iterations, and {child.max_wall_seconds} seconds. "
                 "Never intentionally spend the final available tool call on exploratory work; when one tool "
                 "call or one iteration remains, stop using repository tools and return your best-supported summary."
             )
@@ -271,7 +276,7 @@ class AgentRuntime:
             submessages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}]
             files: set[str] = set()
             forced_synthesis = child.max_iterations <= 1 or child.max_tool_calls <= 1
-            await self.append(run_id, "subagent.started", {"parent_run_id": run_id, "parent_tool_call_id": request_id, "model": model, "budget": {"max_tool_calls": child.max_tool_calls, "max_iterations": child.max_iterations}})
+            await self.append(run_id, "subagent.started", {"parent_run_id": run_id, "parent_tool_call_id": request_id, "model": model, "budget": {"max_tool_calls": child.max_tool_calls, "max_iterations": child.max_iterations, "max_wall_seconds": child.max_wall_seconds}})
 
             while not forced_synthesis:
                 child.consume_iteration()
@@ -359,6 +364,11 @@ class AgentRuntime:
         manifest = await self.executor.manifest(run_id, approval_id)
         if manifest.operations:
             await self.append(run_id, "checkpoint.created", {"checkpoint_id": manifest.approval_id, "publish_manifest": manifest.to_dict(), "auto_publish": approval_policy == "auto"})
+
+
+def investigation_wall_seconds(parent_budget: RunBudget) -> int:
+    """Bound a child investigation's wall time independently of the parent's remaining time."""
+    return min(INVESTIGATION_MAX_WALL_SECONDS, max(INVESTIGATION_MIN_WALL_SECONDS, int(parent_budget.remaining_wall_seconds)))
 
 
 def _rule_for_request(request: ToolRequest, workspace_id: str) -> PermissionRule:

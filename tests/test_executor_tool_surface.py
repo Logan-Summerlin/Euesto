@@ -61,7 +61,7 @@ def test_tool_schemas_match_executor_argument_names() -> None:
         "read": {"path", "start_line", "end_line", "max_bytes"},
         "write": {"path", "content", "expected_sha256", "create_parents"},
         "edit": {"path", "old_str", "new_str", "expected_occurrences", "expected_sha256"},
-        "bash": {"command", "working_directory", "timeout_seconds", "env", "stdin"},
+        "bash": {"command", "working_directory", "timeout_seconds", "env", "stdin", "rollback_on_failure"},
         "grep": {"query", "path", "regex", "case_sensitive", "include_glob", "exclude_glob", "max_results", "context_lines", "include_metadata", "cursor"},
         "find": {"path", "glob", "max_depth", "max_results", "details"},
         "ls": {"path", "max_results", "details"},

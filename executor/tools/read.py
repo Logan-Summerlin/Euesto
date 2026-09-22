@@ -4,7 +4,7 @@ import codecs
 import hashlib
 from pathlib import Path
 
-from ..paths import safe_path
+from ..paths import is_tool_excluded, normalize_relative, safe_path
 
 DEFAULT_READ_BYTES = 64_000
 MAX_READ_BYTES = 256_000
@@ -22,6 +22,11 @@ def read(root: Path, arguments: dict, *, max_bytes: int) -> tuple[str, dict]:
     if not isinstance(requested, int) or isinstance(requested, bool) or requested < 1:
         raise ValueError("max_bytes must be a positive integer")
     byte_limit = min(max_bytes, MAX_READ_BYTES, requested)
+    # Paths hidden from find/grep/ls (VCS metadata, dependency/cache directories, executor
+    # metadata) are equally invisible to read, whether Plan reads the source mount or Agent
+    # reads staging.
+    if is_tool_excluded(normalize_relative(relative)):
+        raise ValueError(f"file not found: {relative}")
     try:
         path = safe_path(root, relative, must_exist=True)
     except FileNotFoundError as exc:

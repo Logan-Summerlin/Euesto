@@ -10,11 +10,11 @@ from pathlib import Path
 from ..paths import is_tool_excluded, safe_path
 
 
-def search_text(root: Path, arguments: dict, *, max_bytes: int, max_results: int = 200, max_seconds: float = 30.0) -> tuple[str, dict]:
+def search_text(root: Path, arguments: dict, *, max_bytes: int, max_results: int = 500, max_seconds: float = 30.0) -> tuple[str, dict]:
     scope = safe_path(root, str(arguments.get("path") or "."), must_exist=True)
     query = str(arguments.get("query") or "")
     if not query or len(query) > 1000: raise ValueError("A bounded search query is required")
-    limit = min(max_results, max(1, int(arguments.get("max_results") or 100))); flags = 0 if arguments.get("case_sensitive") else re.IGNORECASE
+    limit = min(max_results, max(1, int(arguments.get("max_results") or max_results))); flags = 0 if arguments.get("case_sensitive") else re.IGNORECASE
     try: pattern = re.compile(query if arguments.get("regex") else re.escape(query), flags)
     except re.error as exc: raise ValueError(f"Invalid search regex: {exc}") from exc
     include = str(arguments.get("include_glob") or "*"); exclude = str(arguments.get("exclude_glob") or "")

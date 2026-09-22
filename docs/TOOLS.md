@@ -4,11 +4,13 @@ This is the authoritative human-readable reference for the eight model-facing to
 
 ## Common contract
 
-Every executor request contains `request_id`, `run_id`, `tool`, `mode`, and an object-valued `arguments` field. `mode` is `plan` or `agent`. Tool requests are rejected when the tool is unknown, when Plan requests a mutation, or when serialized arguments exceed 512 KiB.
+Every executor request contains `request_id`, `run_id`, `tool`, `mode`, and an object-valued `arguments` field. `mode` is `plan` or `agent`. Tool requests are rejected when the tool is unknown, when Plan requests a mutation, or when arguments exceed the 17,000,000-byte protocol cap (`MAX_TOOL_ARGUMENT_BYTES` in `shared/tools.py`). The cap is measured as unescaped UTF-8 JSON, so newline- or control-character-heavy payloads do not lose capacity to escaping, and it is derived from the largest argument-carrying hard ceiling plus a 1,000,000-byte envelope, so it is never the binding constraint below a documented per-tool limit (see `docs/LIMITS.md`).
 
 Every result contains `request_id`, `ok`, `output`, `data`, `error_code`, `truncated`, `elapsed_seconds`, `returned`, `total_known`, `limit`, and `next_cursor`. Optional counts are non-negative integers. Errors are classified and returned rather than exposing arbitrary exception details to the model.
 
 All tools operate on relative POSIX paths that are normalized and contained beneath the workspace root. Absolute, drive, UNC, traversal (`..`), Windows-alias, reserved-DOS-name, non-canonical-Unicode, and secret-like paths are rejected, as are symlinks and hard-linked files. Only UTF-8 text is readable and writable; binary content is refused.
+
+Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `venv`, `.tox`, `.nox`, `node_modules`, `__pycache__`, and tool caches) plus executor `.local-chat-*` metadata are excluded from staging and are invisible to every read-oriented tool: `find`, `grep`, and `ls` omit them and `read` reports them as missing, in both Plan and Agent mode. A directory named `env/` is ordinary source and is staged, searched, and published like any other directory; name virtual environments `.venv` or `venv` to keep them out of staging.
 
 ## `read`
 
@@ -18,7 +20,7 @@ All tools operate on relative POSIX paths that are normalized and contained bene
 - **Permission:** read-only.
 - **Defaults:** each call returns at most 64,000 bytes unless `max_bytes` raises it; the tool clamps any request to 256,000 bytes per call regardless of the configured profile limit.
 - **Hard maximum:** 8,000,000 bytes at the protocol/config layer; the 256,000-byte per-call tool ceiling applies on top.
-- **Semantics:** Plan reads the read-only source snapshot; Agent reads staged workspace content. Line ranges and byte offsets cannot be combined. An end-line past the end of the file is clipped to the final available line and reported as `range_clipped`; invalid start lines and offsets remain rejected, and byte offsets must land on UTF-8 character boundaries.
+- **Semantics:** Plan reads the read-only source snapshot; Agent reads staged workspace content. Excluded metadata/dependency/cache paths fail as missing files, exactly as they are absent from `find`/`grep`/`ls`. Line ranges and byte offsets cannot be combined. An end-line past the end of the file is clipped to the final available line and reported as `range_clipped`; invalid start lines and offsets remain rejected, and byte offsets must land on UTF-8 character boundaries.
 - **Truncation/cursors:** results report `truncated`, `byte_offset`, `next_offset`, and `next_start_line`; continue with the next line range or offset instead of assuming a whole file fits in one response.
 - **Errors:** invalid path, invalid range, invalid offset, non-UTF-8 or binary content, missing file, and resource-limit failures are classified.
 
@@ -67,8 +69,9 @@ All tools operate on relative POSIX paths that are normalized and contained bene
 - **Arguments:** required `query`; optional `path`, `regex`, `case_sensitive`, `include_glob`, `exclude_glob`, `max_results` (1–5000), `context_lines` (0–5), `include_metadata`, and `cursor`.
 - **Modes:** Plan and Agent.
 - **Permission:** read-only.
-- **Default:** 500 results and a 64 MiB scan budget in `coding`.
-- **Hard maximums:** 5,000 results and 256 MiB scan budget.
+- **Default:** 500 results, a 64 MiB per-file scan budget, a 1,000,000-byte output budget, and a 30-second time budget in `coding`.
+- **Hard maximums:** 5,000 results, 256 MiB scan budget, 4,000,000 output bytes, and 300 seconds.
+- **Budgets:** the scan budget (`max_grep_scan_bytes`) only skips candidate files larger than it (reported as `files_skipped_too_large`); the output budget (`max_grep_output_bytes`) independently clips the combined output (reported as `output_truncated`); the time budget (`max_search_seconds`, overridable with `LOCAL_CHAT_MAX_SEARCH_SECONDS`) stops the scan and returns partial results with `truncation_reason: "time_budget"`.
 - **Semantics:** queries are literal text by default and regular expressions with `regex`; matches report path, line number, and a 500-character line excerpt, with optional context lines and metadata. Secret-like paths and `.local-chat-*` directories are skipped.
 - **Truncation/cursors:** bounded result sets report truncation/limits and may return `next_cursor`. Search scope should be constrained with `path` and globs when appropriate; the scan budget is a resource limit, not a claim that every byte of an arbitrarily large corpus is always scanned.
 
@@ -78,9 +81,10 @@ All tools operate on relative POSIX paths that are normalized and contained bene
 - **Arguments:** optional `path`, `glob`, `max_depth` (0–20, default 10), `max_results` (1–2000), and `details`.
 - **Modes:** Plan and Agent.
 - **Permission:** read-only.
-- **Default:** 500 results in `coding`.
-- **Hard maximum:** 2,000 results; traversal is independently bounded by depth/path rules.
-- **Truncation:** bounded listings report limits/truncation where applicable.
+- **Default:** 500 results when `max_results` is omitted and a 30-second time budget in `coding`.
+- **Hard maximum:** 2,000 results and 300 seconds; traversal is independently bounded by depth/path rules.
+- **Time budget:** the walk shares `max_search_seconds` with `grep`. When it expires the partial listing is returned with `truncated: true` and `truncation_reason: "time_budget"` and no cursor; narrow `path`, `glob`, or `max_depth` instead of retrying.
+- **Truncation:** a result-count cutoff reports `truncation_reason: "result_limit"` and a `next_cursor`.
 
 ## `ls`
 
@@ -88,8 +92,10 @@ All tools operate on relative POSIX paths that are normalized and contained bene
 - **Arguments:** optional `path`, `max_results` (1–2000), and `details`.
 - **Modes:** Plan and Agent.
 - **Permission:** read-only.
-- **Default:** 500 results in `coding`.
-- **Hard maximum:** 2,000 results.
+- **Default:** 500 results when `max_results` is omitted and a 30-second time budget in `coding`.
+- **Hard maximum:** 2,000 results and 300 seconds.
+- **Time budget:** the listing shares `max_search_seconds` with `grep`. When it expires the entries seen so far are returned with `truncated: true` and `truncation_reason: "time_budget"` and no cursor, because unvisited entries may sort before them.
+- **Truncation:** a result-count cutoff reports `truncation_reason: "result_limit"` and a `next_cursor`.
 - **Semantics:** immediate listing only; it does not recursively enumerate the whole tree.
 
 ## `investigate_repository`
@@ -100,7 +106,7 @@ All tools operate on relative POSIX paths that are normalized and contained bene
 - **Modes:** Agent only.
 - **Permission:** read-only; it cannot mutate, execute commands, checkpoint, or publish, and it never requires an approval prompt.
 - **Model:** uses the investigation model configured in Settings (default `xiaomi/mimo-v2.5`); the primary model cannot select or override it.
-- **Budget:** each call receives at most 50% of the parent run's remaining cost (calls fail closed below a $0.01 floor) and inherits bounded iteration, tool-call (36/36 caps), and wall-time limits from the parent's remaining budgets; up to four calls are accepted per turn, and a failed call still counts toward the cap.
+- **Budget:** each call receives at most 50% of the parent run's remaining cost (calls fail closed below a $0.01 floor) and inherits bounded iteration, tool-call (36/36 caps), and wall-time limits from the parent's remaining budgets. Wall time is the parent's remaining wall time clamped to 10–300 seconds, so one investigation can never consume most of a long parent run. Up to four calls are accepted per turn (the allowance resets at the start of every parent model turn), and a failed call still counts toward that turn's cap.
 - **Tools:** the nested investigation loop is restricted to `read`, `grep`, `find`, and `ls` through the parent's executor session, so it observes current staged state. Non-Plan tool calls inside the loop are rejected in code.
 - **Synthesis:** the harness reserves the final iteration and tool-call slot to force a summary instead of further exploration.
 - **Result:** returns `summary`, `files_examined`, and `truncated`; nested `subagent.*` events remain in the journal for replay/audit. On failure the parent is told to fall back to direct tool use.

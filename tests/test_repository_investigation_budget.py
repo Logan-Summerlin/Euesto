@@ -316,3 +316,78 @@ def test_parent_and_investigation_budgets_are_tripled():
     assert (EXTENDED_CODING_PROFILE.max_iterations, EXTENDED_CODING_PROFILE.max_tool_calls) == (1_200, 1_800)
     assert (LARGE_CODING_PROFILE.max_iterations, LARGE_CODING_PROFILE.max_tool_calls) == (1_800, 2_700)
     assert (runtime_module.INVESTIGATION_MAX_ITERATIONS, runtime_module.INVESTIGATION_MAX_TOOL_CALLS) == (36, 36)
+
+
+def test_investigation_child_wall_time_is_capped_independently_of_parent(monkeypatch):
+    events = []
+
+    async def fake_agent_turn(*args, **kwargs):
+        return AgentTurn(content="Done.", tool_calls=(), message={"role": "assistant", "content": "Done."}, usage={"total_tokens": 8})
+
+    async def append_event(run_id, event_type, payload):
+        events.append((event_type, payload))
+
+    monkeypatch.setattr(runtime_module, "agent_turn", fake_agent_turn)
+    runtime = AgentRuntime(FakeExecutor(), FakeApprovals(), append_event)
+    runtime._api_keys["run-1"] = "api-key"
+    parent_budget = RunBudget(100, 1_500, 1.0, 100, "test")
+
+    asyncio.run(runtime._investigate_repository("run-1", make_request(), "investigate-1", {"arguments": json.dumps({"query": "q"})}, [], parent_budget))
+
+    started = next(payload for kind, payload in events if kind == "subagent.started")
+    assert started["budget"]["max_wall_seconds"] == runtime_module.INVESTIGATION_MAX_WALL_SECONDS
+    assert runtime_module.INVESTIGATION_MAX_WALL_SECONDS == 300
+
+
+def test_investigation_wall_seconds_never_exceeds_ceiling_for_any_parent_remaining_time():
+    for remaining in (0, 5, 10, 299, 300, 301, 1_500, 5_400):
+        parent = RunBudget(100, remaining, 1.0, 100, "test")
+        wall = runtime_module.investigation_wall_seconds(parent)
+        assert runtime_module.INVESTIGATION_MIN_WALL_SECONDS <= wall <= runtime_module.INVESTIGATION_MAX_WALL_SECONDS
+        if runtime_module.INVESTIGATION_MIN_WALL_SECONDS < remaining < runtime_module.INVESTIGATION_MAX_WALL_SECONDS:
+            assert wall <= remaining
+
+
+class TurnExecutor(FakeExecutor):
+    async def status(self):
+        return {"workspace_id": "workspace", "environment": {"workspace_root": "/work", "limits": {}}}
+
+
+def _investigate_calls(turn: int, count: int) -> tuple[dict, ...]:
+    return tuple({"id": f"inv-{turn}-{index}", "function": {"name": "investigate_repository", "arguments": json.dumps({"query": f"question {index}"})}} for index in range(count))
+
+
+def test_investigation_call_budget_resets_each_turn(monkeypatch):
+    parent_turns = []
+    final_messages = []
+
+    async def fake_agent_turn(model, messages, api_key, mode, *args, **kwargs):
+        if model != "parent-model":
+            return AgentTurn(content="Found it.", tool_calls=(), message={"role": "assistant", "content": "Found it."}, usage={"total_tokens": 8})
+        parent_turns.append(len(parent_turns) + 1)
+        if len(parent_turns) == 1:
+            calls = _investigate_calls(1, 5)
+        elif len(parent_turns) == 2:
+            calls = _investigate_calls(2, 4)
+        else:
+            final_messages.extend(messages)
+            return AgentTurn(content="All done.", tool_calls=(), message={"role": "assistant", "content": "All done."}, usage={"total_tokens": 8})
+        return AgentTurn(content="", tool_calls=calls, message={"role": "assistant", "content": "", "tool_calls": list(calls)}, usage={"total_tokens": 8})
+
+    events = []
+
+    async def append_event(run_id, event_type, payload):
+        events.append((event_type, payload))
+
+    monkeypatch.setattr(runtime_module, "agent_turn", fake_agent_turn)
+    runtime = AgentRuntime(TurnExecutor(), FakeApprovals(), append_event)
+    asyncio.run(runtime.run("run-1", make_request(), "api-key"))
+
+    assert "run.failed" not in [kind for kind, _ in events]
+    results = {message["tool_call_id"]: json.loads(message["content"]) for message in final_messages if message.get("role") == "tool"}
+    turn_one = [results[f"inv-1-{index}"] for index in range(5)]
+    turn_two = [results[f"inv-2-{index}"] for index in range(4)]
+    assert all(item.get("summary") == "Found it." for item in turn_one[:4])
+    assert "Investigation call budget exhausted (4 calls per turn)." == turn_one[4]["error"]
+    assert all(item.get("summary") == "Found it." for item in turn_two)
+    assert runtime._investigation_calls == {}
