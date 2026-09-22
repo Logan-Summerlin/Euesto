@@ -25,6 +25,9 @@ STAGING_READ_TOOLS = frozenset({"status"})
 AGENT_TOOLS = TOOL_NAMES
 READ_TOOLS = PLAN_TOOLS | INVESTIGATION_TOOLS | STAGING_READ_TOOLS
 MUTATION_TOOLS = frozenset({"write", "edit", "patch", "bash"})
+# File edits confined to staging: checkpointed, reversible, previewable as diffs, and still gated
+# by publication approval. Bash is a mutation too but its effects are broader and harder to preview.
+STAGED_EDIT_TOOLS = frozenset({"write", "edit", "patch"})
 # Independent, side-effect-free executor calls that a turn may run concurrently. Investigation
 # is read-only too, but it drives a nested model loop against the shared parent budget, so it
 # stays serialized with the mutations.
@@ -66,16 +69,6 @@ def tool_argument_bytes(arguments: object) -> int:
         else: total += len(repr(value).encode("utf-8"))
         if total > MAX_TOOL_ARGUMENT_BYTES: break
     return total
-
-@dataclass(frozen=True, slots=True)
-class InvestigationResult:
-    summary: str
-    files_examined: tuple[str, ...] = ()
-    truncated: bool = False
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"summary": self.summary, "files_examined": list(self.files_examined), "truncated": self.truncated}
-
 
 @dataclass(frozen=True, slots=True)
 class ToolRequest:

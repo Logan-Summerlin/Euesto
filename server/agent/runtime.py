@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shlex
 import uuid
 from collections.abc import Awaitable, Callable
@@ -11,7 +12,8 @@ from server.executor import ExecutorClient
 from server.extensions.skills import render_skill_context
 from server.openrouter.agent import agent_turn
 from server.openrouter.errors import ProviderError
-from shared.permissions import PermissionDecision, PermissionRule, resolve_permission, rule_scope
+from shared.investigation import REPORT_FORMAT_INSTRUCTIONS, InvestigationResult, normalize_investigation_path, parse_inspected_paths, parse_investigation_report, reinspection_target
+from shared.permissions import PermissionDecision, PermissionRule, apply_approval_policy, resolve_permission, rule_scope
 from shared.requests import DEFAULT_INVESTIGATION_MODEL, AgentRunRequest
 from shared.tools import INVESTIGATION_TOOLS, MUTATION_TOOLS, PARALLEL_SAFE_TOOLS, PLAN_TOOLS, READ_TOOLS, ToolRequest, ToolResult
 from .approvals import ApprovalCoordinator, ApprovalTimeoutError
@@ -182,9 +184,7 @@ class AgentRuntime:
             return False
         await self.append(run_id, "tool.requested", {**tool_request.to_dict(), "budget": budget.snapshot()})
         rules = (*self.rules_loader(request.workspace_id), *self._run_rules.get(run_id, ()))
-        decision = resolve_permission(tool_request, request.workspace_id, rules)
-        if decision == PermissionDecision.ASK and request.approval_policy == "auto":
-            decision = PermissionDecision.ALLOW_RUN
+        decision = apply_approval_policy(resolve_permission(tool_request, request.workspace_id, rules), tool_request, request.approval_policy)
         if decision == PermissionDecision.ASK:
             approval_id = str(uuid.uuid4())
             await self.append(run_id, "approval.required", {"approval_id": approval_id, "kind": "tool", "tool": name, "arguments": arguments, "mutation": name in MUTATION_TOOLS, "available_decisions": ["deny", "allow_once", "allow_run", "allow_rule"]})
@@ -283,13 +283,20 @@ class AgentRuntime:
             result = ToolResult(request_id, False, output=json.dumps({"error": f"Investigation call budget exhausted ({budget_limit} calls per turn).", "remaining": 0, "fallback": "Continue with the repository tools directly."}), error_code="investigation.call_limit", data={"fallback": "direct_tools", "budget": budget_limit, "calls_used": count})
             messages.append({"role": "tool", "tool_call_id": request_id, "content": result.output})
             return False
+        files: set[str] = set()
+        observed: set[str] = set()
+        skipped: list[str] = []
         try:
             arguments = json.loads(str(function.get("arguments") or "{}"))
             if not isinstance(arguments, dict):
                 raise ValueError("tool arguments must be an object")
+            unknown = set(arguments) - {"query", "inspected_paths"}
+            if unknown:
+                raise ValueError(f"Unknown investigate_repository arguments: {', '.join(sorted(unknown))}")
             query = arguments.get("query")
             if not isinstance(query, str) or not query.strip():
                 raise ValueError("query is required")
+            inspected = parse_inspected_paths(arguments.get("inspected_paths"))
             model = str(request.investigation_model_id or DEFAULT_INVESTIGATION_MODEL)
             allowance = parent_budget.remaining_cost * 0.5
             if allowance < 0.01:
@@ -306,14 +313,17 @@ class AgentRuntime:
                 "preserve the most relevant findings and file paths in context. "
                 f"Current child budget: {child.max_tool_calls} tool calls, {child.max_iterations} iterations, and {child.max_wall_seconds} seconds. "
                 "Never intentionally spend the final available tool call on exploratory work; when one tool "
-                "call or one iteration remains, stop using repository tools and return your best-supported summary."
+                "call or one iteration remains, stop using repository tools and return your best-supported summary. "
+                + REPORT_FORMAT_INSTRUCTIONS
             )
             prompt = "Investigate this repository question and return a concise factual summary. Query: " + query
-            hints = arguments.get("path_hint") or []
-            if hints:
-                prompt += "\nPath hints: " + ", ".join(str(x) for x in hints[:20])
+            if inspected:
+                prompt += (
+                    "\nThe parent agent has already inspected these paths and has their contents; do not read or list them again "
+                    "(such calls are refused). Search elsewhere, and cite them in findings only from the parent's context: "
+                    + ", ".join(inspected)
+                )
             submessages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}]
-            files: set[str] = set()
             forced_synthesis = child.max_iterations <= 1 or child.max_tool_calls <= 1
             await self.append(run_id, "subagent.started", {"parent_run_id": run_id, "parent_tool_call_id": request_id, "model": model, "budget": {"max_tool_calls": child.max_tool_calls, "max_iterations": child.max_iterations, "max_wall_seconds": child.max_wall_seconds}})
 
@@ -324,7 +334,7 @@ class AgentRuntime:
                 parent_budget.add_usage(turn.usage)
                 submessages.append(turn.message)
                 if not turn.tool_calls:
-                    payload = {"summary": str(turn.content or "")[:32_000], "files_examined": sorted(files)[:200], "truncated": False}
+                    payload = _investigation_payload(turn.content, files, observed, skipped, truncated=False)
                     await self.append(run_id, "subagent.completed", {"parent_run_id": run_id, "parent_tool_call_id": request_id, "usage": child.usage(), **payload})
                     result = ToolResult(request_id, True, output=json.dumps(payload), data=payload)
                     messages.append({"role": "tool", "tool_call_id": request_id, "content": result.output})
@@ -355,11 +365,21 @@ class AgentRuntime:
                             break
                         continue
                     tool = ToolRequest(sub_id, run_id, sub_name, "plan", args)
-                    if args.get("path"):
-                        files.add(str(args["path"]))
-                    await self.append(run_id, "subagent.tool_call", {"parent_run_id": run_id, "parent_tool_call_id": request_id, "request": tool.to_dict()})
-                    result = await self.executor.execute(tool)
-                    await self.append(run_id, "subagent.tool_result", {"parent_run_id": run_id, "parent_tool_call_id": request_id, "result": result.to_dict()})
+                    repeated = reinspection_target(sub_name, args, inspected)
+                    if repeated is not None:
+                        # The parent already has this content: refuse without touching the executor.
+                        if repeated not in skipped:
+                            skipped.append(repeated)
+                        await self.append(run_id, "subagent.tool_call", {"parent_run_id": run_id, "parent_tool_call_id": request_id, "request": tool.to_dict(), "skipped": True})
+                        result = ToolResult(sub_id, False, output=f"'{repeated}' was already inspected by the parent agent; do not re-read it. Investigate other paths.", error_code="investigation.already_inspected", data={"path": repeated})
+                        await self.append(run_id, "subagent.tool_result", {"parent_run_id": run_id, "parent_tool_call_id": request_id, "result": result.to_dict(), "skipped": True})
+                    else:
+                        if args.get("path"):
+                            files.add(str(args["path"]))
+                        await self.append(run_id, "subagent.tool_call", {"parent_run_id": run_id, "parent_tool_call_id": request_id, "request": tool.to_dict()})
+                        result = await self.executor.execute(tool)
+                        await self.append(run_id, "subagent.tool_result", {"parent_run_id": run_id, "parent_tool_call_id": request_id, "result": result.to_dict()})
+                        observed.update(_observed_files(sub_name, args, result))
                     submessages.append({"role": "tool", "tool_call_id": sub_id, "content": self._model_tool_result(run_id, sub_name, result)})
                     if child.remaining_tool_calls <= 1 or child.remaining_iterations <= 1:
                         forced_synthesis = True
@@ -367,7 +387,7 @@ class AgentRuntime:
 
             if forced_synthesis:
                 child.consume_iteration()
-                submessages.append({"role": "system", "content": "Stop repository exploration now. Use the evidence already gathered and return the final concise investigation summary. Do not call any tools."})
+                submessages.append({"role": "system", "content": "Stop repository exploration now. Use the evidence already gathered and return the final concise investigation summary. Do not call any tools. " + REPORT_FORMAT_INSTRUCTIONS})
                 turn = await agent_turn(model, submessages, self._api_keys[run_id], "plan", request.provider_preferences, allowed_tools=set())
                 child.add_usage(turn.usage)
                 parent_budget.add_usage(turn.usage)
@@ -379,14 +399,14 @@ class AgentRuntime:
                         sub_name = str(fn.get("name") or "")
                         raw_arguments = str(fn.get("arguments") or "{}")
                         await self._append_investigation_rejection(run_id, request_id, sub_id, sub_name, raw_arguments, submessages, "investigation.tool_not_permitted", f"Tool '{sub_name}' is not permitted during investigation synthesis. No repository tools are available in this phase.")
-                payload = {"summary": str(turn.content or "")[:32_000], "files_examined": sorted(files)[:200], "truncated": True}
+                payload = _investigation_payload(turn.content, files, observed, skipped, truncated=True)
                 await self.append(run_id, "subagent.completed", {"parent_run_id": run_id, "parent_tool_call_id": request_id, "usage": child.usage(), **payload})
                 result = ToolResult(request_id, True, output=json.dumps(payload), data=payload)
                 messages.append({"role": "tool", "tool_call_id": request_id, "content": result.output})
                 return False
         except BudgetExceededError as exc:
             message = f"Investigation budget exhausted after partial repository analysis ({exc.used:g}/{exc.limit:g} {exc.unit})."
-            payload = {"summary": message, "files_examined": sorted(files)[:200], "truncated": True, "budget_exhausted": True, "error": str(exc)}
+            payload = InvestigationResult(message, files_examined=tuple(sorted(files)), skipped_paths=tuple(skipped), truncated=True, extra={"budget_exhausted": True, "error": str(exc)}).to_dict()
             await self.append(run_id, "subagent.completed", {"parent_run_id": run_id, "parent_tool_call_id": request_id, "usage": child.usage() if 'child' in locals() else {}, **payload})
             result = ToolResult(request_id, True, output=json.dumps(payload), data=payload)
             messages.append({"role": "tool", "tool_call_id": request_id, "content": result.output})
@@ -425,6 +445,29 @@ def tool_call_groups(tool_calls: tuple[dict[str, Any], ...] | list[dict[str, Any
     return groups
 
 
+def _investigation_payload(content: object, files: set[str], observed: set[str], skipped: list[str], *, truncated: bool) -> dict[str, Any]:
+    summary, findings, structured = parse_investigation_report(str(content or ""), observed)
+    return InvestigationResult(summary, findings, tuple(sorted(files)), tuple(skipped), structured, truncated).to_dict()
+
+
+def _observed_files(tool: str, arguments: dict[str, Any], result: ToolResult) -> set[str]:
+    """Files whose content the investigator actually saw: successful reads and grep matches."""
+    if not result.ok:
+        return set()
+    if tool == "read":
+        path = normalize_investigation_path(arguments.get("path"))
+        return {path} if path else set()
+    if tool == "grep":
+        seen = set()
+        for line in result.output.splitlines():
+            match = re.match(r"^(.+?):(\d+):", line)
+            path = normalize_investigation_path(match.group(1)) if match else None
+            if path:
+                seen.add(path)
+        return seen
+    return set()
+
+
 def investigation_wall_seconds(parent_budget: RunBudget) -> int:
     """Bound a child investigation's wall time independently of the parent's remaining time."""
     return min(INVESTIGATION_MAX_WALL_SECONDS, max(INVESTIGATION_MIN_WALL_SECONDS, int(parent_budget.remaining_wall_seconds)))
@@ -455,6 +498,8 @@ def _render_executor_context(status: dict[str, Any], mode: str, approval_policy:
     lines = ["LOCAL EXECUTOR CONTEXT (application-generated runtime facts):", f"- Workspace root is {str(environment.get('workspace_root') or '.')[:20]}; use relative POSIX paths."]
     if mode == "agent":
         lines.append("- Tools write an ephemeral staged copy; host publication is pending review unless session Auto is active.")
+        if approval_policy == "accept_edits":
+            lines.append("- Approval policy accept_edits: write, edit, and patch run without prompts; bash still requires approval.")
         lines.append("- After mutations, the tool reports created/modified/deleted files and permission changes; checkpoint hashes are audit metadata. Use status (optionally with diffs) to review everything staged before publication.")
         lines.append("- Use patch for multi-file changes: its operations apply atomically, all or none.")
         lines.append("- Independent read-only calls (read, grep, find, ls, status) issued together in one turn run concurrently.")
@@ -465,7 +510,7 @@ def _render_executor_context(status: dict[str, Any], mode: str, approval_policy:
             lines.append(f"- Network: none, except HTTPS package downloads through the allowlisted proxy ({hosts}); install into a virtualenv such as .venv (never published).")
         else:
             lines.append("- Network: none; dependency installs and network-dependent tests are unavailable.")
-        lines.append("- Prefer one investigate_repository call; use follow-ups only when needed. The configurable budget is capped at four calls per parent turn and resets for each turn.")
+        lines.append("- Prefer one investigate_repository call; use follow-ups only when needed. The configurable budget is capped at four calls per parent turn and resets for each turn. Pass inspected_paths for files you already read; verify important findings with one read.")
     else:
         lines.append("- Plan mode reads the selected source workspace; mutation and command tools are unavailable.")
     limits = environment.get("limits")

@@ -9,7 +9,7 @@ Host publication is deliberately separate from agent execution. The executor can
 3. **Mutations** — `write`, `edit`, `patch`, and `bash` checkpoint before mutation (`patch` takes one checkpoint for all of its operations). Failed, cancelled, and timed-out mutations restore the checkpoint. Successful mutations remain unpublished.
 4. **Review and manifest creation** — the agent (and the user) can inspect exactly what is pending with the read-only `status` tool, which compares staging with the publication baseline and returns bounded diffs. The executor then creates a manifest containing manifest/run/workspace identity, source snapshot identity, approval identity, publication batch identity, and path-bounded operations with staged hashes.
 5. **Validation** — the desktop broker validates workspace identity, source baseline, paths, operation type, staged content hashes, modes, and publication invariants before touching the host.
-6. **Approval** — the user/session authorization policy must authorize publication. Auto mode can remove repeated prompts but does not grant the executor host-write authority.
+6. **Approval** — the user/session authorization policy must authorize publication. Auto mode can remove repeated prompts but does not grant the executor host-write authority; the `accept_edits` tier never auto-publishes, so every batch is still confirmed.
 7. **Publication** — the trusted desktop broker applies the approved operations to the selected workspace and records recovery information.
 8. **Recovery** — recovery copies/state allow the application to recover from an interrupted publication. Staging can also be discarded to abandon unpublished work.
 

@@ -53,7 +53,7 @@ def test_each_schema_has_a_matching_executor_callable() -> None:
         assert schema["parameters"]["additionalProperties"] is False
     investigation = _schema_map()["investigate_repository"]
     assert investigation["parameters"]["additionalProperties"] is False
-    assert set(investigation["parameters"]["properties"]) == {"query"}
+    assert set(investigation["parameters"]["properties"]) == {"query", "inspected_paths"}
 
 
 def test_tool_schemas_match_executor_argument_names() -> None:

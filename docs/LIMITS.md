@@ -62,4 +62,4 @@ The effective limits reported by `/v1/status` are intended to make the active pr
 
 ## Investigation delegation
 
-Investigation delegation is bounded to four calls per turn (reset at every parent model turn) and half of the parent run's remaining cost per call, with 36-iteration, 36-tool-call, and 300-second wall-time nested caps (the wall time is the parent's remaining time clamped to 10–300 seconds); it never creates an executor, staging, or publication authority.
+Investigation delegation accepts up to 50 `inspected_paths` per call and returns at most 50 structured findings. It is bounded to four calls per turn (reset at every parent model turn) and half of the parent run's remaining cost per call, with 36-iteration, 36-tool-call, and 300-second wall-time nested caps (the wall time is the parent's remaining time clamped to 10–300 seconds); it never creates an executor, staging, or publication authority.

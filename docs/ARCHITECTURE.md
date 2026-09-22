@@ -51,7 +51,7 @@ The gateway may communicate with the model provider, but cannot read the workspa
 
 **Chat** has no local workspace tools. **Plan** exposes only `read`, `grep`, `find`, and `ls`, against the read-only source. **Agent** exposes all ten tools, with mutations confined to staging; consecutive read-only calls in one turn run concurrently while mutations stay serialized. Publication is a separate desktop-authorized operation.
 
-Agent runs additionally carry an approval policy (`prompt` or `auto`) and a budget profile. Prompted approvals use the remaining wall-clock budget as their deadline; expiry is journaled as `approval.timeout` and cannot leave a run waiting indefinitely. Auto mode auto-allows otherwise-valid tool calls but does not grant network, host-path, shell, or publication authority to the executor.
+Agent runs additionally carry an approval policy (`prompt`, `accept_edits`, or `auto`; see `docs/TOOLS.md`) and a budget profile. Prompted approvals use the remaining wall-clock budget as their deadline; expiry is journaled as `approval.timeout` and cannot leave a run waiting indefinitely. Auto mode auto-allows otherwise-valid tool calls but does not grant network, host-path, shell, or publication authority to the executor. The `accept_edits` tier auto-allows only staged file edits (`write`, `edit`, `patch`) and still prompts for `bash` and publication. Neither tier survives a resume.
 
 ## Investigation delegation
 

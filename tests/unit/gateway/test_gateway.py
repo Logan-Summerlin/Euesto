@@ -293,6 +293,9 @@ def test_v05_workspace_config_capabilities_and_permission_rule_management(tmp_pa
             status = await client.get("/v1/status", headers=auth_headers())
             capabilities = {item["name"]: item for item in status.json()["capabilities"]}
             assert capabilities["lint.report"]["executable"] is False
+            for policy in ("agent_accept_edits", "agent_auto"):
+                assert capabilities[policy]["kind"] == "approval_policy"
+                assert capabilities[policy]["modes"] == ["agent"]
 
             rules = await client.get(
                 "/v1/permissions", headers=auth_headers(), params={"workspace_id": "workspace"}

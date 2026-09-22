@@ -96,6 +96,8 @@ Acceptance criteria:
 - Exceeding the budget returns a clear bounded error.
 - Telemetry records count and outcome without recording sensitive repository contents.
 
+Follow-up (implemented): the parent may pass `inspected_paths` so the investigator does not re-read files or re-list directories the parent already has (refused in code, reported as `skipped_paths`), and the result carries structured `findings` (`{file, line, justification, observed}`) the parent can verify individually instead of trusting prose. See `docs/TOOLS.md`.
+
 ### 8. Add QML-aware validation support
 
 Provide a standard QML validation path in the harness, with a useful fallback when `pyside6-qmllint` is unavailable. Ideally this should include a Qt-enabled validation environment or container matching the supported runtime.

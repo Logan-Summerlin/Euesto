@@ -111,6 +111,13 @@ class GatewayService:
         if executor_ready:
             capabilities += (
                 {
+                    "name": "agent_accept_edits",
+                    "kind": "approval_policy",
+                    "modes": ["agent"],
+                    "requires_approval": False,
+                    "custom": False,
+                },
+                {
                     "name": "agent_auto",
                     "kind": "approval_policy",
                     "modes": ["agent"],
@@ -330,7 +337,8 @@ class GatewayService:
         if not run or run.get("state") != "paused" or not snapshot or not snapshot["safe_to_resume"]:
             raise GatewayServiceError("run.not_resumable", "Run is not at a safe resume point.", status=409)
         request = AgentRunRequest.from_dict(snapshot["request"])
-        if request.approval_policy == "auto":
+        if request.approval_policy != "prompt":
+            # Session approval tiers never survive a resume; the user re-enables them explicitly.
             data = request.to_dict()
             data["approval_policy"] = "prompt"
             request = AgentRunRequest.from_dict(data)

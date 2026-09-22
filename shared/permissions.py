@@ -7,7 +7,15 @@ from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import Any
 
-from .tools import MUTATION_TOOLS, READ_TOOLS, ToolRequest
+from .tools import MUTATION_TOOLS, READ_TOOLS, STAGED_EDIT_TOOLS, ToolRequest
+
+# Session approval policies for Agent runs, from most to least prompting:
+#   prompt        every mutation or command asks unless a rule matches
+#   accept_edits  staged file edits (write/edit/patch) run without asking; bash still asks
+#   auto          every otherwise-valid call runs without asking
+# Explicit DENY rules win under every policy, and publication stays separately approved
+# except under auto.
+APPROVAL_POLICIES = ("prompt", "accept_edits", "auto")
 
 
 class PermissionDecision(StrEnum):
@@ -101,6 +109,21 @@ def resolve_permission(request: ToolRequest, workspace_id: str, rules: tuple[Per
         matching.sort(key=lambda rule: len(_permission_path(rule.path_prefix or ".") or ""), reverse=True)
         return matching[0].decision
     return PermissionDecision.ALLOW_RUN if request.tool in READ_TOOLS else PermissionDecision.ASK
+
+
+def apply_approval_policy(decision: PermissionDecision, request: ToolRequest, policy: str) -> PermissionDecision:
+    """Resolve a rule-level ``ASK`` under the session approval policy.
+
+    Only ``ASK`` changes: ``DENY`` (including Plan-mode mutation denial and explicit deny
+    rules) and already-allowed decisions pass through untouched.
+    """
+    if decision != PermissionDecision.ASK:
+        return decision
+    if policy == "auto":
+        return PermissionDecision.ALLOW_RUN
+    if policy == "accept_edits" and request.mode == "agent" and request.tool in STAGED_EDIT_TOOLS:
+        return PermissionDecision.ALLOW_RUN
+    return PermissionDecision.ASK
 
 
 def _permission_path(value: str) -> str | None:

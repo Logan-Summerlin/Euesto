@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
+from .permissions import APPROVAL_POLICIES
+
 
 DEFAULT_INVESTIGATION_MODEL = "xiaomi/mimo-v2.5"
 
@@ -106,7 +108,7 @@ class AgentRunRequest:
     provider_preferences: dict[str, Any] = field(default_factory=dict)
     investigation_model_id: str | None = DEFAULT_INVESTIGATION_MODEL
     investigation_call_budget: int = 4
-    approval_policy: Literal["prompt", "auto"] = "prompt"
+    approval_policy: Literal["prompt", "accept_edits", "auto"] = "prompt"
 
     def __post_init__(self) -> None:
         if self.mode not in {"plan", "agent"} or not self.model.strip() or not self.workspace_id:
@@ -115,7 +117,7 @@ class AgentRunRequest:
             raise ValueError("Agent budget profile is required")
         if not isinstance(self.investigation_call_budget, int) or isinstance(self.investigation_call_budget, bool) or not 1 <= self.investigation_call_budget <= 4:
             raise ValueError("Investigation call budget must be an integer from 1 to 4")
-        if self.approval_policy not in {"prompt", "auto"}:
+        if self.approval_policy not in APPROVAL_POLICIES:
             raise ValueError("Unknown agent approval policy")
         if self.mode != "agent" and self.approval_policy != "prompt":
             raise ValueError("Automatic approval is available only in Agent mode")

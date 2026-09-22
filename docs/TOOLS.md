@@ -126,15 +126,17 @@ Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `ve
 ## `investigate_repository`
 
 - **Purpose:** delegate a bounded repository investigation to a cheaper model.
-- **Arguments:** `query` required; there are no separate path or hint arguments. Put the complete investigation request in `query`.
-- **Request guidance:** include relevant symptoms, error messages, suspected components or files, hypotheses, desired scope, and any other context that can help the investigator focus its search. Do not encode path hints separately; describe them naturally in the request. The investigation model decides whether to use `read`, `grep`, `find`, or `ls` and how to scope those tools.
+- **Arguments:** `query` required; optional `inspected_paths` (up to 50 relative files or directories). Unknown arguments are rejected.
+- **Request guidance:** put the complete investigation request in `query`: relevant symptoms, error messages, suspected components or files, hypotheses, desired scope, and any other context that can help the investigator focus its search. The investigation model decides whether to use `read`, `grep`, `find`, or `ls` and how to scope those tools.
+- **Inspected paths:** list in `inspected_paths` the files you have already read and directories you have already listed, so the investigator does not re-walk them. The harness enforces this in code: a nested `read` of a listed file or `ls` of a listed directory is refused without reaching the executor (`investigation.already_inspected`, journaled with `skipped: true`), and the refused paths are reported in `skipped_paths`. `grep`/`find` over those paths and reads of other files beneath a listed directory still run. Paths must be relative and are normalized (`./src/` and `src` are the same entry); absolute, drive, and traversal paths fail the call.
 - **Modes:** Agent only.
 - **Permission:** read-only; it cannot mutate, execute commands, checkpoint, or publish, and it never requires an approval prompt.
 - **Model:** uses the investigation model configured in Settings (default `xiaomi/mimo-v2.5`); the primary model cannot select or override it.
 - **Budget:** each call receives at most 50% of the parent run's remaining cost (calls fail closed below a $0.01 floor) and inherits bounded iteration, tool-call (36/36 caps), and wall-time limits from the parent's remaining budgets. Wall time is the parent's remaining wall time clamped to 10–300 seconds, so one investigation can never consume most of a long parent run. Up to four calls are accepted per turn (the allowance resets at the start of every parent model turn), and a failed call still counts toward that turn's cap.
 - **Tools:** the nested investigation loop is restricted to `read`, `grep`, `find`, and `ls` through the parent's executor session, so it observes current staged state. Non-Plan tool calls inside the loop are rejected in code.
 - **Synthesis:** the harness reserves the final iteration and tool-call slot to force a summary instead of further exploration.
-- **Result:** returns `summary`, `files_examined`, and `truncated`; nested `subagent.*` events remain in the journal for replay/audit. On failure the parent is told to fall back to direct tool use.
+- **Result:** returns `summary`, `findings`, `structured`, `files_examined`, `skipped_paths`, and `truncated`; nested `subagent.*` events remain in the journal for replay/audit. On failure the parent is told to fall back to direct tool use.
+- **Findings:** the investigator is asked to end with a JSON report; its `findings` become a list of up to 50 `{file, line, justification, observed}` entries (`line` is a positive integer or null, `justification` at most 1,000 characters, entries with invalid paths are dropped). `observed` is set by the harness, not the model: it is true only when the investigator itself successfully read the file or matched it with `grep` during the call, so the parent can trust observed claims or verify any finding with one `read`. When the final message is not a structured report, `structured` is false, `findings` is empty, and the whole message is the `summary`.
 
 ## Modes and permissions
 
@@ -151,7 +153,15 @@ Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `ve
 | `status` | no | yes | no |
 | `investigate_repository` | no | yes | no |
 
-Read-only tools run without approval prompts in both prompt and Auto sessions; mutation and command tools require approval under the `prompt` policy and are auto-allowed under `auto`. Plan-mode mutation denial is enforced twice: once in `shared/tools.py` request validation and again by `executor/permissions.py`.
+Read-only tools never prompt. Agent runs choose one of three approval policies (`APPROVAL_POLICIES` in `shared/permissions.py`, applied by `apply_approval_policy` after rule resolution):
+
+| Policy | `write` / `edit` / `patch` | `bash` | Publication |
+|---|---|---|---|
+| `prompt` (default) | ask | ask | approve each batch |
+| `accept_edits` | allowed | ask | approve each batch |
+| `auto` | allowed | allowed | automatic |
+
+The middle tier matches friction to risk: staged file edits are checkpointed, reversible, and still gated by publication approval, while Bash has broader, harder-to-preview effects. Saved and per-run rules apply first; an explicit deny rule wins under every policy, and Plan-mode mutations are always denied. Session tiers are enabled from the desktop with a confirmation, advertised by the gateway as the `agent_accept_edits` and `agent_auto` capabilities, and reset to `prompt` on resume, mode or workspace change, and app restart. Plan-mode mutation denial is enforced twice: once in `shared/tools.py` request validation and again by `executor/permissions.py`.
 
 The public ten-tool model-facing API includes the scoped read-only `investigate_repository` tool. Check `shared/tools.py` and `server/openrouter/agent.py` when modifying schemas or dispatch.
 

@@ -127,6 +127,18 @@ ApplicationWindow {
                         ToolTip.text: "Automatically authorize valid tools and publish successful staged changes"
                     }
 
+                    Switch {
+                        text: "Accept edits"
+                        visible: backend.currentMode === "agent"
+                        checked: backend.acceptEditsEnabled || backend.autoModeEnabled
+                        enabled: backend.acceptEditsAvailable && backend.workspaceReady
+                            && !backend.autoModeEnabled
+                            && !backend.generating && !backend.stagingBusy
+                        onClicked: backend.requestAcceptEdits(checked)
+                        ToolTip.visible: hovered
+                        ToolTip.text: "Apply write, edit, and patch to staging without prompts; Bash and publication still ask"
+                    }
+
                     Button {
                         text: backend.workspacePath.length
                             ? backend.workspacePath.split(/[\\/]/).pop()

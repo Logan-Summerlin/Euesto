@@ -32,7 +32,7 @@ A portable ZIP is also supported. Docker Desktop is the required external runtim
 | Plan | `read`, `grep`, `find`, `ls` | no | no |
 | Agent | all ten | staging only | desktop broker, after approval/validation |
 
-The ten-tool public API is `read`, `write`, `edit`, `patch`, `bash`, `grep`, `find`, `ls`, `status`, and `investigate_repository`. `patch` applies a multi-file change atomically and `status` reviews everything staged (with bounded diffs) before publication. Mode restrictions are enforced in code, not only in prompts. Agent Auto mode can reduce repeated prompts but does not grant network, host-path, shell, or publication authority to the executor.
+The ten-tool public API is `read`, `write`, `edit`, `patch`, `bash`, `grep`, `find`, `ls`, `status`, and `investigate_repository`. `patch` applies a multi-file change atomically and `status` reviews everything staged (with bounded diffs) before publication. Mode restrictions are enforced in code, not only in prompts. Agent mode offers three approval tiers — prompt for every change, accept staged edits (`write`/`edit`/`patch` run without prompts while Bash still asks), or Auto — none of which grants network, host-path, shell, or publication authority to the executor.
 
 `investigate_repository` delegates a bounded, read-only repository investigation to a separately configured cheaper model. The nested loop can use only the Plan tools through the same executor session, debits the parent run's budget, and is capped at four calls per turn.
 

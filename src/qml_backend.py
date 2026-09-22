@@ -104,6 +104,8 @@ class DesktopBridge(QObject):
         self.current_conversation_id: str | None = None
         self.current_mode = "chat"
         self._auto_mode = False
+        # Middle approval tier: staged file edits run without prompts, Bash still asks.
+        self._accept_edits = False
         self.workspace_path = self.storage.get_setting("workspace_path", "") or ""
         self.show_archived = False
         self.search_query = ""
@@ -226,6 +228,28 @@ class DesktopBridge(QObject):
             isinstance(item, dict) and item.get("name") == "agent_auto"
             for item in capabilities
         )
+
+    @Property(bool, notify=stateChanged)
+    def acceptEditsEnabled(self) -> bool:
+        return self._accept_edits
+
+    @Property(bool, notify=stateChanged)
+    def acceptEditsAvailable(self) -> bool:
+        status = self.last_gateway_status
+        capabilities = getattr(status, "capabilities", ()) if status else ()
+        return any(
+            isinstance(item, dict) and item.get("name") == "agent_accept_edits"
+            for item in capabilities
+        )
+
+    @Property(str, notify=stateChanged)
+    def approvalPolicy(self) -> str:
+        return self._approval_policy()
+
+    def _approval_policy(self) -> str:
+        if self._auto_mode:
+            return "auto"
+        return "accept_edits" if self._accept_edits else "prompt"
 
     @Property(str, notify=stateChanged)
     def workspacePath(self) -> str:
@@ -428,7 +452,7 @@ class DesktopBridge(QObject):
             return
         action, value = pending
         if not accepted:
-            if action == "enable-auto":
+            if action in {"enable-auto", "enable-accept-edits"}:
                 self.stateChanged.emit()
             return
         if action == "delete":
@@ -445,6 +469,10 @@ class DesktopBridge(QObject):
         elif action == "enable-auto":
             self._auto_mode = True
             self._set_status("Auto enabled for this Agent session")
+            self.stateChanged.emit()
+        elif action == "enable-accept-edits":
+            self._accept_edits = True
+            self._set_status("Staged edits are accepted without prompts for this Agent session")
             self.stateChanged.emit()
 
     def _start_publication(self, value: object, *, auto: bool, client: GatewayClient | None = None) -> None:
@@ -783,6 +811,7 @@ class DesktopBridge(QObject):
             return
         self.workspace_path = str(path)
         self._auto_mode = False
+        self._accept_edits = False
         self.storage.set_setting("workspace_path", self.workspace_path)
         if self.current_mode != "chat":
             self.current_mode = "chat"
@@ -836,6 +865,7 @@ class DesktopBridge(QObject):
         if mode == "chat":
             self.current_mode = mode
             self._auto_mode = False
+            self._accept_edits = False
             self.stateChanged.emit()
             return
         if not self.workspace_path:
@@ -863,6 +893,7 @@ class DesktopBridge(QObject):
         self.current_mode = mode
         if mode != "agent":
             self._auto_mode = False
+            self._accept_edits = False
         self.stateChanged.emit()
 
     @Slot(bool)
@@ -892,6 +923,35 @@ class DesktopBridge(QObject):
             "Valid tools and successful staged publication will run without further approval. "
             "Workspace, command, network, resource, hash, and broker safety limits still apply. "
             "Auto stops on failure, resume, workspace change, or app restart.",
+        )
+
+    @Slot(bool)
+    def requestAcceptEdits(self, enabled: bool) -> None:
+        if not enabled:
+            self._accept_edits = False
+            self._set_status("Staged edits require approval again")
+            self.stateChanged.emit()
+            return
+        if (
+            self.current_mode != "agent"
+            or not self.acceptEditsAvailable
+            or not self.workspaceReady
+            or self.worker
+            or self.stagingBusy
+        ):
+            self.errorRequested.emit(
+                "Accept edits unavailable",
+                "Select Agent mode with a ready, idle workspace and compatible gateway.",
+            )
+            return
+        token = f"enable-accept-edits:{self.workspace_path}"
+        self._pending_confirmation[token] = ("enable-accept-edits", None)
+        self.confirmRequested.emit(
+            token,
+            "Accept staged edits for this Agent session?",
+            "write, edit, and patch will change the private staged copy without asking. "
+            "Bash commands still require approval, and publishing to the host is still reviewed separately. "
+            "This stops on resume, mode or workspace change, or app restart.",
         )
 
     @Slot(str, bool)
@@ -1028,7 +1088,7 @@ class DesktopBridge(QObject):
                 messages=prepared.messages,
                 mode=self.current_mode,
                 workspace_id=identity,
-                approval_policy="auto" if self._auto_mode else "prompt",
+                approval_policy=self._approval_policy(),
                 session_id=conversation.id,
                 context_limit_tokens=prepared.context_limit,
                 skills=skills,
@@ -1238,6 +1298,7 @@ class DesktopBridge(QObject):
         if self.worker or not connection or not api_key or not conversation or not run_id:
             return
         self._auto_mode = False
+        self._accept_edits = False
         self.generation.begin(
             conversation.id,
             conversation.active_leaf_id,
