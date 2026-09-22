@@ -34,10 +34,13 @@ def _command_summary(detail: object) -> str:
 
 def _tool_summary(tool: str, detail: object) -> str:
     values = detail if isinstance(detail, dict) else {}
-    if tool == "apply_patch" and isinstance(values.get("edits"), list):
-        edits = values["edits"]
-        paths = [str(item.get("path") or "?") for item in edits if isinstance(item, dict)]
-        return f"Tool approval: apply_patch · {len(paths)} edit(s): {', '.join(paths[:12])}"
+    if tool == "patch" and isinstance(values.get("operations"), list):
+        operations = [item for item in values["operations"] if isinstance(item, dict)]
+        lines = [f"Tool approval: patch · {len(operations)} operation(s), applied all-or-nothing"]
+        lines.extend(f"{item.get('operation', '?')}: {item.get('path', '?')}" for item in operations[:12])
+        if len(operations) > 12:
+            lines.append(f"… and {len(operations) - 12} more operation(s)")
+        return "\n".join(lines)
     fields = [f"{key}={str(value)[:180]}" for key, value in values.items()]
     return f"Tool approval: {tool}\n" + ("\n".join(fields[:8]) or "No arguments supplied.")
 
@@ -45,10 +48,13 @@ def _tool_summary(tool: str, detail: object) -> str:
 def _publish_summary(detail: object) -> str:
     values = detail if isinstance(detail, dict) else {}
     operations = values.get("operations") if isinstance(values.get("operations"), list) else []
-    lines = [f"Publish approval: {len(operations)} file operation(s)"]
+    batch_count = values.get("batch_count")
+    batch = f" (batch {values.get('batch_index')} of {batch_count})" if isinstance(batch_count, int) and batch_count > 1 else ""
+    lines = [f"Publish approval{batch}: {len(operations)} file operation(s)"]
     for item in operations[:12]:
         if isinstance(item, dict):
-            lines.append(f"{item.get('operation', '?')}: {item.get('path', '?')}")
+            kind = " [binary]" if item.get("content_base64") is not None else ""
+            lines.append(f"{item.get('operation', '?')}: {item.get('path', '?')}{kind}")
     if len(operations) > 12:
         lines.append(f"… and {len(operations) - 12} more operation(s)")
     lines.append("Review the exact manifest in the expandable details before approving.")

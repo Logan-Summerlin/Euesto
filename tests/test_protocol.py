@@ -50,6 +50,7 @@ def test_tool_argument_cap_is_derived_from_argument_carrying_hard_ceilings() -> 
         "write": ceilings["max_write_bytes"],
         "bash": ceilings["max_command_bytes"] + ceilings["max_bash_stdin_bytes"] + MAX_ENV_VARS * MAX_ENV_VALUE_BYTES,
         "edit": ceilings["max_edit_result_bytes"],
+        "patch": ceilings["max_patch_bytes"],
     }
     assert MAX_TOOL_ARGUMENT_PAYLOAD_BYTES == max(payloads.values())
     assert MAX_TOOL_ARGUMENT_BYTES == MAX_TOOL_ARGUMENT_PAYLOAD_BYTES + TOOL_ARGUMENT_ENVELOPE_BYTES
@@ -68,6 +69,13 @@ def test_tool_requests_at_hard_ceilings_pass_the_protocol_layer() -> None:
     ToolRequest("b", "run", "bash", "agent", {"command": "\x01" * ceilings["max_command_bytes"], "stdin": "\t" * ceilings["max_bash_stdin_bytes"], "env": env, "working_directory": "src", "timeout_seconds": 900, "rollback_on_failure": False})
     half = ceilings["max_edit_result_bytes"] // 2
     ToolRequest("e", "run", "edit", "agent", {"path": "big.txt", "old_str": "é" * (half // 2), "new_str": "x" * half, "expected_occurrences": 1, "expected_sha256": "0" * 64})
+    quarter = ceilings["max_patch_bytes"] // 4
+    ToolRequest("p", "run", "patch", "agent", {"operations": [
+        {"operation": "write", "path": "a.txt", "content": "\n" * quarter, "expected_sha256": "0" * 64, "create_parents": True},
+        {"operation": "edit", "path": "b.txt", "old_str": "\t" * quarter, "new_str": "y" * quarter, "expected_occurrences": 1000},
+        {"operation": "write", "path": "c.txt", "content": "z" * quarter},
+        {"operation": "delete", "path": "d.txt", "expected_sha256": "0" * 64},
+    ]})
 
 
 def test_tool_requests_above_the_argument_cap_are_rejected() -> None:

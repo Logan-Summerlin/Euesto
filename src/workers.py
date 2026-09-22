@@ -12,7 +12,7 @@ from shared.tools import PublishManifest
 
 from .gateway_client import GatewayClient, GatewayError
 from .models import ModelOption, RequestOptions, ServerToolOptions
-from .workspace_broker import BrokerError, WorkspaceBroker
+from .workspace_broker import BrokerError, PublicationLedger, WorkspaceBroker, describe_progress
 
 _last_gateway_client: GatewayClient | None = None
 
@@ -126,18 +126,26 @@ class StagingInspectWorker(QThread):
 
 
 class PublicationWorker(QThread):
+    """Publish one reviewed batch, advance the staging baseline, and fetch the next batch.
+
+    Multi-batch publications record each batch in the PublicationLedger. When more batches
+    remain, the next manifest is returned as ``next_manifest`` for its own approval; nothing
+    beyond the approved batch is ever written by this worker.
+    """
     complete = Signal(dict); failed = Signal(str)
     def __init__(self, manifest: PublishManifest, workspace_root: Path, recovery_root: Path, *, reseed_client: GatewayClient | None = None):
         super().__init__(); self.manifest = manifest; self.workspace_root = workspace_root; self.recovery_root = recovery_root; self.reseed_client = reseed_client
+        self.continuation_client: GatewayClient | None = None
     def run(self) -> None:
         global _last_gateway_client
+        multi_batch = int(getattr(self.manifest, "batch_count", 1) or 1) > 1
         try:
             broker = WorkspaceBroker(self.workspace_root, self.recovery_root)
             published = broker.publish(self.manifest, {item.path for item in self.manifest.operations})
         except (BrokerError, OSError, TypeError, ValueError) as exc:
-            self.failed.emit(str(exc)); return
+            self._record("failed", error=str(exc)); self.failed.emit(self._with_progress(str(exc))); return
         except Exception as exc:
-            self.failed.emit(f"Unexpected publication error: {exc}"); return
+            self._record("failed", error=str(exc)); self.failed.emit(self._with_progress(f"Unexpected publication error: {exc}")); return
         result: dict[str, Any] = {"completed_paths": list(published.completed_paths), "checkpoint_id": published.checkpoint_id}
         reseed_client = self.reseed_client or _last_gateway_client
         try:
@@ -155,4 +163,31 @@ class PublicationWorker(QThread):
             result["reseed_error"] = f"Unexpected staging baseline error: {exc}"
         finally:
             _last_gateway_client = None
+        if multi_batch:
+            record = self._record("published" if result["reseeded"] else "baseline_failed", checkpoint_id=published.checkpoint_id, error=result.get("reseed_error"))
+            result.update({"publication_id": self.manifest.publication_id, "batch_index": self.manifest.batch_index, "batch_count": self.manifest.batch_count, "progress": describe_progress(record)})
+            if result["reseeded"] and self.manifest.has_more_batches and reseed_client is not None:
+                try:
+                    following = reseed_client.next_publication_batch(self.manifest)
+                    if following.operations:
+                        result["next_manifest"] = following.to_dict()
+                        self.continuation_client = reseed_client
+                except (GatewayError, KeyError, TypeError, ValueError) as exc:
+                    result["next_batch_error"] = str(exc)
+                except Exception as exc:
+                    result["next_batch_error"] = f"Unexpected publication batch error: {exc}"
         self.complete.emit(result)
+
+    def _record(self, status: str, *, checkpoint_id: str | None = None, error: str | None = None) -> dict | None:
+        if not isinstance(self.manifest, PublishManifest) or self.manifest.batch_count <= 1:
+            return None
+        try:
+            return PublicationLedger(self.recovery_root).record(self.manifest, status, checkpoint_id=checkpoint_id, error=error)
+        except (BrokerError, OSError, ValueError):
+            return None
+
+    def _with_progress(self, message: str) -> str:
+        if not isinstance(self.manifest, PublishManifest) or self.manifest.batch_count <= 1:
+            return message
+        progress = describe_progress(PublicationLedger(self.recovery_root).load(self.manifest.publication_id))
+        return f"{message} {progress} Retry to resume with batch {self.manifest.batch_index}.".strip()

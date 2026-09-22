@@ -2,13 +2,21 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
-class ExecutorToolError(Exception):
+class ExecutorToolError(ValueError):
+    """A classified tool rejection raised at its throw site.
+
+    ``details`` is bounded, JSON-serializable diagnostic data returned to the caller in the
+    failed result's ``data`` (for example why an exact edit did not match).
+    """
+
     code: str
     message: str
     retryable: bool = False
+    details: dict[str, Any] | None = None
 
     def __str__(self) -> str:
         return self.message

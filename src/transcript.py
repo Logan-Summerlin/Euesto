@@ -349,7 +349,7 @@ def _file_name(tool: str, payload: dict[str, object]) -> str | None:
             candidate = value.get(key)
             if isinstance(candidate, str) and candidate.strip():
                 return _clean_file_name(candidate)
-        edits = value.get("edits")
+        edits = value.get("operations") if tool == "patch" else value.get("edits")
         if isinstance(edits, list):
             paths = [
                 str(edit.get("path") or "").strip()

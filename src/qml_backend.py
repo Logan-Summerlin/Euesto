@@ -130,6 +130,10 @@ class DesktopBridge(QObject):
         self._skills: list[dict[str, Any]] = []
         self._presets: list[dict[str, Any]] = []
         self._pending_confirmation: dict[str, tuple[str, Any]] = {}
+        # Multi-batch publication: the batch in flight and the next batch awaiting its turn.
+        self._active_publication: tuple[PublishManifest, bool] | None = None
+        self._next_publication: tuple[PublishManifest, bool, GatewayClient | None] | None = None
+        self._publication_clients: dict[str, GatewayClient] = {}
         self._pending_approvals: dict[str, dict[str, Any]] = {}
         self._gateway_token = get_gateway_session_token() or get_gateway_token() or ""
         self._window: QWindow | None = None
@@ -434,7 +438,8 @@ class DesktopBridge(QObject):
         elif action == "custom-command":
             self._start_user_turn(str(value))
         elif action == "publish":
-            self._start_publication(value, auto=False)
+            client = self._publication_clients.pop(getattr(value, "manifest_id", ""), None)
+            self._start_publication(value, auto=False, client=client)
         elif action == "discard-staging":
             self._discard_staging()
         elif action == "enable-auto":
@@ -442,7 +447,7 @@ class DesktopBridge(QObject):
             self._set_status("Auto enabled for this Agent session")
             self.stateChanged.emit()
 
-    def _start_publication(self, value: object, *, auto: bool) -> None:
+    def _start_publication(self, value: object, *, auto: bool, client: GatewayClient | None = None) -> None:
         try:
             manifest = (
                 value
@@ -453,19 +458,21 @@ class DesktopBridge(QObject):
                 raise BrokerError("Select the workspace that produced this manifest first")
             if self.publication_worker:
                 raise BrokerError("Another publication is already running")
-            connection = self._gateway_connection() if auto else None
-            if auto and connection is None:
+            connection = self._gateway_connection() if auto or client is None and manifest.batch_count > 1 else None
+            if auto and connection is None and client is None:
                 raise BrokerError("Auto publication requires the local gateway")
             self.publication_worker = PublicationWorker(
                 manifest,
                 Path(self.workspace_path),
                 app_data_dir() / "recovery",
-                reseed_client=(GatewayClient(connection) if connection else None),
+                reseed_client=client or (GatewayClient(connection) if connection else None),
             )
+            self._active_publication = (manifest, auto)
             self.publication_worker.complete.connect(self._on_publication_complete)
             self.publication_worker.failed.connect(self._on_publication_failed)
             self.publication_worker.finished.connect(self._on_publication_finished)
-            self._set_status("Publishing validated staged changes…")
+            position = f" (batch {manifest.batch_index} of {manifest.batch_count})" if manifest.batch_count > 1 else ""
+            self._set_status(f"Publishing validated staged changes{position}…")
             self.stateChanged.emit()
             self.publication_worker.start()
         except (BrokerError, OSError, TypeError, ValueError) as exc:
@@ -474,20 +481,60 @@ class DesktopBridge(QObject):
                 self.stateChanged.emit()
             self.errorRequested.emit("Publication blocked", str(exc))
 
+    def _confirm_publication(self, manifest: PublishManifest, token: str, *, detail: str = "") -> None:
+        self._pending_confirmation[token] = ("publish", manifest)
+        if manifest.batch_count > 1:
+            title = f"Publish batch {manifest.batch_index} of {manifest.batch_count}?"
+            body = (
+                f"{detail}This batch contains {len(manifest.operations)} file operation(s). Large changesets are "
+                "published as separately approved, hash-checked batches; each batch is written all-or-nothing."
+            )
+        else:
+            title = "Publish staged changes to the host?"
+            body = (
+                f"The approved staging checkpoint contains {len(manifest.operations)} file operation(s). "
+                "Confirm to write the exact, hash-checked manifest to the selected workspace."
+            )
+        self.confirmRequested.emit(token, title, body)
+
     @Slot(dict)
     def _on_publication_complete(self, result: dict[str, Any]) -> None:
         completed = result.get("completed_paths") or ()
         checkpoint = str(result.get("checkpoint_id") or "")
+        batch = (
+            f" (batch {result['batch_index']} of {result['batch_count']})"
+            if int(result.get("batch_count") or 1) > 1
+            else ""
+        )
         self._set_status(
-            f"Published {len(completed)} file(s); checkpoint {checkpoint[:8]}"
+            f"Published {len(completed)} file(s){batch}; checkpoint {checkpoint[:8]}"
         )
         if result.get("reseed_error"):
             self._auto_mode = False
+            progress = f" {result['progress']}" if result.get("progress") else ""
             self.errorRequested.emit(
                 "Published, but Auto stopped",
                 "Host files were updated, but staging could not be reseeded: "
-                + str(result["reseed_error"]),
+                + str(result["reseed_error"])
+                + progress,
             )
+        elif result.get("next_batch_error"):
+            self._auto_mode = False
+            self.errorRequested.emit(
+                "Publication paused",
+                f"Batch {result.get('batch_index')} was published, but the next batch could not be prepared: "
+                f"{result['next_batch_error']} {result.get('progress') or ''}".strip(),
+            )
+        elif result.get("next_manifest"):
+            try:
+                following = PublishManifest.from_dict(result["next_manifest"])
+            except (TypeError, ValueError) as exc:
+                self._auto_mode = False
+                self.errorRequested.emit("Publication blocked", str(exc))
+            else:
+                auto = bool(self._active_publication and self._active_publication[1] and self._auto_mode)
+                client = self.publication_worker.continuation_client if self.publication_worker else None
+                self._next_publication = (following, auto, client)
         self.stateChanged.emit()
 
     @Slot(str)
@@ -495,13 +542,38 @@ class DesktopBridge(QObject):
         self._auto_mode = False
         self.stateChanged.emit()
         self.errorRequested.emit("Publication blocked", message)
+        active = self._active_publication
+        if active and active[0].batch_count > 1:
+            # The failed batch was rolled back on the host; earlier batches stay published.
+            # Offer to retry the same reviewed batch, which resumes the remainder.
+            manifest = active[0]
+            self._confirm_publication(
+                manifest,
+                f"publish-retry:{manifest.publication_id}:{manifest.batch_index}",
+                detail=f"Batch {manifest.batch_index} of {manifest.batch_count} failed and was rolled back. ",
+            )
 
     @Slot()
     def _on_publication_finished(self) -> None:
         if self.publication_worker:
             self.publication_worker.deleteLater()
         self.publication_worker = None
+        self._active_publication = None
         self.stateChanged.emit()
+        queued, self._next_publication = self._next_publication, None
+        if queued is not None:
+            manifest, auto, client = queued
+            if auto:
+                self._start_publication(manifest, auto=True, client=client)
+            else:
+                self._confirm_publication(
+                    manifest,
+                    f"publish:{manifest.publication_id}:{manifest.batch_index}",
+                    detail=f"Batch {manifest.batch_index - 1} of {manifest.batch_count} is published. ",
+                )
+                if client is not None:
+                    self._publication_clients[manifest.manifest_id] = client
+            return
         if self.worker is None:
             self._continue_queued_input()
 
@@ -1050,14 +1122,7 @@ class DesktopBridge(QObject):
                         raise ValueError("Auto publication is not authorized by this desktop session")
                     self._start_publication(manifest, auto=True)
                 else:
-                    token = f"publish:{event.run_id}:{event.event_id}"
-                    self._pending_confirmation[token] = ("publish", manifest)
-                    self.confirmRequested.emit(
-                        token,
-                        "Publish staged changes to the host?",
-                        f"The approved staging checkpoint contains {len(manifest.operations)} file operation(s). "
-                        "Confirm to write the exact, hash-checked manifest to the selected workspace.",
-                    )
+                    self._confirm_publication(manifest, f"publish:{event.run_id}:{event.event_id}")
             except (TypeError, ValueError) as exc:
                 self._auto_mode = False
                 self.stateChanged.emit()

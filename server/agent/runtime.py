@@ -11,9 +11,9 @@ from server.executor import ExecutorClient
 from server.extensions.skills import render_skill_context
 from server.openrouter.agent import agent_turn
 from server.openrouter.errors import ProviderError
-from shared.permissions import PermissionDecision, PermissionRule, resolve_permission
+from shared.permissions import PermissionDecision, PermissionRule, resolve_permission, rule_scope
 from shared.requests import DEFAULT_INVESTIGATION_MODEL, AgentRunRequest
-from shared.tools import INVESTIGATION_TOOLS, MUTATION_TOOLS, PLAN_TOOLS, READ_TOOLS, ToolRequest, ToolResult
+from shared.tools import INVESTIGATION_TOOLS, MUTATION_TOOLS, PARALLEL_SAFE_TOOLS, PLAN_TOOLS, READ_TOOLS, ToolRequest, ToolResult
 from .approvals import ApprovalCoordinator, ApprovalTimeoutError
 from .budgets import BudgetExceededError, RunBudget, requires_budget_approval, resolve_budget_profile
 from .context import compact_agent_context, estimate_message_tokens
@@ -28,6 +28,7 @@ INVESTIGATION_MIN_WALL_SECONDS = 10
 INVESTIGATION_MAX_WALL_SECONDS = 300
 INVESTIGATION_HARD_CALL_CEILING = 4
 DEFAULT_INVESTIGATION_CALL_BUDGET = 4
+MAX_PARALLEL_TOOL_CALLS = 8
 
 
 class AgentRuntime:
@@ -112,9 +113,17 @@ class AgentRuntime:
                 # The investigation call cap is per turn: each model turn starts with a fresh allowance.
                 self._investigation_calls.pop(run_id, None)
                 self._investigation_call_budget.pop(run_id, None)
-                for raw_call in turn.tool_calls:
-                    budget.consume_tool_call()
-                    run_mutated = (await self._execute_tool_call(run_id, request, raw_call, messages, budget)) or run_mutated
+                for group in tool_call_groups(turn.tool_calls):
+                    if len(group) == 1:
+                        budget.consume_tool_call()
+                        run_mutated = (await self._execute_tool_call(run_id, request, group[0], messages, budget)) or run_mutated
+                        continue
+                    # Consecutive independent read-only calls run concurrently; each writes its
+                    # own message buffer, appended in the original call order afterwards.
+                    for _ in group:
+                        budget.consume_tool_call()
+                    for buffer in await self._execute_parallel_group(run_id, request, group, budget):
+                        messages.extend(buffer)
                 await self.append(run_id, "usage.updated", {"budget": budget.snapshot(), **budget.usage()})
                 partial = [*visible, {"role": "assistant", "content": str(turn.content or "")}]
                 if request.session_id and self.session_saver:
@@ -136,7 +145,20 @@ class AgentRuntime:
             self._investigation_call_budget.pop(run_id, None)
             self._api_keys.pop(run_id, None)
 
-    async def _execute_tool_call(self, run_id: str, request: AgentRunRequest, raw_call: dict[str, Any], messages: list[dict[str, Any]], budget: RunBudget) -> bool:
+    async def _execute_parallel_group(self, run_id: str, request: AgentRunRequest, group: list[dict[str, Any]], budget: RunBudget) -> list[list[dict[str, Any]]]:
+        """Run independent read-only calls concurrently; each fills its own message buffer so
+        results can be appended in the original call order."""
+        limiter = asyncio.Semaphore(MAX_PARALLEL_TOOL_CALLS)
+        buffers: list[list[dict[str, Any]]] = [[] for _ in group]
+
+        async def run_one(raw_call: dict[str, Any], buffer: list[dict[str, Any]]) -> bool:
+            async with limiter:
+                return await self._execute_tool_call(run_id, request, raw_call, buffer, budget, track_active=False)
+
+        await asyncio.gather(*(run_one(raw_call, buffer) for raw_call, buffer in zip(group, buffers, strict=True)))
+        return buffers
+
+    async def _execute_tool_call(self, run_id: str, request: AgentRunRequest, raw_call: dict[str, Any], messages: list[dict[str, Any]], budget: RunBudget, *, track_active: bool = True) -> bool:
         function = raw_call.get("function") if isinstance(raw_call.get("function"), dict) else {}
         request_id = str(raw_call.get("id") or uuid.uuid4())
         name = str(function.get("name") or "")
@@ -172,9 +194,13 @@ class AgentRuntime:
         if decision == PermissionDecision.DENY:
             result = ToolResult(request_id, False, output="Permission denied.", error_code="permission.denied")
         else:
-            self.active_request[run_id] = request_id
-            result = await self.executor.execute(tool_request)
-            self.active_request.pop(run_id, None)
+            if track_active:
+                self.active_request[run_id] = request_id
+            try:
+                result = await self.executor.execute(tool_request)
+            finally:
+                if track_active:
+                    self.active_request.pop(run_id, None)
         await self.append(run_id, "tool.output", result.to_dict())
         if name == "bash" and bool(result.data.get("rolled_back")):
             await self.append(run_id, "mutation.rollback", {"request_id": request_id, "tool": name, "reason": result.data.get("rollback_reason", "unknown"), "checkpoint_id": result.data.get("checkpoint_id")})
@@ -202,6 +228,19 @@ class AgentRuntime:
                 diff = dict(data["diff"])
                 diff["text"] = _bounded_excerpt(diff.get("text"), 8_000)
                 data["diff"] = diff
+            if isinstance(data.get("operations"), list):
+                operations = []
+                for item in data["operations"]:
+                    if not isinstance(item, dict):
+                        continue
+                    item = {key: value for key, value in item.items() if key not in {"old_sha256", "new_sha256"}}
+                    if isinstance(item.get("diff"), dict):
+                        item["diff"] = {**item["diff"], "text": _bounded_excerpt(item["diff"].get("text"), 4_000)}
+                    operations.append(item)
+                data["operations"] = operations
+        if name == "status" and isinstance(data.get("diffs"), list):
+            data["diffs"] = [{**item, "text": _bounded_excerpt(item.get("text"), 16_000)} if isinstance(item, dict) and item.get("text") else item for item in data["diffs"]]
+            payload["output"] = _bounded_excerpt(payload.get("output"), 16_000)
         payload["data"] = data
         text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         remaining = max(0, 512_000 - self._tool_result_bytes.get(run_id, 0))
@@ -366,13 +405,33 @@ class AgentRuntime:
             await self.append(run_id, "checkpoint.created", {"checkpoint_id": manifest.approval_id, "publish_manifest": manifest.to_dict(), "auto_publish": approval_policy == "auto"})
 
 
+def tool_call_groups(tool_calls: tuple[dict[str, Any], ...] | list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Group a turn's calls for execution, preserving order.
+
+    Runs of consecutive parallel-safe (read-only, independent) calls form one concurrent
+    group; every other call (mutations, Bash, investigation, malformed calls) is its own
+    serialized group, so a read issued after a write still observes that write.
+    """
+    groups: list[list[dict[str, Any]]] = []
+    previous_parallel = False
+    for raw_call in tool_calls:
+        function = raw_call.get("function") if isinstance(raw_call.get("function"), dict) else {}
+        parallel = str(function.get("name") or "") in PARALLEL_SAFE_TOOLS
+        if parallel and previous_parallel:
+            groups[-1].append(raw_call)
+        else:
+            groups.append([raw_call])
+        previous_parallel = parallel
+    return groups
+
+
 def investigation_wall_seconds(parent_budget: RunBudget) -> int:
     """Bound a child investigation's wall time independently of the parent's remaining time."""
     return min(INVESTIGATION_MAX_WALL_SECONDS, max(INVESTIGATION_MIN_WALL_SECONDS, int(parent_budget.remaining_wall_seconds)))
 
 
 def _rule_for_request(request: ToolRequest, workspace_id: str) -> PermissionRule:
-    path = str(request.arguments.get("path") or request.arguments.get("directory") or "") or None
+    path = rule_scope(request)
     executable = None
     args: tuple[str, ...] = ()
     if request.tool == "bash":
@@ -396,7 +455,9 @@ def _render_executor_context(status: dict[str, Any], mode: str, approval_policy:
     lines = ["LOCAL EXECUTOR CONTEXT (application-generated runtime facts):", f"- Workspace root is {str(environment.get('workspace_root') or '.')[:20]}; use relative POSIX paths."]
     if mode == "agent":
         lines.append("- Tools write an ephemeral staged copy; host publication is pending review unless session Auto is active.")
-        lines.append("- After mutations, the tool reports created/modified/deleted files and permission changes; checkpoint hashes are audit metadata.")
+        lines.append("- After mutations, the tool reports created/modified/deleted files and permission changes; checkpoint hashes are audit metadata. Use status (optionally with diffs) to review everything staged before publication.")
+        lines.append("- Use patch for multi-file changes: its operations apply atomically, all or none.")
+        lines.append("- Independent read-only calls (read, grep, find, ls, status) issued together in one turn run concurrently.")
         lines.append("- Bash runs non-interactively with bounded environment, output, timeout, and process cleanup.")
         lines.append("- Prefer one investigate_repository call; use follow-ups only when needed. The configurable budget is capped at four calls per parent turn and resets for each turn.")
     else:
@@ -407,7 +468,7 @@ def _render_executor_context(status: dict[str, Any], mode: str, approval_policy:
         lines.append(f"- Shared /work resource model: staging {limits.get('max_staging_bytes', 0)} + checkpoint {limits.get('max_checkpoint_bytes', 0)} + temporary headroom {limits.get('required_temp_headroom_bytes', 0)} must fit below capacity {limits.get('work_capacity_bytes', 0)}.")
     if budget:
         lines.append(f"- Agent budget: {budget.get('remaining_tool_calls', 0)} tool calls, {budget.get('remaining_iterations', 0)} iterations, {budget.get('remaining_wall_seconds', 0):.0f}s wall time, ${budget.get('remaining_cost', 0):.2f} cost remaining.")
-    return "\n".join(lines)[:1800]
+    return "\n".join(lines)[:2600]
 
 
 def _bounded_excerpt(value: object, limit: int) -> str:

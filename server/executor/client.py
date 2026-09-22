@@ -5,7 +5,7 @@ from pathlib import Path
 
 import httpx
 
-from shared.tools import PublishManifest, ToolRequest, ToolResult
+from shared.tools import PublicationReceipt, PublishManifest, ToolRequest, ToolResult
 
 
 class ExecutorUnavailable(RuntimeError):
@@ -41,15 +41,19 @@ class ExecutorClient:
         except (httpx.HTTPError, OSError, ValueError) as exc:
             raise ExecutorUnavailable(f"Executor tool call failed: {exc}") from exc
 
-    async def manifest(self, run_id: str, approval_id: str) -> PublishManifest:
-        async with httpx.AsyncClient(transport=self._transport(), base_url="http://executor", timeout=10, follow_redirects=False) as client:
-            response = await client.post("/v1/manifest", headers=self._headers(), json={"run_id": run_id, "approval_id": approval_id})
+    async def manifest(self, run_id: str, approval_id: str, *, publication_id: str | None = None, batch_index: int = 1) -> PublishManifest:
+        body: dict[str, object] = {"run_id": run_id, "approval_id": approval_id}
+        if publication_id:
+            body["publication_id"] = publication_id
+            body["batch_index"] = batch_index
+        async with httpx.AsyncClient(transport=self._transport(), base_url="http://executor", timeout=30, follow_redirects=False) as client:
+            response = await client.post("/v1/manifest", headers=self._headers(), json=body)
             response.raise_for_status()
             return PublishManifest.from_dict(response.json())
 
-    async def mark_staging_published(self, manifest: PublishManifest) -> dict:
+    async def mark_staging_published(self, receipt: PublicationReceipt) -> dict:
         async with httpx.AsyncClient(transport=self._transport(), base_url="http://executor", timeout=30, follow_redirects=False) as client:
-            response = await client.post("/v1/staging/mark-published", headers=self._headers(), json=manifest.to_dict())
+            response = await client.post("/v1/staging/mark-published", headers=self._headers(), json=receipt.to_dict())
             response.raise_for_status()
             return dict(response.json())
 

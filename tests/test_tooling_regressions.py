@@ -7,7 +7,7 @@ import pytest
 from server.openrouter.agent import LOCAL_TOOL_SCHEMAS
 from shared.tools import AGENT_TOOLS, PLAN_TOOLS, TOOL_NAMES, ToolRequest
 
-CANONICAL_TOOLS = ("read", "write", "edit", "bash", "grep", "find", "ls")
+CANONICAL_TOOLS = ("read", "write", "edit", "patch", "bash", "grep", "find", "ls", "status")
 MODEL_TOOL_NAMES = CANONICAL_TOOLS + ("investigate_repository",)
 READ_ONLY_TOOLS = frozenset({"read", "grep", "find", "ls"})
 LEGACY_TOOL_NAMES = {
@@ -81,7 +81,7 @@ def test_gateway_and_agent_tool_vocabularies_cannot_diverge() -> None:
 
 def test_gateway_status_advertises_canonical_local_tools() -> None:
     source = Path("server/service.py").read_text(encoding="utf-8")
-    assert '("read", "write", "edit", "bash", "grep", "find", "ls")' in source
+    assert '("read", "write", "edit", "patch", "bash", "grep", "find", "ls", "status")' in source
     assert '"investigate_repository"' not in source
     assert '"inspect_workspace"' not in source
     assert '"inspect_checkpoint"' not in source

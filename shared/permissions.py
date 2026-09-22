@@ -37,13 +37,13 @@ class PermissionRule:
     def matches(self, request: ToolRequest, workspace_id: str) -> bool:
         if not self.enabled or self.workspace_id != workspace_id or self.mode != request.mode or self.tool != request.tool:
             return False
-        path = str(request.arguments.get("path") or request.arguments.get("directory") or "")
         if self.path_prefix is not None:
-            normalized_path = _permission_path(path)
             normalized_prefix = _permission_path(self.path_prefix)
-            if normalized_path is None or normalized_prefix is None:
+            paths = [_permission_path(path) for path in request_paths(request)]
+            # A multi-file patch matches a path-scoped rule only when every path is in scope.
+            if normalized_prefix is None or not paths or any(path is None for path in paths):
                 return False
-            if not (normalized_path == normalized_prefix or normalized_path.startswith(normalized_prefix + "/")):
+            if not all(path == normalized_prefix or path.startswith(normalized_prefix + "/") for path in paths):
                 return False
         if self.executable is not None:
             if request.tool != "bash":
@@ -55,6 +55,35 @@ class PermissionRule:
             if not tokens or tokens[0] != self.executable or tokens[1 : 1 + len(self.argument_prefix)] != list(self.argument_prefix):
                 return False
         return True
+
+
+def request_paths(request: ToolRequest) -> list[str]:
+    """Workspace paths a request names: one ``path``, or every ``patch`` operation path."""
+    if request.tool == "patch":
+        operations = request.arguments.get("operations")
+        return [str(item.get("path") or "") for item in operations if isinstance(item, dict)] if isinstance(operations, list) else []
+    return [str(request.arguments.get("path") or request.arguments.get("directory") or "")]
+
+
+def rule_scope(request: ToolRequest) -> str | None:
+    """The path prefix a saved or per-run rule should cover for this request.
+
+    Single-path tools scope to their path. A patch scopes to the deepest directory shared by
+    all of its paths, or to the whole workspace (``None``) when they share none.
+    """
+    paths = [path for path in request_paths(request) if path]
+    if request.tool != "patch":
+        return paths[0] if paths else None
+    normalized = [_permission_path(path) for path in paths]
+    if not normalized or any(path is None for path in normalized):
+        return None
+    parts = [path.split("/")[:-1] for path in normalized if path]
+    shared: list[str] = []
+    for segments in zip(*parts, strict=False):
+        if len(set(segments)) != 1:
+            break
+        shared.append(segments[0])
+    return "/".join(shared) or None
 
 
 def resolve_permission(request: ToolRequest, workspace_id: str, rules: tuple[PermissionRule, ...] = ()) -> PermissionDecision:

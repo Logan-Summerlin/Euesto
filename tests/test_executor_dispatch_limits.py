@@ -6,9 +6,9 @@ from pathlib import Path
 from executor.app import ExecutorService
 from executor.config import ExecutorConfig
 from server.openrouter.agent import LOCAL_TOOL_SCHEMAS
-from shared.tools import AGENT_TOOLS, PLAN_TOOLS, TOOL_NAMES, ToolRequest
+from shared.tools import AGENT_TOOLS, MUTATION_TOOLS, PLAN_TOOLS, TOOL_NAMES, ToolRequest
 
-CANONICAL = ("read", "write", "edit", "bash", "grep", "find", "ls")
+CANONICAL = ("read", "write", "edit", "patch", "bash", "grep", "find", "ls", "status")
 MODEL_TOOLS = CANONICAL + ("investigate_repository",)
 READ_ONLY = frozenset({"read", "grep", "find", "ls"})
 
@@ -23,7 +23,8 @@ def test_agent_and_plan_contracts_are_exactly_canonical() -> None:
     assert TOOL_NAMES == frozenset(MODEL_TOOLS)
     assert AGENT_TOOLS == TOOL_NAMES
     assert PLAN_TOOLS == READ_ONLY
-    assert {name for name in CANONICAL if name not in READ_ONLY} == {"write", "edit", "bash"}
+    assert {name for name in CANONICAL if name not in READ_ONLY} == {"write", "edit", "patch", "bash", "status"}
+    assert MUTATION_TOOLS == {"write", "edit", "patch", "bash"}
     assert all(item["function"]["parameters"]["additionalProperties"] is False for item in LOCAL_TOOL_SCHEMAS)
 
 

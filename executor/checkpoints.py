@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import uuid
 from pathlib import Path
 
@@ -54,13 +55,16 @@ def create_checkpoint(
     directory = root / checkpoint_id
     directory.mkdir()
     try:
+        # Objects are content-addressed and verified when stored (and again before any
+        # restore), so one directory scan decides which blobs are missing. Re-hashing or
+        # re-statting the whole store here would make every mutation O(repository size).
+        with os.scandir(objects) as iterator:
+            stored = {entry.name for entry in iterator if entry.is_file(follow_symlinks=False)}
         for relative, (digest, _size, _mode) in files.items():
-            object_path = objects / digest
-            if not object_path.exists():
-                object_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(work_root / relative, object_path, follow_symlinks=False)
-            if not object_path.is_file() or _sha256(object_path) != digest:
-                raise CheckpointError("Checkpoint content verification failed.")
+            if digest in stored:
+                continue
+            _store_object(work_root / relative, objects / digest, digest)
+            stored.add(digest)
         manifest = {
             "version": 2,
             "checkpoint_id": checkpoint_id,
@@ -71,14 +75,43 @@ def create_checkpoint(
             "file_count": len(files),
             "total_bytes": total,
         }
-        (directory / "manifest.json").write_text(
-            json.dumps(manifest, sort_keys=True), encoding="utf-8"
-        )
+        manifest_path = directory / "manifest.json"
+        manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+        _remember_references(manifest_path, {digest: size for digest, size, _mode in files.values()})
+        _remember_files(checkpoint_id, files)
         _prune(root, checkpoint_id, max_checkpoints, max_storage_bytes)
         return checkpoint_id
     except Exception:
         shutil.rmtree(directory, ignore_errors=True)
         raise
+
+
+# Parsed-manifest caches. _prune needs every retained checkpoint's referenced digests on each
+# mutation, and the executor's post-mutation status can start from the file listing the
+# checkpoint just walked; both are keyed so that a rewritten manifest is never reused.
+_MAX_REMEMBERED_FILES = 4
+_reference_cache: dict[str, tuple[int, dict[str, int]]] = {}
+_recent_files: dict[str, dict[str, tuple[str, int, int]]] = {}
+_cache_lock = threading.Lock()
+
+
+def _remember_references(manifest_path: Path, references: dict[str, int]) -> None:
+    with _cache_lock:
+        _reference_cache[str(manifest_path)] = (manifest_path.stat().st_mtime_ns, references)
+
+
+def _remember_files(checkpoint_id: str, files: dict[str, tuple[str, int, int]]) -> None:
+    with _cache_lock:
+        _recent_files[checkpoint_id] = files
+        while len(_recent_files) > _MAX_REMEMBERED_FILES:
+            _recent_files.pop(next(iter(_recent_files)))
+
+
+def checkpoint_files(checkpoint_id: str) -> dict[str, tuple[str, int, int]] | None:
+    """Return the visible-file listing captured by a recent checkpoint, if still cached."""
+    with _cache_lock:
+        files = _recent_files.get(checkpoint_id)
+    return dict(files) if files is not None else None
 
 
 def inspect_checkpoint(
@@ -293,6 +326,8 @@ def _prune(root: Path, current_id: str, max_count: int, max_storage_bytes: int) 
     for directory in directories:
         if directory.name not in keep:
             shutil.rmtree(directory, ignore_errors=True)
+            with _cache_lock:
+                _reference_cache.pop(str(directory / "manifest.json"), None)
 
     objects = root / "objects"
     while True:
@@ -301,30 +336,51 @@ def _prune(root: Path, current_id: str, max_count: int, max_storage_bytes: int) 
             for path in root.iterdir()
             if path.is_dir() and _CHECKPOINT_ID.fullmatch(path.name)
         ] if root.exists() else []
-        referenced = {
-            str(item.get("sha256"))
-            for directory in kept_directories
-            for item in _manifest_files(directory).values()
-            if isinstance(item, dict) and item.get("sha256")
-        }
-        object_files = (
-            sorted((path for path in objects.iterdir() if path.is_file()), key=lambda path: path.stat().st_mtime)
-            if objects.exists()
-            else []
-        )
-        referenced_total = sum(
-            path.stat().st_size for path in object_files if path.name in referenced
-        )
-        if referenced_total <= max_storage_bytes:
-            for path in object_files:
-                if path.name not in referenced:
-                    path.unlink(missing_ok=True)
+        # Sizes come from the manifests (verified at store time), so the object store is
+        # never statted blob-by-blob.
+        referenced: dict[str, int] = {}
+        for directory in kept_directories:
+            referenced.update(_manifest_references(directory))
+        if sum(referenced.values()) <= max_storage_bytes:
+            if objects.exists():
+                with os.scandir(objects) as iterator:
+                    unreferenced = [entry.path for entry in iterator if entry.name not in referenced]
+                for path in unreferenced:
+                    try:
+                        os.unlink(path)
+                    except (FileNotFoundError, IsADirectoryError, PermissionError):
+                        pass
             return
         removable = [path for path in kept_directories if path.name != current_id]
         if not removable:
             raise CheckpointError("Checkpoint storage budget is exhausted by the current checkpoint set.")
         oldest = min(removable, key=lambda path: path.stat().st_mtime)
         shutil.rmtree(oldest, ignore_errors=True)
+        with _cache_lock:
+            _reference_cache.pop(str(oldest / "manifest.json"), None)
+
+
+def _manifest_references(directory: Path) -> dict[str, int]:
+    manifest_path = directory / "manifest.json"
+    try:
+        mtime = manifest_path.stat().st_mtime_ns
+    except OSError:
+        return {}
+    key = str(manifest_path)
+    with _cache_lock:
+        cached = _reference_cache.get(key)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    references: dict[str, int] = {}
+    for item in _manifest_files(directory).values():
+        if isinstance(item, dict) and item.get("sha256"):
+            try:
+                references[str(item["sha256"])] = max(0, int(item.get("size_bytes") or 0))
+            except (TypeError, ValueError):
+                references[str(item["sha256"])] = 0
+    with _cache_lock:
+        _reference_cache[key] = (mtime, references)
+    return references
 
 
 def _manifest_files(directory: Path) -> dict[str, object]:
@@ -334,6 +390,24 @@ def _manifest_files(directory: Path) -> dict[str, object]:
         return {}
     value = data.get("files") if isinstance(data, dict) else None
     return value if isinstance(value, dict) else {}
+
+
+def _store_object(source: Path, object_path: Path, digest: str) -> None:
+    """Copy one staged file into the object store, verifying the bytes actually stored."""
+    object_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(prefix=".object-", dir=object_path.parent)
+    temporary = Path(name)
+    try:
+        hasher = hashlib.sha256()
+        with os.fdopen(descriptor, "wb") as writer, source.open("rb") as reader:
+            for chunk in iter(lambda: reader.read(128 * 1024), b""):
+                hasher.update(chunk)
+                writer.write(chunk)
+        if hasher.hexdigest() != digest:
+            raise CheckpointError("Checkpoint content verification failed.")
+        os.replace(temporary, object_path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _atomic_bytes(target: Path, content: bytes) -> None:

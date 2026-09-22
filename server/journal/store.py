@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from shared.events import TERMINAL_EVENT_TYPES, EventEnvelope
-from shared.permissions import PermissionDecision, PermissionRule
+from shared.permissions import PermissionDecision, PermissionRule, rule_scope
 from shared.tools import ToolRequest
 
 
@@ -386,7 +386,7 @@ class JournalStore:
             )
 
     def rule_for_request(self, request: ToolRequest, workspace_id: str) -> PermissionRule:
-        path = str(request.arguments.get("path") or request.arguments.get("directory") or "") or None
+        path = rule_scope(request)
         executable = str(request.arguments.get("executable") or "") or None
         arguments = tuple(str(item) for item in request.arguments.get("arguments") or ())
         return PermissionRule(

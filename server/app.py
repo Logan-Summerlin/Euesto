@@ -11,7 +11,7 @@ from starlette.routing import Route
 
 from shared.requests import AgentRunRequest, ChatRequest
 from shared.responses import ErrorResponse
-from shared.tools import PublishManifest
+from shared.tools import PublicationReceipt
 
 from .auth import GatewaySecurityMiddleware
 from .config import GatewayConfig
@@ -51,6 +51,7 @@ def create_app(config: GatewayConfig | None = None, service: GatewayService | No
         Route("/v1/workspaces/{workspace_id:str}/staging/inspect", _inspect_staging, methods=["GET"]),
         Route("/v1/workspaces/{workspace_id:str}/staging/discard", _discard_staging, methods=["POST"]),
         Route("/v1/workspaces/{workspace_id:str}/staging/mark-published", _mark_staging_published, methods=["POST"]),
+        Route("/v1/workspaces/{workspace_id:str}/staging/manifest", _publication_batch, methods=["POST"]),
     ]
     app = Starlette(routes=routes, lifespan=lifespan)
     app.state.gateway = resolved_service
@@ -244,13 +245,33 @@ async def _discard_staging(request: Request) -> Response:
 async def _mark_staging_published(request: Request) -> Response:
     workspace_id = request.path_params["workspace_id"]
     try:
-        manifest = PublishManifest.from_dict(await _json(request))
-        result = await _service(request).mark_staging_published(workspace_id, manifest)
+        receipt = PublicationReceipt.from_dict(await _json(request))
+        result = await _service(request).mark_staging_published(workspace_id, receipt)
     except (KeyError, TypeError, ValueError) as exc:
         return _error("request.invalid_staging_manifest", str(exc), status=422)
     except GatewayServiceError as exc:
         return _service_error(exc)
     return JSONResponse(result)
+
+
+async def _publication_batch(request: Request) -> Response:
+    workspace_id = request.path_params["workspace_id"]
+    try:
+        data = await _json(request)
+        if set(data) - {"run_id", "publication_id", "batch_index"}:
+            raise ValueError("Unknown publication batch fields")
+        batch_index = data.get("batch_index")
+        if isinstance(batch_index, bool) or not isinstance(batch_index, int) or batch_index < 2:
+            raise ValueError("batch_index must be an integer of at least 2")
+        run_id = str(data.get("run_id") or ""); publication_id = str(data.get("publication_id") or "")
+        if not run_id or not publication_id:
+            raise ValueError("run_id and publication_id are required")
+        manifest = await _service(request).publication_batch(workspace_id, run_id, publication_id, batch_index)
+    except (KeyError, TypeError, ValueError) as exc:
+        return _error("request.invalid_publication_batch", str(exc), status=422)
+    except GatewayServiceError as exc:
+        return _service_error(exc)
+    return JSONResponse(manifest.to_dict())
 
 
 async def _inspect_staging(request: Request) -> Response:

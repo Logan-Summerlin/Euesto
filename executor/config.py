@@ -25,6 +25,8 @@ class ExecutorConfig:
     max_write_bytes: int = 1_000_000
     max_edit_target_bytes: int = 2_000_000
     max_edit_result_bytes: int = 2_000_000
+    max_patch_operations: int = 100
+    max_patch_bytes: int = 2_000_000
     max_bash_output_bytes: int = 1_000_000
     max_bash_stdin_bytes: int = 1_000_000
     max_command_bytes: int = 1_000_000
@@ -46,6 +48,8 @@ class ExecutorConfig:
         "max_write_bytes": 8_000_000,
         "max_edit_target_bytes": 16_000_000,
         "max_edit_result_bytes": 16_000_000,
+        "max_patch_operations": 500,
+        "max_patch_bytes": 16_000_000,
         "max_bash_output_bytes": 8_000_000,
         "max_bash_stdin_bytes": 8_000_000,
         "max_command_bytes": 1_000_000,
@@ -136,6 +140,8 @@ class ExecutorConfig:
             "max_write_bytes": 1_000_000,
             "max_edit_target_bytes": 2_000_000,
             "max_edit_result_bytes": 2_000_000,
+            "max_patch_operations": 100,
+            "max_patch_bytes": 2_000_000,
             "max_bash_output_bytes": 1_000_000,
             "max_bash_stdin_bytes": 1_000_000,
             "max_command_bytes": 1_000_000,
@@ -158,6 +164,8 @@ class ExecutorConfig:
                 "max_write_bytes": 256_000,
                 "max_edit_target_bytes": 512_000,
                 "max_edit_result_bytes": 512_000,
+                "max_patch_operations": 50,
+                "max_patch_bytes": 512_000,
                 "max_bash_output_bytes": 256_000,
                 "max_bash_stdin_bytes": 256_000,
                 "max_command_bytes": 256_000,
@@ -176,6 +184,8 @@ class ExecutorConfig:
                 "max_write_bytes": 2_000_000,
                 "max_edit_target_bytes": 4_000_000,
                 "max_edit_result_bytes": 4_000_000,
+                "max_patch_operations": 200,
+                "max_patch_bytes": 4_000_000,
                 "max_bash_output_bytes": 2_000_000,
                 "max_bash_stdin_bytes": 2_000_000,
                 "max_staging_bytes": 3_000_000_000,

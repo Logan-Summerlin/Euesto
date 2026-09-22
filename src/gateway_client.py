@@ -13,7 +13,7 @@ from shared.coercion import optional_string
 from shared.events import EVENT_TYPES, EventEnvelope
 from shared.protocol import protocol_is_compatible
 from shared.responses import GatewayStatus
-from shared.tools import PublishManifest
+from shared.tools import PublicationReceipt, PublishManifest
 
 from .models import RequestOptions, ServerToolOptions
 
@@ -121,13 +121,31 @@ class GatewayClient:
             response = client.post(
                 f"/v1/workspaces/{manifest.workspace_id}/staging/mark-published",
                 headers={**self.headers, "Content-Type": "application/json"},
-                json=manifest.to_dict(),
+                # Paths, hashes, and modes only: the baseline never needs the content again.
+                json=PublicationReceipt.from_manifest(manifest).to_dict(),
             )
             self._raise_for_error(response)
             data = response.json()
         if not isinstance(data, dict):
             raise GatewayError("Gateway returned invalid staging baseline data.", code="protocol.invalid_staging")
         return dict(data)
+
+    def next_publication_batch(self, manifest: PublishManifest) -> PublishManifest:
+        """Request the next batch of a multi-batch publication after ``manifest`` published."""
+        with self._client(timeout=60.0) as client:
+            response = client.post(
+                f"/v1/workspaces/{manifest.workspace_id}/staging/manifest",
+                headers={**self.headers, "Content-Type": "application/json"},
+                json={"run_id": manifest.run_id, "publication_id": manifest.publication_id, "batch_index": manifest.batch_index + 1},
+            )
+            self._raise_for_error(response)
+            data = response.json()
+        if not isinstance(data, dict):
+            raise GatewayError("Gateway returned an invalid publication batch.", code="protocol.invalid_staging")
+        try:
+            return PublishManifest.from_dict(data)
+        except (TypeError, ValueError) as exc:
+            raise GatewayError(f"Gateway returned an invalid publication batch: {exc}", code="protocol.invalid_staging") from exc
 
     def discard_staging(self, workspace_id: str) -> dict[str, Any]:
         with self._client(timeout=30.0) as client:

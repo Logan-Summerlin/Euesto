@@ -9,7 +9,7 @@ from shared.events import EventEnvelope
 from shared.permissions import PermissionDecision
 from shared.requests import AgentRunRequest, ChatRequest
 from shared.responses import GatewayStatus
-from shared.tools import PublishManifest
+from shared.tools import MUTATION_TOOLS, PLAN_TOOLS, PublicationReceipt, PublishManifest
 
 from .agent.approvals import ApprovalCoordinator
 from .agent.runtime import AgentRuntime
@@ -94,7 +94,7 @@ class GatewayService:
             and self.config.executor_socket.exists()
         )
         local_tools = (
-            ("read", "write", "edit", "bash", "grep", "find", "ls")
+            ("read", "write", "edit", "patch", "bash", "grep", "find", "ls", "status")
             if executor_ready
             else ()
         )
@@ -102,8 +102,8 @@ class GatewayService:
             {
                 "name": name,
                 "kind": "workspace_tool",
-                "modes": ["plan", "agent"] if name in {"read", "grep", "find", "ls"} else ["agent"],
-                "requires_approval": name in {"write", "edit", "bash"},
+                "modes": ["plan", "agent"] if name in PLAN_TOOLS else ["agent"],
+                "requires_approval": name in MUTATION_TOOLS,
                 "custom": False,
             }
             for name in local_tools
@@ -155,7 +155,7 @@ class GatewayService:
                 status=409,
             ) from exc
 
-    async def mark_staging_published(self, workspace_id: str, manifest: PublishManifest) -> dict[str, Any]:
+    async def mark_staging_published(self, workspace_id: str, manifest: PublicationReceipt) -> dict[str, Any]:
         if not self.executor or workspace_id != self.config.workspace_id:
             raise GatewayServiceError(
                 "workspace.invalid",
@@ -174,6 +174,24 @@ class GatewayService:
             raise GatewayServiceError(
                 "staging.baseline_failed",
                 "The executor could not advance the staging baseline.",
+                retryable=True,
+                status=409,
+            ) from exc
+
+    async def publication_batch(self, workspace_id: str, run_id: str, publication_id: str, batch_index: int) -> PublishManifest:
+        """Build the next batch of a multi-batch publication from the changes still pending."""
+        if not self.executor or workspace_id != self.config.workspace_id:
+            raise GatewayServiceError(
+                "workspace.invalid",
+                "The selected workspace is not the active isolated executor.",
+                status=409,
+            )
+        try:
+            return await self.executor.manifest(run_id, str(__import__("uuid").uuid4()), publication_id=publication_id, batch_index=batch_index)
+        except Exception as exc:
+            raise GatewayServiceError(
+                "staging.manifest_failed",
+                f"The executor could not build publication batch {batch_index}: {exc}",
                 retryable=True,
                 status=409,
             ) from exc

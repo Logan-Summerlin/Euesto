@@ -10,11 +10,14 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from executor.paths import UnsafePath, assert_unique_paths, normalize_relative
-from shared.tools import PublishManifest
+from datetime import UTC, datetime
 
-MAX_PUBLISH_FILES = 500
-MAX_PUBLISH_BYTES = 32_000_000
+from executor.paths import UnsafePath, assert_unique_paths, normalize_relative
+from shared.tools import PUBLISH_BATCH_MAX_BYTES, PUBLISH_BATCH_MAX_OPERATIONS, PublishManifest
+
+# Per-batch ceilings. Larger changesets arrive as ordered batches (see PublicationLedger).
+MAX_PUBLISH_FILES = PUBLISH_BATCH_MAX_OPERATIONS
+MAX_PUBLISH_BYTES = PUBLISH_BATCH_MAX_BYTES
 FORBIDDEN_ROOT_NAMES = frozenset({"windows", "program files", "program files (x86)", "programdata", "appdata", ".ssh", ".aws", ".azure", ".gnupg", "docker", "onedrive", "dropbox", "google drive", "icloud drive"})
 
 class BrokerError(RuntimeError): pass
@@ -44,14 +47,21 @@ class WorkspaceBroker:
         self.identity = workspace_id(self.root)
 
     def publish(self, manifest: PublishManifest, approved_paths: set[str]) -> PublishResult:
+        """Publish one batch all-or-nothing.
+
+        If any operation fails, every host file this batch already touched is restored from
+        the recovery copies before the error is raised, so a failed batch never leaves the
+        workspace partially published; earlier batches stay published and a retry re-attempts
+        only the failed batch and the remainder.
+        """
         if manifest.workspace_id != self.identity: raise BrokerError("Manifest belongs to another workspace")
         if len(manifest.operations) > MAX_PUBLISH_FILES: raise BrokerError("Publish manifest exceeds the file limit")
         paths = [normalize_relative(item.path) for item in manifest.operations]
         assert_unique_paths(paths)
         if set(paths) != {normalize_relative(item) for item in approved_paths}: raise BrokerError("Approved paths do not exactly match the manifest")
-        if sum(len((item.content or "").encode("utf-8")) for item in manifest.operations) > MAX_PUBLISH_BYTES: raise BrokerError("Publish manifest exceeds the byte limit")
+        if sum(item.payload_bytes() for item in manifest.operations) > MAX_PUBLISH_BYTES: raise BrokerError("Publish manifest exceeds the byte limit")
         checkpoint_id = str(uuid.uuid4()); checkpoint = self.recovery_root / checkpoint_id; checkpoint.mkdir(mode=0o700)
-        metadata: dict[str, dict[str, str | bool | int | None]] = {}; completed: list[str] = []
+        metadata: dict[str, dict[str, str | bool | int | None]] = {}; completed: list[str] = []; touched: list[str] = []
         try:
             for operation in manifest.operations:
                 relative = normalize_relative(operation.path); target = self._target(relative, may_not_exist=operation.operation == "create")
@@ -59,14 +69,15 @@ class WorkspaceBroker:
                 current_mode = _mode(target) if target.exists() else None
                 if current_hash != operation.base_sha256: raise BrokerError(f"Host file changed after review: {relative}")
                 if not _modes_equivalent(current_mode, operation.base_mode): raise BrokerError(f"Host file permissions changed after review: {relative}")
-                metadata[relative] = {"existed": target.exists(), "base_sha256": current_hash, "base_mode": current_mode, "published_sha256": operation.staged_sha256, "published_mode": operation.staged_mode}
+                metadata[relative] = {"existed": target.exists(), "base_sha256": current_hash, "base_mode": current_mode, "published_sha256": operation.staged_sha256, "published_mode": operation.staged_mode, "binary": operation.binary}
                 if target.exists():
                     recovery_file = checkpoint / "files" / relative; recovery_file.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(target, recovery_file, follow_symlinks=False)
+                touched.append(relative)
                 if operation.operation == "delete":
                     target.unlink()
                 else:
-                    if operation.content is None: raise BrokerError(f"Publication content is missing: {relative}")
-                    self._atomic_write(target, operation.content.encode("utf-8"), operation.staged_mode)
+                    if operation.content is None and operation.content_base64 is None: raise BrokerError(f"Publication content is missing: {relative}")
+                    self._atomic_write(target, operation.payload(), operation.staged_mode)
                     actual_hash = _hash_file(target)
                     if actual_hash != operation.staged_sha256: raise BrokerError(f"Post-write publication mismatch: {relative}")
                     if operation.staged_mode is not None and not _modes_equivalent(_mode(target), operation.staged_mode): raise BrokerError(f"Post-write permission mismatch: {relative}")
@@ -74,9 +85,31 @@ class WorkspaceBroker:
             (checkpoint / "manifest.json").write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
             return PublishResult(checkpoint_id, tuple(completed))
         except Exception as exc:
-            (checkpoint / "partial.json").write_text(json.dumps({"completed": completed}), encoding="utf-8")
-            if isinstance(exc, BrokerError | UnsafePath): raise BrokerError(str(exc)) from exc
-            raise BrokerError(f"Publication stopped after {len(completed)} operation(s): {exc}") from exc
+            restored, rollback_errors = self._restore_touched(checkpoint, metadata, touched)
+            (checkpoint / "partial.json").write_text(json.dumps({"completed": completed, "restored": restored, "rollback_errors": rollback_errors}), encoding="utf-8")
+            position = f"batch {manifest.batch_index} of {manifest.batch_count}" if manifest.batch_count > 1 else "publication"
+            if rollback_errors:
+                outcome = f"{len(restored)} of {len(touched)} touched file(s) were restored; could not restore {', '.join(rollback_errors[:5])}. Recovery copies are in checkpoint {checkpoint_id}."
+            else:
+                outcome = f"the {len(touched)} file(s) it had touched were restored, so none of this batch remains on the host."
+            reason = str(exc) if isinstance(exc, BrokerError | UnsafePath) else f"{type(exc).__name__}: {exc}"
+            raise BrokerError(f"Publication stopped ({position}) after {len(completed)} operation(s): {reason}; {outcome}") from exc
+
+    def _restore_touched(self, checkpoint: Path, metadata: dict[str, dict[str, str | bool | int | None]], touched: list[str]) -> tuple[list[str], list[str]]:
+        restored: list[str] = []; errors: list[str] = []
+        for relative in reversed(touched):
+            item = metadata.get(relative) or {}
+            try:
+                target = self._target(relative, may_not_exist=True)
+                if item.get("existed"):
+                    self._atomic_write(target, (checkpoint / "files" / relative).read_bytes(), int(item["base_mode"]) if item.get("base_mode") is not None else None)
+                    if _hash_file(target) != item.get("base_sha256"): raise BrokerError("restored content mismatch")
+                elif target.exists():
+                    target.unlink()
+                restored.append(relative)
+            except Exception:
+                errors.append(relative)
+        return restored, errors
 
     def undo(self, checkpoint_id: str) -> PublishResult:
         if not checkpoint_id or any(char not in "0123456789abcdef-" for char in checkpoint_id.casefold()): raise BrokerError("Invalid checkpoint identity")
@@ -131,3 +164,65 @@ def _modes_equivalent(actual: int | None, expected: int | None) -> bool:
 def _hash_file(path: Path) -> str:
     if not path.is_file() or path.is_symlink() or path.stat().st_nlink > 1: raise BrokerError("Publish target is not a safe regular file")
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+class PublicationLedger:
+    """Durable per-publication progress, stored with the broker's recovery copies.
+
+    Each batch of a (possibly multi-batch) publication is recorded as it is published,
+    fails, or cannot advance the staging baseline, so the approver can see exactly which
+    batches reached the host and a retry resumes with the unpublished remainder.
+    """
+
+    def __init__(self, recovery_root: Path):
+        self.directory = recovery_root.resolve() / "publications"
+
+    def _path(self, publication_id: str) -> Path:
+        if not publication_id or any(char not in "0123456789abcdef-" for char in publication_id.casefold()):
+            raise BrokerError("Invalid publication identity")
+        return self.directory / f"{publication_id}.json"
+
+    def load(self, publication_id: str) -> dict | None:
+        try:
+            value = json.loads(self._path(publication_id).read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    def record(self, manifest: PublishManifest, status: str, *, checkpoint_id: str | None = None, error: str | None = None) -> dict:
+        if status not in {"published", "failed", "baseline_failed"}:
+            raise BrokerError("Unknown publication batch status")
+        record = self.load(manifest.publication_id) or {"publication_id": manifest.publication_id, "workspace_id": manifest.workspace_id, "run_id": manifest.run_id, "batches": {}}
+        batches = record.setdefault("batches", {})
+        batches[str(manifest.batch_index)] = {"manifest_id": manifest.manifest_id, "status": status, "operations": len(manifest.operations), "checkpoint_id": checkpoint_id, "error": (error or "")[:2000] or None, "recorded_at": datetime.now(UTC).isoformat(timespec="seconds")}
+        published = sorted(int(index) for index, item in batches.items() if item.get("status") == "published")
+        record["batch_count"] = manifest.batch_count
+        record["published_batches"] = published
+        record["remaining_batches"] = max(0, manifest.batch_count - len(published))
+        if status == "published":
+            record["state"] = "in_progress" if manifest.has_more_batches else "completed"
+        else:
+            record["state"] = status
+        record["updated_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+        self.directory.mkdir(parents=True, exist_ok=True)
+        path = self._path(manifest.publication_id)
+        descriptor, name = tempfile.mkstemp(prefix=".ledger-", dir=self.directory)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(record, handle, indent=2, sort_keys=True); handle.flush(); os.fsync(handle.fileno())
+            os.replace(name, path)
+        finally:
+            try: os.unlink(name)
+            except FileNotFoundError: pass
+        return record
+
+
+def describe_progress(record: dict | None) -> str:
+    """A one-line human summary of a publication ledger record."""
+    if not record:
+        return ""
+    count = int(record.get("batch_count") or 1)
+    published = record.get("published_batches") or []
+    if count <= 1:
+        return ""
+    return f"{len(published)} of {count} publication batch(es) are on the host; {int(record.get('remaining_batches') or 0)} remain."

@@ -28,8 +28,14 @@ def rollback_mutation(root: Path, checkpoint_id: str) -> None:
     restore_checkpoint(root, checkpoint_id)
 
 
-def guard_shrink(relative: str, path: Path, content: str | None, *, replacement_old: str | None = None, replacement_new: str | None = None, replacement_occurrences: int | None = None) -> None:
-    if not path.exists() or not path.is_file(): return
+def guard_shrink(relative: str, path: Path, content: str | None, *, replacement_old: str | None = None, replacement_new: str | None = None, replacement_occurrences: int | None = None, advisory: bool = False) -> dict[str, object] | None:
+    """Detect a whole-file mutation that would drop most of an existing file.
+
+    An unconfirmed replacement is rejected. When ``advisory`` is true the caller has already
+    proven the change deliberate (an exact edit whose occurrence count matched, or a write
+    whose ``expected_sha256`` matched), so the finding is returned as a warning instead.
+    """
+    if not path.exists() or not path.is_file(): return None
     old_bytes = path.stat().st_size
     if content is not None:
         new_bytes = len(content.encode("utf-8")); new_lines = content.count("\n") + 1
@@ -37,10 +43,14 @@ def guard_shrink(relative: str, path: Path, content: str | None, *, replacement_
         old_match_bytes = len(replacement_old.encode("utf-8")); new_match_bytes = len(replacement_new.encode("utf-8")); occurrences = max(0, int(replacement_occurrences or 0))
         new_bytes = old_bytes + occurrences * (new_match_bytes - old_match_bytes); old_lines = _count_lines(path)
         new_lines = max(1, old_lines + occurrences * (replacement_new.count("\n") - replacement_old.count("\n")))
-    else: return
+    else: return None
     old_lines = _count_lines(path)
-    if old_bytes >= 200 and old_lines >= 20 and new_bytes < old_bytes * SHRINK_RATIO and new_lines < old_lines * SHRINK_RATIO:
-        raise ExecutorToolError("staging.shrink_warning", f"Whole-file edit for {relative} would shrink the file from {old_bytes} to {new_bytes} bytes and from {old_lines} to {new_lines} lines; review the full replacement before retrying.")
+    if not (old_bytes >= 200 and old_lines >= 20 and new_bytes < old_bytes * SHRINK_RATIO and new_lines < old_lines * SHRINK_RATIO):
+        return None
+    message = f"Whole-file edit for {relative} would shrink the file from {old_bytes} to {new_bytes} bytes and from {old_lines} to {new_lines} lines"
+    if not advisory:
+        raise ExecutorToolError("staging.shrink_warning", f"{message}; review the full replacement before retrying, or pass the current expected_sha256 to confirm a deliberate rewrite.", details={"failure": "shrink_guard", "path": relative, "old_bytes": old_bytes, "new_bytes": new_bytes, "old_lines": old_lines, "new_lines": new_lines})
+    return {"path": relative, "old_bytes": old_bytes, "new_bytes": new_bytes, "old_lines": old_lines, "new_lines": new_lines, "message": f"{message}; applied because the change was confirmed."}
 
 
 def _count_lines(path: Path) -> int:

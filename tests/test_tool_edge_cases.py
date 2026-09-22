@@ -12,6 +12,7 @@ from executor.tools.ls import ls
 from executor.tools.read import read
 from executor.tools.write import write
 from executor.errors import ExecutorToolError
+from executor.mutations import guard_shrink
 
 
 def test_read_preserves_hash_and_line_ranges(tmp_path: Path) -> None:
@@ -115,10 +116,16 @@ def test_edit_occurrence_and_hash_conflicts_remain_safe_for_large_files(tmp_path
     assert path.read_text(encoding="utf-8").startswith("needle\nneedle\n")
 
 
-def test_edit_preserves_shrink_detection_for_large_targets(tmp_path: Path) -> None:
+def test_edit_reports_confirmed_shrink_on_large_targets_as_a_warning(tmp_path: Path) -> None:
+    # The exact old_str matched exactly expected_occurrences times, so the large deletion is
+    # deliberate: it is applied and flagged rather than rejected.
     path = tmp_path / "large.txt"; old = "line\n" * 50_000; path.write_text(old + ("x" * 100 + "\n") * 500, encoding="utf-8")
-    with pytest.raises(ExecutorToolError, match="shrink"): edit(tmp_path, {"path": "large.txt", "old_str": old, "new_str": "small\n"}, max_target_bytes=3_000_000, max_result_bytes=3_000_000)
-    assert path.read_text(encoding="utf-8").startswith("line\nline\n")
+    output, data = edit(tmp_path, {"path": "large.txt", "old_str": old, "new_str": "small\n"}, max_target_bytes=3_000_000, max_result_bytes=3_000_000)
+    assert path.read_text(encoding="utf-8").startswith("small\n" + "x" * 100)
+    assert data["shrink_warning"] is True and data["shrink_details"]["old_lines"] == 50_500
+    assert "shrink" in output
+    with pytest.raises(ExecutorToolError, match="shrink"):
+        guard_shrink("large.txt", path, "tiny\n")
 
 
 def test_search_reports_oversized_files_without_claiming_complete_scan(tmp_path: Path) -> None:
