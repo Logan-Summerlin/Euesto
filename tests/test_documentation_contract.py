@@ -35,3 +35,34 @@ def test_documentation_keeps_publication_boundary_explicit() -> None:
     assert "desktop publication broker" in architecture.lower()
     assert "stale" in publication.lower()
     assert "hash" in publication.lower()
+
+
+def test_documented_tool_defaults_match_code() -> None:
+    import importlib
+    import re
+
+    from server.agent import runtime
+    from shared.tools import MAX_TOOL_ARGUMENT_BYTES
+
+    tools_doc = (ROOT / "docs" / "TOOLS.md").read_text(encoding="utf-8")
+    limits_doc = (ROOT / "docs" / "LIMITS.md").read_text(encoding="utf-8")
+    ls_module = importlib.import_module("executor.tools.ls")
+    find_module = importlib.import_module("executor.tools.find")
+    coding = ExecutorConfig._profiles()["coding"]
+
+    def section(name: str) -> str:
+        match = re.search(rf"^## `{name}`\n(.*?)(?=^## )", tools_doc, re.S | re.M)
+        assert match, name
+        return match.group(1)
+
+    for name, default, config_name in (("ls", ls_module.DEFAULT_LS_RESULTS, "max_ls_results"), ("find", find_module.DEFAULT_FIND_RESULTS, "max_find_results")):
+        assert default == coding[config_name], name
+        assert f"**Default:** {default:,} results when `max_results` is omitted" in section(name)
+        assert re.search(rf"^\| `{name}` results \| {default:,} \|", limits_doc, re.M), name
+        assert f"{coding['max_search_seconds']}-second time budget" in section(name)
+    assert f"{coding['max_search_results']:,} results" in section("grep")
+    assert f"{coding['max_grep_output_bytes']:,}-byte output budget" in section("grep")
+    assert f"{MAX_TOOL_ARGUMENT_BYTES:,}" in tools_doc
+    assert f"| Tool arguments (protocol) | {MAX_TOOL_ARGUMENT_BYTES:,} bytes |" in limits_doc
+    assert f"{runtime.INVESTIGATION_MAX_WALL_SECONDS} seconds" in limits_doc
+    assert f"{runtime.INVESTIGATION_MIN_WALL_SECONDS}–{runtime.INVESTIGATION_MAX_WALL_SECONDS} seconds" in section("investigate_repository")

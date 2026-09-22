@@ -198,3 +198,82 @@ def test_undo_preserves_recovery_file_bytes(tmp_path: Path) -> None:
     broker.undo(result.checkpoint_id)
 
     assert target.read_bytes() == original
+
+
+def _seed_env_and_virtualenv_source(source: Path) -> None:
+    (source / "env" / "loaders").mkdir(parents=True)
+    (source / "env" / "settings.py").write_text("DEBUG = False\n", encoding="utf-8")
+    (source / "env" / "loaders" / "config.py").write_text("def load():\n    return {}\n", encoding="utf-8")
+    for name in (".venv", "venv"):
+        (source / name / "lib").mkdir(parents=True)
+        (source / name / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+        (source / name / "lib" / "site.py").write_text("needle = 'dependency'\n", encoding="utf-8")
+
+
+def test_real_env_source_directory_is_staged_while_virtualenvs_stay_excluded(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    work = tmp_path / "work"
+    _seed_env_and_virtualenv_source(source)
+
+    snapshot = seed_staging(make_config(source, work))
+
+    assert set(snapshot.hashes) == {"env/settings.py", "env/loaders/config.py"}
+    assert (work / "env" / "settings.py").read_text(encoding="utf-8") == "DEBUG = False\n"
+    assert not (work / ".venv").exists()
+    assert not (work / "venv").exists()
+
+
+def test_env_source_directory_is_visible_to_tools_and_publishes(tmp_path: Path) -> None:
+    import asyncio
+
+    from shared.tools import ToolRequest
+
+    source = tmp_path / "source"
+    work = tmp_path / "work"
+    _seed_env_and_virtualenv_source(source)
+    (source / "env" / "settings.py").write_text("DEBUG = False  # needle\n", encoding="utf-8")
+    service = ExecutorService(make_config(source, work))
+
+    def run(tool: str, mode: str, arguments: dict):
+        result = asyncio.run(service.execute(ToolRequest(tool, "run", tool, mode, arguments)))
+        assert result.ok, result.to_dict()
+        return result
+
+    for mode in ("plan", "agent"):
+        assert "env/" in run("ls", mode, {"details": False}).output.splitlines()
+        assert ".venv/" not in run("ls", mode, {"details": False}).output.splitlines()
+        found = run("find", mode, {"glob": "*.py"}).output.splitlines()
+        assert {"env/settings.py", "env/loaders/config.py"} <= set(found)
+        assert not any(line.startswith(("venv/", ".venv/")) for line in found)
+        grep_paths = {line.split(":", 1)[0] for line in run("grep", mode, {"query": "needle"}).output.splitlines()}
+        assert grep_paths == {"env/settings.py"}
+        assert run("read", mode, {"path": "env/settings.py"}).output == "DEBUG = False  # needle"
+
+    run("edit", "agent", {"path": "env/settings.py", "old_str": "False", "new_str": "True"})
+    manifest = service.manifest("run", "approval")
+    assert [(item.path, item.operation) for item in manifest.operations] == [("env/settings.py", "update")]
+
+
+def test_read_rejects_paths_hidden_from_find_grep_and_ls(tmp_path: Path) -> None:
+    import asyncio
+
+    from shared.tools import ToolRequest
+
+    source = tmp_path / "source"
+    work = tmp_path / "work"
+    _seed_env_and_virtualenv_source(source)
+    (source / ".git").mkdir()
+    (source / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (source / "node_modules" / "pkg").mkdir(parents=True)
+    (source / "node_modules" / "pkg" / "index.js").write_text("module.exports = 1;\n", encoding="utf-8")
+    (source / ".local-chat-notes.txt").write_text("executor metadata\n", encoding="utf-8")
+    service = ExecutorService(make_config(source, work))
+    # Recreate the same hidden text inside staging so Agent mode is checked on real bytes too.
+    (work / ".git").mkdir()
+    (work / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+
+    for mode in ("plan", "agent"):
+        for path in (".git/HEAD", "node_modules/pkg/index.js", "venv/lib/site.py", ".venv/pyvenv.cfg", ".local-chat-notes.txt"):
+            result = asyncio.run(service.execute(ToolRequest("read", "run", "read", mode, {"path": path})))
+            assert not result.ok, (mode, path)
+            assert result.error_code == "path.missing", (mode, path, result.error_code)

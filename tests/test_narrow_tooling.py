@@ -31,7 +31,7 @@ def test_ls_lists_immediate_contents(tmp_path: Path) -> None:
 def test_grep_limits_files_considered_and_searched(tmp_path: Path) -> None:
     (tmp_path / "match.txt").write_text("needle\n", encoding="utf-8")
     (tmp_path / "other.py").write_text("needle\n", encoding="utf-8")
-    output, data = grep(tmp_path, {"query": "needle", "include_glob": "*.txt"}, max_bytes=64_000)
+    output, data = grep(tmp_path, {"query": "needle", "include_glob": "*.txt"}, max_scan_bytes=64_000, max_output_bytes=64_000)
     assert "match.txt:1:needle" in output
     assert "other.py" not in output
     assert data["files_considered"] == 1

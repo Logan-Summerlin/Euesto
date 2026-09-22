@@ -23,7 +23,36 @@ INVESTIGATION_TOOLS = frozenset({"investigate_repository"})
 AGENT_TOOLS = TOOL_NAMES
 READ_TOOLS = PLAN_TOOLS | INVESTIGATION_TOOLS
 MUTATION_TOOLS = frozenset({"write", "edit", "bash"})
-MAX_TOOL_ARGUMENT_BYTES = 512_000
+# Protocol-level argument cap. It is a malformed-request guard, not a tool limit, so it
+# must never bind below any per-tool limit the executor can be configured to accept.
+# Derivation from the argument-carrying hard ceilings in executor/config.py
+# (ExecutorConfig.HARD_CEILINGS; tests/test_protocol.py asserts this stays in sync):
+#   write: content <= max_write_bytes (8 MB)
+#   bash:  command <= max_command_bytes (1 MB) + stdin <= max_bash_stdin_bytes (8 MB)
+#          + env <= 64 values x 16,384 bytes (~1.05 MB)                          = ~10.05 MB
+#   edit:  old_str + new_str share the max_edit_result_bytes ceiling (16 MB)     = 16 MB  <- largest
+# plus a fixed envelope for paths, hashes, env names, flags, and JSON structure.
+MAX_TOOL_ARGUMENT_PAYLOAD_BYTES = 16_000_000
+TOOL_ARGUMENT_ENVELOPE_BYTES = 1_000_000
+MAX_TOOL_ARGUMENT_BYTES = MAX_TOOL_ARGUMENT_PAYLOAD_BYTES + TOOL_ARGUMENT_ENVELOPE_BYTES
+
+
+def tool_argument_bytes(arguments: object) -> int:
+    """Measure arguments as unescaped UTF-8 JSON, so escaping never shrinks the usable payload."""
+    total = 0
+    stack = [arguments]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, str): total += len(value.encode("utf-8")) + 2
+        elif isinstance(value, dict):
+            total += 2 + max(0, 2 * len(value) - 1)
+            for key, item in value.items(): stack.append(str(key)); stack.append(item)
+        elif isinstance(value, (list, tuple)):
+            total += 2 + max(0, len(value) - 1); stack.extend(value)
+        elif value is None or isinstance(value, (bool, int, float)): total += len(str(value))
+        else: total += len(repr(value).encode("utf-8"))
+        if total > MAX_TOOL_ARGUMENT_BYTES: break
+    return total
 
 @dataclass(frozen=True, slots=True)
 class InvestigationResult:
@@ -48,7 +77,7 @@ class ToolRequest:
         if self.tool not in TOOL_NAMES: raise ValueError(f"Unknown tool: {self.tool}")
         if self.mode not in {"plan", "agent"}: raise ValueError("Executor tools require Plan or Agent mode")
         if self.mode == "plan" and self.tool not in PLAN_TOOLS: raise ValueError("Plan mode only permits read-only tools")
-        if len(repr(self.arguments).encode("utf-8")) > MAX_TOOL_ARGUMENT_BYTES: raise ValueError("Tool arguments are too large")
+        if tool_argument_bytes(self.arguments) > MAX_TOOL_ARGUMENT_BYTES: raise ValueError("Tool arguments are too large")
 
     def to_dict(self) -> dict[str, Any]: return asdict(self)
 

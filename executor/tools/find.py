@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import base64
 import fnmatch
+import time
 from pathlib import Path
 from typing import Iterator
 
 from ..paths import is_tool_excluded, safe_path
 
 MAX_CURSOR_OFFSET = 100_000
+DEFAULT_FIND_RESULTS = 500
 
 
-def find(root: Path, arguments: dict, *, max_results: int = 500) -> tuple[str, dict]:
+def find(root: Path, arguments: dict, *, max_results: int = DEFAULT_FIND_RESULTS, max_seconds: float = 30.0) -> tuple[str, dict]:
     allowed = {"path", "glob", "max_depth", "max_results", "details", "cursor"}
     if set(arguments) - allowed: raise ValueError("Unknown find arguments")
     relative = arguments.get("path", ".")
@@ -19,35 +21,55 @@ def find(root: Path, arguments: dict, *, max_results: int = 500) -> tuple[str, d
     if not scope.is_dir(): raise ValueError("find target is not a directory")
     pattern = arguments.get("glob", "*")
     if not isinstance(pattern, str) or not pattern or len(pattern) > 500: raise ValueError("find glob must be a bounded non-empty string")
-    max_depth = arguments.get("max_depth", 10); requested = arguments.get("max_results", 500)
+    max_depth = arguments.get("max_depth", 10); requested = arguments.get("max_results", DEFAULT_FIND_RESULTS)
     if not isinstance(max_depth, int) or isinstance(max_depth, bool) or not 0 <= max_depth <= 20: raise ValueError("max_depth must be an integer from 0 to 20")
     if not isinstance(requested, int) or isinstance(requested, bool) or not 1 <= requested <= 2000: raise ValueError("max_results must be an integer from 1 to 2000")
     maximum = min(requested, max_results); cursor = _decode_cursor(arguments.get("cursor")); details = bool(arguments.get("details", False))
-    matches: list[Path] = []; skipped = 0; iterator = _iter_matches(root, scope, scope, 0, max_depth, pattern)
+    walk = _Walk(time.monotonic() + max_seconds); matches: list[Path] = []; skipped = 0; iterator = _iter_matches(root, scope, scope, 0, max_depth, pattern, walk)
     for path in iterator:
         if skipped < cursor: skipped += 1; continue
         matches.append(path)
         if len(matches) >= maximum: break
-    has_more = next(iterator, None) is not None
+    full = len(matches) >= maximum
+    # Once a full page is collected, an expiring look-ahead only means more entries may remain.
+    has_more = full and (next(iterator, None) is not None or walk.expired); timed_out = walk.expired and not full
     lines = []
     for path in matches:
         display = path.relative_to(root).as_posix()
         if not details: lines.append(display + ("/" if path.is_dir() else "")); continue
         kind = "directory" if path.is_dir() else "file"; size = "-" if path.is_dir() else str(path.stat().st_size); lines.append(f"{kind}\t{size}\t{display}")
-    data: dict[str, object] = {"count": len(lines), "returned": len(lines), "limit": maximum, "truncated": has_more, "details": details, "recursive": True, "total_known": None}
-    if has_more: data["next_cursor"] = _encode_cursor(cursor + len(matches))
+    data: dict[str, object] = {"count": len(lines), "returned": len(lines), "limit": maximum, "truncated": has_more or timed_out, "details": details, "recursive": True, "total_known": None}
+    if timed_out:
+        # A cursor would replay the same walk into the same budget; narrow path/glob/max_depth instead.
+        data["truncation_reason"] = "time_budget"; data["max_seconds"] = max_seconds
+    elif has_more:
+        data["truncation_reason"] = "result_limit"; data["next_cursor"] = _encode_cursor(cursor + len(matches))
     return "\n".join(lines), data
 
 
-def _iter_matches(root: Path, directory: Path, scope: Path, depth: int, max_depth: int, pattern: str) -> Iterator[Path]:
+class _Walk:
+    """Wall-clock budget shared across the recursive traversal."""
+    __slots__ = ("deadline", "expired")
+
+    def __init__(self, deadline: float) -> None:
+        self.deadline = deadline; self.expired = False
+
+    def exhausted(self) -> bool:
+        if not self.expired and time.monotonic() >= self.deadline: self.expired = True
+        return self.expired
+
+
+def _iter_matches(root: Path, directory: Path, scope: Path, depth: int, max_depth: int, pattern: str, walk: _Walk) -> Iterator[Path]:
+    if walk.exhausted(): return
     try: children = sorted(directory.iterdir(), key=lambda item: item.name.casefold())
     except OSError: return
     for path in children:
+        if walk.exhausted(): return
         if path.is_symlink(): continue
         relative = path.relative_to(root).as_posix()
         if is_tool_excluded(relative): continue
         if fnmatch.fnmatch(path.relative_to(scope).as_posix(), pattern) or fnmatch.fnmatch(path.name, pattern): yield path
-        if path.is_dir() and depth < max_depth: yield from _iter_matches(root, path, scope, depth + 1, max_depth, pattern)
+        if path.is_dir() and depth < max_depth: yield from _iter_matches(root, path, scope, depth + 1, max_depth, pattern, walk)
 
 
 def _encode_cursor(value: int) -> str: return base64.urlsafe_b64encode(str(max(0, value)).encode()).decode().rstrip("=")

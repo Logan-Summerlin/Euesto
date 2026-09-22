@@ -73,7 +73,7 @@ The executor creates a manifest from its current staging baseline. The manifest 
 
 The **executor cannot publish**. It is network-disabled, non-root, capability-restricted, and backed by a read-only source mount plus bounded writable staging. Bash is non-interactive and subject to command, stdin, output, timeout, process, and environment controls (a fixed base environment with user-supplied variables filtered by name and size). The gateway does not receive a workspace mount. Host publication is unavailable to the executor by design.
 
-Path handling rejects absolute/drive/UNC paths, traversal segments, Windows aliases and reserved DOS names, non-canonical Unicode, secret-like paths (`.env*`, `.ssh`, credentials, and similar), symlinks, and hard-linked files. Staging excludes common metadata, dependency, and cache directories (`.git`, `.venv`, `node_modules`, bytecode/test/type-checker caches, and similar).
+Path handling rejects absolute/drive/UNC paths, traversal segments, Windows aliases and reserved DOS names, non-canonical Unicode, secret-like paths (`.env*`, `.ssh`, credentials, and similar), symlinks, and hard-linked files. Staging excludes common metadata, dependency, and cache directories (`.git`, `.venv`, `venv`, `node_modules`, bytecode/test/type-checker caches, and similar), and every read-oriented tool (`read`, `grep`, `find`, `ls`) treats those paths as absent in both modes. A plain `env/` directory is ordinary source and is not excluded.
 
 ## Current versus historical design
 

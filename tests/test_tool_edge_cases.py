@@ -57,12 +57,12 @@ def test_ls_is_not_recursive_and_find_is_recursive(tmp_path: Path) -> None:
 
 def test_result_limits_are_authoritative(tmp_path: Path) -> None:
     for index in range(4): (tmp_path / f"{index}.py").write_text("needle\n", encoding="utf-8")
-    ls_output, ls_data = ls(tmp_path, {"path": ".", "max_results": 4}, max_results=2); find_output, find_data = find(tmp_path, {"path": ".", "glob": "*.py", "max_results": 4}, max_results=2); grep_output, grep_data = grep(tmp_path, {"path": ".", "query": "needle", "max_results": 4}, max_bytes=64_000, max_results=2)
+    ls_output, ls_data = ls(tmp_path, {"path": ".", "max_results": 4}, max_results=2); find_output, find_data = find(tmp_path, {"path": ".", "glob": "*.py", "max_results": 4}, max_results=2); grep_output, grep_data = grep(tmp_path, {"path": ".", "query": "needle", "max_results": 4}, max_scan_bytes=64_000, max_output_bytes=64_000, max_results=2)
     assert ls_data["limit"] == 2 and ls_data["returned"] == 2 and ls_data["truncated"]; assert find_data["limit"] == 2 and find_data["returned"] == 2 and find_data["truncated"]; assert grep_data["matches_returned"] == 2 and grep_data["truncated"]; assert len(ls_output.splitlines()) == 2 and len(find_output.splitlines()) == 2 and len(grep_output.splitlines()) == 2
 
 
 def test_grep_preserves_literal_matching_and_case_sensitivity(tmp_path: Path) -> None:
-    (tmp_path / "x.py").write_text("ExecutorService\nexecutorservice\n", encoding="utf-8"); output, data = grep(tmp_path, {"path": ".", "query": "ExecutorService", "case_sensitive": True, "max_results": 10}, max_bytes=64_000)
+    (tmp_path / "x.py").write_text("ExecutorService\nexecutorservice\n", encoding="utf-8"); output, data = grep(tmp_path, {"path": ".", "query": "ExecutorService", "case_sensitive": True, "max_results": 10}, max_scan_bytes=64_000, max_output_bytes=64_000)
     assert output.startswith("x.py:1:ExecutorService"); assert data["matches_returned"] == 1
 
 
@@ -123,7 +123,7 @@ def test_edit_preserves_shrink_detection_for_large_targets(tmp_path: Path) -> No
 
 def test_search_reports_oversized_files_without_claiming_complete_scan(tmp_path: Path) -> None:
     (tmp_path / "large.txt").write_text("needle\n" * 100_000, encoding="utf-8"); (tmp_path / "small.txt").write_text("needle\n", encoding="utf-8")
-    output, data = grep(tmp_path, {"path": ".", "query": "needle", "max_results": 10}, max_bytes=100_000, max_results=10)
+    output, data = grep(tmp_path, {"path": ".", "query": "needle", "max_results": 10}, max_scan_bytes=100_000, max_output_bytes=100_000, max_results=10)
     assert "small.txt:1:needle" in output; assert data["files_skipped_too_large"] == 1; assert data["scan_scope_complete"] is False
 
 

@@ -36,6 +36,7 @@ class ExecutorConfig:
     max_find_results: int = 500
     max_ls_results: int = 500
     max_grep_scan_bytes: int = 64_000_000
+    max_grep_output_bytes: int = 1_000_000
     max_search_seconds: int = 30
     work_capacity_bytes: int = 8_000_000_000
 
@@ -56,6 +57,7 @@ class ExecutorConfig:
         "max_find_results": 2_000,
         "max_ls_results": 2_000,
         "max_grep_scan_bytes": 256_000_000,
+        "max_grep_output_bytes": 4_000_000,
         "max_search_seconds": 300,
         "work_capacity_bytes": 8_000_000_000,
     }
@@ -145,6 +147,7 @@ class ExecutorConfig:
             "max_find_results": 500,
             "max_ls_results": 500,
             "max_grep_scan_bytes": 64_000_000,
+            "max_grep_output_bytes": 1_000_000,
             "max_search_seconds": 30,
             "work_capacity_bytes": 8_000_000_000,
         }
@@ -164,6 +167,7 @@ class ExecutorConfig:
                 "max_find_results": 250,
                 "max_ls_results": 250,
                 "max_grep_scan_bytes": 16_000_000,
+                "max_grep_output_bytes": 256_000,
             },
             "coding": base,
             "large-workspace": {
@@ -181,6 +185,7 @@ class ExecutorConfig:
                 "max_find_results": 1_000,
                 "max_ls_results": 1_000,
                 "max_grep_scan_bytes": 128_000_000,
+                "max_grep_output_bytes": 2_000_000,
             },
         }
 
