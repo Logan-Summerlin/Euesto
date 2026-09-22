@@ -7,7 +7,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..errors import ExecutorToolError
+from ..errors import EDIT_MALFORMED_CONTEXT, EDIT_NO_MATCH, EDIT_TOO_FEW_MATCHES, EDIT_TOO_MANY_MATCHES, INVALID_ARGUMENTS, INVALID_UTF8, LIMIT_EXCEEDED, PATH_INVALID_TYPE, STAGING_CONFLICT, ExecutorToolError
 from ..mutations import bounded_diff, bounded_edit_diff, create_mutation_checkpoint, guard_shrink, rollback_mutation, sha256
 from ..paths import safe_path
 
@@ -39,7 +39,7 @@ class AppliedEdit:
 
 
 def edit(root: Path, arguments: dict, *, max_target_bytes: int, max_result_bytes: int, max_checkpoint_files: int = 300_000, max_checkpoint_bytes: int = 2_000_000_000) -> tuple[str, dict]:
-    if set(arguments) - EDIT_ARGUMENTS: raise ValueError("Unknown edit arguments")
+    if set(arguments) - EDIT_ARGUMENTS: raise ExecutorToolError(INVALID_ARGUMENTS, "Unknown edit arguments")
     prepared = prepare_edit(root, arguments, max_target_bytes=max_target_bytes)
     checkpoint_id = create_mutation_checkpoint(root, max_files=max_checkpoint_files, max_total_bytes=max_checkpoint_bytes)
     try:
@@ -57,22 +57,22 @@ def edit(root: Path, arguments: dict, *, max_target_bytes: int, max_result_bytes
 def prepare_edit(root: Path, arguments: dict, *, max_target_bytes: int) -> PreparedEdit:
     """Validate one exact edit against the current staged state without changing anything."""
     relative = arguments.get("path"); old = arguments.get("old_str"); new = arguments.get("new_str"); expected_occurrences = arguments.get("expected_occurrences", 1)
-    if not isinstance(relative, str) or not relative: raise ValueError("edit requires a file path")
+    if not isinstance(relative, str) or not relative: raise ExecutorToolError(INVALID_ARGUMENTS, "edit requires a file path")
     if not isinstance(old, str) or not old or not isinstance(new, str) or "\x00" in old or "\x00" in new:
-        raise ExecutorToolError("edit.malformed_context", "edit requires a non-empty old_str and a new_str without NUL characters", details={"failure": "malformed_context", "path": relative})
+        raise ExecutorToolError(EDIT_MALFORMED_CONTEXT, "edit requires a non-empty old_str and a new_str without NUL characters", details={"failure": "malformed_context", "path": relative})
     if not isinstance(expected_occurrences, int) or isinstance(expected_occurrences, bool) or not 1 <= expected_occurrences <= 1000:
-        raise ExecutorToolError("edit.malformed_context", "expected_occurrences must be an integer from 1 to 1000", details={"failure": "malformed_context", "path": relative})
+        raise ExecutorToolError(EDIT_MALFORMED_CONTEXT, "expected_occurrences must be an integer from 1 to 1000", details={"failure": "malformed_context", "path": relative})
     path = safe_path(root, relative, must_exist=True)
-    if path.is_symlink() or not path.is_file() or path.stat().st_nlink > 1: raise ValueError("edit target must be a regular, non-hard-linked file")
+    if path.is_symlink() or not path.is_file() or path.stat().st_nlink > 1: raise ExecutorToolError(PATH_INVALID_TYPE, "edit target must be a regular, non-hard-linked file")
     target_size = path.stat().st_size
-    if target_size > max_target_bytes: raise ValueError("Edit target exceeds the mutation limit")
+    if target_size > max_target_bytes: raise ExecutorToolError(LIMIT_EXCEEDED, "Edit target exceeds the mutation limit")
     original_small = path.read_text(encoding="utf-8") if target_size <= EDIT_DIFF_MEMORY_BYTES else None
     old_hash = sha256(path)
     expected = arguments.get("expected_sha256")
     if expected is not None:
-        if not isinstance(expected, str): raise ValueError("expected_sha256 must be a string when supplied")
+        if not isinstance(expected, str): raise ExecutorToolError(INVALID_ARGUMENTS, "expected_sha256 must be a string when supplied")
         if old_hash != expected:
-            raise ExecutorToolError("staging.conflict", f"Staging hash conflict: {relative}", retryable=True, details={"failure": "hash_conflict", "path": relative, "expected_sha256": expected, "actual_sha256": old_hash})
+            raise ExecutorToolError(STAGING_CONFLICT, f"Staging hash conflict: {relative}", retryable=True, details={"failure": "hash_conflict", "path": relative, "expected_sha256": expected, "actual_sha256": old_hash})
     return PreparedEdit(relative, path, old, new, expected_occurrences, old_hash, original_small)
 
 
@@ -101,7 +101,7 @@ def apply_edit(prepared: PreparedEdit, *, max_result_bytes: int) -> AppliedEdit:
         if actual != prepared.expected_occurrences:
             raise _match_error(prepared, actual, old, adjustment)
         shrink_warning = guard_shrink(prepared.relative, path, None, replacement_old=old, replacement_new=new, replacement_occurrences=actual, advisory=True)
-        if result_size > max_result_bytes: raise ValueError("Edited content exceeds the mutation limit")
+        if result_size > max_result_bytes: raise ExecutorToolError(LIMIT_EXCEEDED, "Edited content exceeds the mutation limit")
         os.replace(temp_path, path)
     except BaseException:
         temp_path.unlink(missing_ok=True); raise
@@ -132,11 +132,11 @@ def _line_ending_variant(old: str, new: str) -> tuple[str, str, str] | None:
 def _match_error(prepared: PreparedEdit, actual: int, matched_old: str, adjustment: str | None) -> ExecutorToolError:
     expected = prepared.expected_occurrences
     if actual == 0:
-        code, failure = "edit.no_match", "zero_matches"
+        code, failure = EDIT_NO_MATCH, "zero_matches"
     elif actual > expected:
-        code, failure = "edit.too_many_matches", "too_many_matches"
+        code, failure = EDIT_TOO_MANY_MATCHES, "too_many_matches"
     else:
-        code, failure = "edit.too_few_matches", "too_few_matches"
+        code, failure = EDIT_TOO_FEW_MATCHES, "too_few_matches"
     details: dict[str, object] = {"failure": failure, "path": prepared.relative, "expected_occurrences": expected, "actual_occurrences": actual, "line_ending_adjustment": adjustment}
     hint = ""
     if prepared.original_small is not None:
@@ -202,24 +202,24 @@ def _stream_replace(path: Path, old: bytes, new: bytes, max_result_bytes: int) -
                 while True:
                     chunk = source.read(EDIT_CHUNK_BYTES)
                     if not chunk: break
-                    if b"\x00" in chunk: raise ValueError("Only UTF-8 text edits are supported")
+                    if b"\x00" in chunk: raise ExecutorToolError(INVALID_UTF8, "Only UTF-8 text edits are supported")
                     try: decoder.decode(chunk)
-                    except UnicodeDecodeError as exc: raise ValueError("Only UTF-8 text edits are supported") from exc
+                    except UnicodeDecodeError as exc: raise ExecutorToolError(INVALID_UTF8, "Only UTF-8 text edits are supported") from exc
                     pending += chunk
                     while True:
                         index = pending.find(old)
                         if index < 0: break
                         prefix = pending[:index]; replaced = prefix + new; result_size += len(replaced)
-                        if result_size > max_result_bytes: raise ValueError("Edited content exceeds the mutation limit")
+                        if result_size > max_result_bytes: raise ExecutorToolError(LIMIT_EXCEEDED, "Edited content exceeds the mutation limit")
                         output.write(replaced); pending = pending[index + len(old):]; count += 1
                     if len(pending) > keep:
                         prefix = pending[:-keep]; result_size += len(prefix)
-                        if result_size > max_result_bytes: raise ValueError("Edited content exceeds the mutation limit")
+                        if result_size > max_result_bytes: raise ExecutorToolError(LIMIT_EXCEEDED, "Edited content exceeds the mutation limit")
                         output.write(prefix); pending = pending[-keep:]
             try: decoder.decode(b"", final=True)
-            except UnicodeDecodeError as exc: raise ValueError("Only UTF-8 text edits are supported") from exc
+            except UnicodeDecodeError as exc: raise ExecutorToolError(INVALID_UTF8, "Only UTF-8 text edits are supported") from exc
             replaced = pending.replace(old, new); count += pending.count(old); result_size += len(replaced)
-            if result_size > max_result_bytes: raise ValueError("Edited content exceeds the mutation limit")
+            if result_size > max_result_bytes: raise ExecutorToolError(LIMIT_EXCEEDED, "Edited content exceeds the mutation limit")
             output.write(replaced)
         return temp_path, count, result_size
     except BaseException:

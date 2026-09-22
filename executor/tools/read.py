@@ -4,6 +4,7 @@ import codecs
 import hashlib
 from pathlib import Path
 
+from ..errors import INVALID_ARGUMENTS, INVALID_UTF8, PATH_INVALID_TYPE, PATH_MISSING, ExecutorToolError
 from ..paths import is_tool_excluded, normalize_relative, safe_path
 
 DEFAULT_READ_BYTES = 64_000
@@ -14,48 +15,48 @@ READ_CHUNK_BYTES = 64 * 1024
 def read(root: Path, arguments: dict, *, max_bytes: int) -> tuple[str, dict]:
     allowed = {"path", "start_line", "end_line", "offset", "max_bytes"}
     if set(arguments) - allowed:
-        raise ValueError("Unknown read arguments")
+        raise ExecutorToolError(INVALID_ARGUMENTS, "Unknown read arguments")
     relative = arguments.get("path")
     if not isinstance(relative, str) or not relative:
-        raise ValueError("read requires a file path")
+        raise ExecutorToolError(INVALID_ARGUMENTS, "read requires a file path")
     requested = arguments.get("max_bytes", DEFAULT_READ_BYTES)
     if not isinstance(requested, int) or isinstance(requested, bool) or requested < 1:
-        raise ValueError("max_bytes must be a positive integer")
+        raise ExecutorToolError(INVALID_ARGUMENTS, "max_bytes must be a positive integer")
     byte_limit = min(max_bytes, MAX_READ_BYTES, requested)
     # Paths hidden from find/grep/ls (VCS metadata, dependency/cache directories, executor
     # metadata) are equally invisible to read, whether Plan reads the source mount or Agent
     # reads staging.
     if is_tool_excluded(normalize_relative(relative)):
-        raise ValueError(f"file not found: {relative}")
+        raise ExecutorToolError(PATH_MISSING, f"file not found: {relative}")
     try:
         path = safe_path(root, relative, must_exist=True)
     except FileNotFoundError as exc:
-        raise ValueError(f"file not found: {relative}") from exc
+        raise ExecutorToolError(PATH_MISSING, f"file not found: {relative}") from exc
     if path.is_symlink() or not path.is_file():
-        raise ValueError("read requires a regular file")
+        raise ExecutorToolError(PATH_INVALID_TYPE, "read requires a regular file")
     stat = path.stat()
     if stat.st_nlink > 1:
-        raise ValueError("read rejects hard-linked files")
+        raise ExecutorToolError(PATH_INVALID_TYPE, "read rejects hard-linked files")
     size_bytes = stat.st_size
     _validate_text_file(path)
 
     has_range = "start_line" in arguments or "end_line" in arguments
     has_offset = "offset" in arguments
     if has_range and has_offset:
-        raise ValueError("read cannot combine line ranges with byte offsets")
+        raise ExecutorToolError(INVALID_ARGUMENTS, "read cannot combine line ranges with byte offsets")
 
     start_line = arguments.get("start_line", 1)
     end_line = arguments.get("end_line")
     if not isinstance(start_line, int) or isinstance(start_line, bool):
-        raise ValueError("start_line and end_line must be integers")
+        raise ExecutorToolError(INVALID_ARGUMENTS, "start_line and end_line must be integers")
     if end_line is not None and (not isinstance(end_line, int) or isinstance(end_line, bool)):
-        raise ValueError("start_line and end_line must be integers")
+        raise ExecutorToolError(INVALID_ARGUMENTS, "start_line and end_line must be integers")
     start_line = max(1, start_line)
 
     if has_range:
         line_count, start_offset, end_offset = _line_range_offsets(path, start_line, end_line)
         if start_line < 1 or start_line > line_count or (end_line is not None and end_line < start_line):
-            raise ValueError(
+            raise ExecutorToolError(INVALID_ARGUMENTS, 
                 f"line range is outside file: start_line={start_line}, end_line={end_line or line_count}, line_count={line_count}"
             )
         requested_end = end_line or line_count
@@ -84,15 +85,15 @@ def read(root: Path, arguments: dict, *, max_bytes: int) -> tuple[str, dict]:
 
     offset = arguments.get("offset", 0)
     if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
-        raise ValueError("offset must be a non-negative integer")
+        raise ExecutorToolError(INVALID_ARGUMENTS, "offset must be a non-negative integer")
     if offset > size_bytes:
-        raise ValueError(f"offset is outside file: offset={offset}, size_bytes={size_bytes}")
+        raise ExecutorToolError(INVALID_ARGUMENTS, f"offset is outside file: offset={offset}, size_bytes={size_bytes}")
     if offset < size_bytes:
         with path.open("rb") as handle:
             handle.seek(offset)
             first = handle.read(1)
         if first and 0x80 <= first[0] <= 0xBF:
-            raise ValueError("offset must be at a UTF-8 character boundary")
+            raise ExecutorToolError(INVALID_ARGUMENTS, "offset must be at a UTF-8 character boundary")
     raw = _read_bounded(path, offset, byte_limit)
     text, consumed_bytes = _decode_bounded(raw)
     next_offset = offset + consumed_bytes
@@ -115,15 +116,15 @@ def _validate_text_file(path: Path) -> None:
             if not chunk:
                 break
             if b"\x00" in chunk:
-                raise ValueError("Binary files are not model-readable")
+                raise ExecutorToolError(INVALID_UTF8, "Binary files are not model-readable")
             try:
                 decoder.decode(chunk)
             except UnicodeDecodeError as exc:
-                raise ValueError("File is not valid UTF-8 text") from exc
+                raise ExecutorToolError(INVALID_UTF8, "File is not valid UTF-8 text") from exc
     try:
         decoder.decode(b"", final=True)
     except UnicodeDecodeError as exc:
-        raise ValueError("File is not valid UTF-8 text") from exc
+        raise ExecutorToolError(INVALID_UTF8, "File is not valid UTF-8 text") from exc
 
 
 def _line_range_offsets(path: Path, start_line: int, end_line: int | None) -> tuple[int, int, int]:
@@ -167,7 +168,7 @@ def _decode_bounded(raw: bytes) -> tuple[str, int]:
             if exc.reason == "unexpected end of data" and exc.end == len(candidate):
                 candidate = candidate[:exc.start]
                 continue
-            raise ValueError("File is not valid UTF-8 text") from exc
+            raise ExecutorToolError(INVALID_UTF8, "File is not valid UTF-8 text") from exc
     return "", 0
 
 

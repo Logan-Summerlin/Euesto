@@ -5,7 +5,7 @@ import hashlib
 from pathlib import Path
 
 from .checkpoints import create_checkpoint, restore_checkpoint
-from .errors import ExecutorToolError
+from .errors import STAGING_SHRINK_WARNING, ExecutorToolError
 
 MAX_DIFF_LINES = 200
 MAX_DIFF_BYTES = 24_000
@@ -49,7 +49,7 @@ def guard_shrink(relative: str, path: Path, content: str | None, *, replacement_
         return None
     message = f"Whole-file edit for {relative} would shrink the file from {old_bytes} to {new_bytes} bytes and from {old_lines} to {new_lines} lines"
     if not advisory:
-        raise ExecutorToolError("staging.shrink_warning", f"{message}; review the full replacement before retrying, or pass the current expected_sha256 to confirm a deliberate rewrite.", details={"failure": "shrink_guard", "path": relative, "old_bytes": old_bytes, "new_bytes": new_bytes, "old_lines": old_lines, "new_lines": new_lines})
+        raise ExecutorToolError(STAGING_SHRINK_WARNING, f"{message}; review the full replacement before retrying, or pass the current expected_sha256 to confirm a deliberate rewrite.", details={"failure": "shrink_guard", "path": relative, "old_bytes": old_bytes, "new_bytes": new_bytes, "old_lines": old_lines, "new_lines": new_lines})
     return {"path": relative, "old_bytes": old_bytes, "new_bytes": new_bytes, "old_lines": old_lines, "new_lines": new_lines, "message": f"{message}; applied because the change was confirmed."}
 
 

@@ -8,7 +8,7 @@ import hashlib
 from pathlib import Path
 
 from shared.tools import PUBLISH_BATCH_MAX_BYTES, PUBLISH_BATCH_MAX_OPERATIONS
-from ..errors import ExecutorToolError
+from ..errors import INVALID_ARGUMENTS, PATH_INVALID, PATH_MISSING, ExecutorToolError
 from ..paths import UnsafePath, is_tool_excluded, normalize_relative
 from ..staging import Snapshot, WorkspaceChange, publication_batches, workspace_changes
 
@@ -30,13 +30,13 @@ def status(work_root: Path, source_root: Path, snapshot: Snapshot, arguments: di
     paths never appear because ``workspace_changes`` only sees publishable files.
     """
     if set(arguments) - STATUS_ARGUMENTS:
-        raise ValueError("Unknown status arguments")
+        raise ExecutorToolError(INVALID_ARGUMENTS, "Unknown status arguments")
     requested = arguments.get("max_results", DEFAULT_STATUS_RESULTS)
     if not isinstance(requested, int) or isinstance(requested, bool) or not 1 <= requested <= MAX_STATUS_RESULTS:
-        raise ValueError(f"max_results must be an integer from 1 to {MAX_STATUS_RESULTS}")
+        raise ExecutorToolError(INVALID_ARGUMENTS, f"max_results must be an integer from 1 to {MAX_STATUS_RESULTS}")
     include_diffs = arguments.get("include_diffs", False)
     if not isinstance(include_diffs, bool):
-        raise ValueError("include_diffs must be a boolean")
+        raise ExecutorToolError(INVALID_ARGUMENTS, "include_diffs must be a boolean")
     scopes = _scopes(arguments.get("paths"))
     cursor = _decode_cursor(arguments.get("cursor"))
 
@@ -91,15 +91,15 @@ def _scopes(value: object) -> list[str] | None:
     if value is None:
         return None
     if not isinstance(value, list) or not 1 <= len(value) <= MAX_STATUS_PATHS or not all(isinstance(item, str) and item for item in value):
-        raise ValueError(f"paths must be a list of 1 to {MAX_STATUS_PATHS} relative paths")
+        raise ExecutorToolError(INVALID_ARGUMENTS, f"paths must be a list of 1 to {MAX_STATUS_PATHS} relative paths")
     scopes: list[str] = []
     for item in value:
         try:
             normalized = normalize_relative(item)
         except UnsafePath as exc:
-            raise ExecutorToolError("path.invalid", f"Invalid status path {item!r}: {exc}") from exc
+            raise ExecutorToolError(PATH_INVALID, f"Invalid status path {item!r}: {exc}") from exc
         if normalized != "." and is_tool_excluded(normalized):
-            raise ValueError(f"file not found: {item}")
+            raise ExecutorToolError(PATH_MISSING, f"file not found: {item}")
         scopes.append(normalized)
     return None if "." in scopes else list(dict.fromkeys(scopes))
 
@@ -254,7 +254,7 @@ def _decode_cursor(value: object) -> int:
         padding = "=" * (-len(str(value)) % 4)
         parsed = int(base64.urlsafe_b64decode(str(value) + padding).decode())
     except (ValueError, UnicodeError, base64.binascii.Error):
-        raise ValueError("Invalid status result cursor") from None
+        raise ExecutorToolError(INVALID_ARGUMENTS, "Invalid status result cursor") from None
     if parsed < 0 or parsed > MAX_CURSOR_OFFSET:
-        raise ValueError("Status result cursor is outside the bounded pagination range")
+        raise ExecutorToolError(INVALID_ARGUMENTS, "Status result cursor is outside the bounded pagination range")
     return parsed

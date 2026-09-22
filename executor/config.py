@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
 
+from .errors import INVALID_ARGUMENTS, ExecutorToolError
+
 
 @dataclass(frozen=True, slots=True)
 class ExecutorConfig:
@@ -206,7 +208,7 @@ class ExecutorConfig:
         if requested is None:
             return configured
         if not isinstance(requested, int) or isinstance(requested, bool) or requested < 1:
-            raise ValueError(f"{name} requested limit must be a positive integer")
+            raise ExecutorToolError(INVALID_ARGUMENTS, f"{name} requested limit must be a positive integer")
         return min(requested, configured, self.HARD_CEILINGS[name])
 
     def limit_status(self, name: str, requested: int | None = None) -> dict[str, object]:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..errors import ExecutorToolError, classify_error
+from ..errors import INVALID_ARGUMENTS, LIMIT_EXCEEDED, PATCH_MALFORMED, PATH_INVALID_TYPE, PATH_MISSING, STAGING_CONFLICT, ExecutorToolError, classify_error
 from ..mutations import create_mutation_checkpoint, rollback_mutation, sha256
 from ..paths import normalize_relative, safe_path
 from .edit import EDIT_ARGUMENTS, apply_edit, edit_result, prepare_edit
@@ -46,15 +46,15 @@ def patch(
     fails, raises, or is interrupted.
     """
     if set(arguments) - {"operations"}:
-        raise ValueError("Unknown patch arguments")
+        raise ExecutorToolError(INVALID_ARGUMENTS, "Unknown patch arguments")
     operations = arguments.get("operations")
     if not isinstance(operations, list) or not operations:
         raise _malformed("patch requires a non-empty operations array")
     if len(operations) > max_operations:
-        raise ExecutorToolError("limit.exceeded", f"patch accepts at most {max_operations} operations; split the change into smaller patches", details={"failure": "too_many_operations", "operations": len(operations), "max_patch_operations": max_operations})
+        raise ExecutorToolError(LIMIT_EXCEEDED, f"patch accepts at most {max_operations} operations; split the change into smaller patches", details={"failure": "too_many_operations", "operations": len(operations), "max_patch_operations": max_operations})
     payload = patch_payload_bytes(operations)
     if payload > max_patch_bytes:
-        raise ExecutorToolError("limit.exceeded", f"patch content totals {payload} bytes, above the {max_patch_bytes}-byte patch limit", details={"failure": "patch_too_large", "payload_bytes": payload, "max_patch_bytes": max_patch_bytes})
+        raise ExecutorToolError(LIMIT_EXCEEDED, f"patch content totals {payload} bytes, above the {max_patch_bytes}-byte patch limit", details={"failure": "patch_too_large", "payload_bytes": payload, "max_patch_bytes": max_patch_bytes})
     for index, item in enumerate(operations):
         _validate_shape(index, item)
 
@@ -141,16 +141,16 @@ def _delete(root: Path, arguments: dict) -> dict:
     try:
         path = safe_path(root, relative, must_exist=True)
     except FileNotFoundError as exc:
-        raise ValueError(f"delete target not found: {relative}") from exc
+        raise ExecutorToolError(PATH_MISSING, f"delete target not found: {relative}") from exc
     if path.is_symlink() or not path.is_file() or path.stat().st_nlink > 1:
-        raise ValueError("delete target must be a regular, non-hard-linked file")
+        raise ExecutorToolError(PATH_INVALID_TYPE, "delete target must be a regular, non-hard-linked file")
     old_hash = sha256(path)
     expected = arguments.get("expected_sha256")
     if expected is not None:
         if not isinstance(expected, str):
-            raise ValueError("expected_sha256 must be a string when supplied")
+            raise ExecutorToolError(INVALID_ARGUMENTS, "expected_sha256 must be a string when supplied")
         if expected != old_hash:
-            raise ExecutorToolError("staging.conflict", f"Staging hash conflict: {relative}", retryable=True, details={"failure": "hash_conflict", "path": relative, "expected_sha256": expected, "actual_sha256": old_hash})
+            raise ExecutorToolError(STAGING_CONFLICT, f"Staging hash conflict: {relative}", retryable=True, details={"failure": "hash_conflict", "path": relative, "expected_sha256": expected, "actual_sha256": old_hash})
     size = path.stat().st_size
     path.unlink()
     return {"operation": "delete", "path": relative, "old_sha256": old_hash, "new_sha256": None, "size_bytes": 0, "deleted_bytes": size, "diff": {"path": relative, "text": f"{relative}: deleted ({size} bytes).", "truncated": False, "lines": 0, "changed_lines": 0, "added_lines": 0, "removed_lines": 0}}
@@ -177,4 +177,4 @@ def _malformed(message: str, index: int | None = None) -> ExecutorToolError:
     details: dict[str, object] = {"failure": "malformed_patch"}
     if index is not None:
         details["failed_operation"] = index
-    return ExecutorToolError("patch.malformed", message, details=details)
+    return ExecutorToolError(PATCH_MALFORMED, message, details=details)

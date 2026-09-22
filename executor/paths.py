@@ -6,6 +6,8 @@ import stat
 import unicodedata
 from pathlib import Path, PurePosixPath
 
+from .errors import PATH_UNSAFE, ExecutorToolError
+
 RESERVED = frozenset({"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))})
 SECRET_PARTS = frozenset({".env", ".aws", ".azure", ".ssh", ".gnupg", ".npmrc", ".pypirc", "credentials", "id_rsa", "id_ed25519"})
 # Matched against every path segment, so only names that are unambiguously metadata,
@@ -29,8 +31,11 @@ STAGING_EXCLUDED_PARTS = frozenset({
 })
 
 
-class UnsafePath(ValueError):
-    pass
+class UnsafePath(ExecutorToolError):
+    """A path rejected by workspace containment rules; always reported as ``path.unsafe``."""
+
+    def __init__(self, message: str) -> None:
+        ExecutorToolError.__init__(self, PATH_UNSAFE, message)
 
 
 def is_secret_path(value: str) -> bool:

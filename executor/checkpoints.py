@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 
 from .config import ExecutorConfig
+from .errors import CHECKPOINT_CORRUPT, CHECKPOINT_NOT_FOUND, INVALID_ARGUMENTS, LIMIT_EXCEEDED, PATH_UNSAFE, ExecutorToolError
 from .paths import safe_path
 from .staging import visible_files
 
@@ -21,8 +22,8 @@ DEFAULT_MAX_CHECKPOINT_BYTES = 2_500_000_000
 _CHECKPOINT_ID = re.compile(r"^[0-9a-f-]{20,64}$")
 
 
-class CheckpointError(ValueError):
-    pass
+class CheckpointError(ExecutorToolError):
+    """A checkpoint failure; the raise site names its code like any executor rejection."""
 
 
 def create_checkpoint(
@@ -36,17 +37,18 @@ def create_checkpoint(
     files = visible_files(work_root)
     total = sum(size for _digest, size, _mode in files.values())
     if len(files) > max_files or total > max_total_bytes:
-        raise CheckpointError("Staging is too large for a bounded recovery checkpoint.")
+        raise CheckpointError(LIMIT_EXCEEDED, "Staging is too large for a bounded recovery checkpoint.")
     actual_capacity = shutil.disk_usage(work_root).total
     required_capacity = total + max_total_bytes + ExecutorConfig.REQUIRED_TEMP_HEADROOM_BYTES
     if actual_capacity <= required_capacity:
         raise CheckpointError(
+            LIMIT_EXCEEDED,
             "Checkpoint would exceed the combined /work resource budget: "
             f"staging={total}, checkpoint={max_total_bytes}, "
             f"temporary={ExecutorConfig.REQUIRED_TEMP_HEADROOM_BYTES}, capacity={actual_capacity}."
         )
     if max_storage_bytes < max_total_bytes:
-        raise CheckpointError("Checkpoint storage budget must cover one complete checkpoint.")
+        raise CheckpointError(LIMIT_EXCEEDED, "Checkpoint storage budget must cover one complete checkpoint.")
 
     root = work_root / ".local-chat-checkpoints"
     objects = root / "objects"
@@ -149,7 +151,7 @@ def inspect_checkpoint(
     }
     if diff_paths is not None:
         if not 1 <= len(diff_paths) <= 20:
-            raise CheckpointError("Checkpoint diffs require 1-20 explicit paths.")
+            raise CheckpointError(INVALID_ARGUMENTS, "Checkpoint diffs require 1-20 explicit paths.")
         diffs, truncated = _checkpoint_diffs(
             work_root,
             values,
@@ -184,7 +186,7 @@ def _checkpoint_diffs(
                 digest = str(raw_metadata.get("sha256") or "")
                 object_path = objects / digest
                 if not object_path.is_file() or _sha256(object_path) != digest:
-                    raise CheckpointError("Checkpoint content is missing or corrupt.")
+                    raise CheckpointError(CHECKPOINT_CORRUPT, "Checkpoint content is missing or corrupt.")
                 checkpoint_text = object_path.read_text(encoding="utf-8")
             current_text = current_path.read_text(encoding="utf-8") if current_path.is_file() else ""
         except UnicodeError:
@@ -231,11 +233,11 @@ def restore_checkpoint(
     manifest = _load_manifest(work_root, checkpoint_id)
     raw_files = manifest.get("files")
     if not isinstance(raw_files, dict) or len(raw_files) > max_files:
-        raise CheckpointError("Checkpoint file count exceeds the executor limit.")
+        raise CheckpointError(LIMIT_EXCEEDED, "Checkpoint file count exceeds the executor limit.")
     expected: dict[str, tuple[str, int, int | None]] = {}
     for relative, value in raw_files.items():
         if not isinstance(relative, str) or not isinstance(value, dict):
-            raise CheckpointError("Checkpoint manifest is invalid.")
+            raise CheckpointError(CHECKPOINT_CORRUPT, "Checkpoint manifest is invalid.")
         digest = str(value.get("sha256") or "")
         size = max(0, int(value.get("size_bytes") or 0))
         mode = int(value["mode"]) if value.get("mode") is not None else None
@@ -243,7 +245,7 @@ def restore_checkpoint(
         expected[relative] = (digest, size, mode)
     total = sum(size for _digest, size, _mode in expected.values())
     if total > max_total_bytes:
-        raise CheckpointError("Checkpoint size exceeds the executor limit.")
+        raise CheckpointError(LIMIT_EXCEEDED, "Checkpoint size exceeds the executor limit.")
     current = visible_files(work_root)
     changed = sorted(set(current) | set(expected), key=str.casefold)
     changed = [
@@ -269,14 +271,14 @@ def restore_checkpoint(
         digest, _size, mode = expected[relative]
         object_path = objects / digest
         if not object_path.is_file() or _sha256(object_path) != digest:
-            raise CheckpointError("Checkpoint content is missing or corrupt.")
+            raise CheckpointError(CHECKPOINT_CORRUPT, "Checkpoint content is missing or corrupt.")
         prepared[relative] = (object_path.read_bytes(), mode)
     for relative in changed:
         target = safe_path(work_root, relative, must_exist=False)
         if relative not in expected:
             if target.exists():
                 if target.is_symlink() or not target.is_file():
-                    raise CheckpointError("Checkpoint restore target is unsafe.")
+                    raise CheckpointError(PATH_UNSAFE, "Checkpoint restore target is unsafe.")
                 target.unlink()
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -306,14 +308,14 @@ def discard_staging(config: object) -> object:
 
 def _load_manifest(work_root: Path, checkpoint_id: str) -> dict[str, object]:
     if not isinstance(checkpoint_id, str) or not _CHECKPOINT_ID.fullmatch(checkpoint_id):
-        raise CheckpointError("Invalid checkpoint identity.")
+        raise CheckpointError(INVALID_ARGUMENTS, "Invalid checkpoint identity.")
     path = work_root / ".local-chat-checkpoints" / checkpoint_id / "manifest.json"
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise CheckpointError("Checkpoint was not found or is invalid.") from exc
+        raise CheckpointError(CHECKPOINT_NOT_FOUND, "Checkpoint was not found or is invalid.") from exc
     if not isinstance(value, dict) or value.get("checkpoint_id") != checkpoint_id:
-        raise CheckpointError("Checkpoint manifest identity is invalid.")
+        raise CheckpointError(CHECKPOINT_CORRUPT, "Checkpoint manifest identity is invalid.")
     return value
 
 
@@ -353,7 +355,7 @@ def _prune(root: Path, current_id: str, max_count: int, max_storage_bytes: int) 
             return
         removable = [path for path in kept_directories if path.name != current_id]
         if not removable:
-            raise CheckpointError("Checkpoint storage budget is exhausted by the current checkpoint set.")
+            raise CheckpointError(LIMIT_EXCEEDED, "Checkpoint storage budget is exhausted by the current checkpoint set.")
         oldest = min(removable, key=lambda path: path.stat().st_mtime)
         shutil.rmtree(oldest, ignore_errors=True)
         with _cache_lock:
@@ -404,7 +406,7 @@ def _store_object(source: Path, object_path: Path, digest: str) -> None:
                 hasher.update(chunk)
                 writer.write(chunk)
         if hasher.hexdigest() != digest:
-            raise CheckpointError("Checkpoint content verification failed.")
+            raise CheckpointError(CHECKPOINT_CORRUPT, "Checkpoint content verification failed.")
         os.replace(temporary, object_path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -444,4 +446,4 @@ def _decode_index(value: object) -> int:
         padding = "=" * (-len(str(value)) % 4)
         return max(0, int(base64.urlsafe_b64decode(str(value) + padding).decode()))
     except (ValueError, UnicodeError, base64.binascii.Error):
-        raise CheckpointError("Invalid checkpoint result cursor") from None
+        raise CheckpointError(INVALID_ARGUMENTS, "Invalid checkpoint result cursor") from None

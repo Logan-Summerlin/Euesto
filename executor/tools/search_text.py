@@ -7,16 +7,17 @@ import re
 import time
 from pathlib import Path
 
+from ..errors import INVALID_ARGUMENTS, ExecutorToolError
 from ..paths import is_tool_excluded, safe_path
 
 
 def search_text(root: Path, arguments: dict, *, max_bytes: int, max_results: int = 500, max_seconds: float = 30.0) -> tuple[str, dict]:
     scope = safe_path(root, str(arguments.get("path") or "."), must_exist=True)
     query = str(arguments.get("query") or "")
-    if not query or len(query) > 1000: raise ValueError("A bounded search query is required")
+    if not query or len(query) > 1000: raise ExecutorToolError(INVALID_ARGUMENTS, "A bounded search query is required")
     limit = min(max_results, max(1, int(arguments.get("max_results") or max_results))); flags = 0 if arguments.get("case_sensitive") else re.IGNORECASE
     try: pattern = re.compile(query if arguments.get("regex") else re.escape(query), flags)
-    except re.error as exc: raise ValueError(f"Invalid search regex: {exc}") from exc
+    except re.error as exc: raise ExecutorToolError(INVALID_ARGUMENTS, f"Invalid search regex: {exc}") from exc
     include = str(arguments.get("include_glob") or "*"); exclude = str(arguments.get("exclude_glob") or "")
     files = _iter_files(root, scope); started = time.monotonic(); cumulative_bytes = 0; matches: list[dict[str, object]] = []; files_considered = files_searched = skipped_large = 0; truncated = False; truncation_reason = None
     context_lines = min(5, max(0, int(arguments.get("context_lines") or 0))); include_metadata = bool(arguments.get("include_metadata")); skipped_matches = _decode_cursor(arguments.get("cursor")); seen_matches = 0
@@ -70,4 +71,4 @@ def _decode_cursor(value: object) -> int:
     if not value: return 0
     try:
         padding = "=" * (-len(str(value)) % 4); return max(0, int(base64.urlsafe_b64decode(str(value) + padding).decode()))
-    except (ValueError, UnicodeError, base64.binascii.Error): raise ValueError("Invalid search result cursor") from None
+    except (ValueError, UnicodeError, base64.binascii.Error): raise ExecutorToolError(INVALID_ARGUMENTS, "Invalid search result cursor") from None

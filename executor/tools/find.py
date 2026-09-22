@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Iterator
 
+from ..errors import INVALID_ARGUMENTS, PATH_INVALID_TYPE, ExecutorToolError
 from ..paths import is_tool_excluded, safe_path
 
 MAX_CURSOR_OFFSET = 100_000
@@ -14,16 +15,16 @@ DEFAULT_FIND_RESULTS = 500
 
 def find(root: Path, arguments: dict, *, max_results: int = DEFAULT_FIND_RESULTS, max_seconds: float = 30.0) -> tuple[str, dict]:
     allowed = {"path", "glob", "max_depth", "max_results", "details", "cursor"}
-    if set(arguments) - allowed: raise ValueError("Unknown find arguments")
+    if set(arguments) - allowed: raise ExecutorToolError(INVALID_ARGUMENTS, "Unknown find arguments")
     relative = arguments.get("path", ".")
-    if not isinstance(relative, str): raise ValueError("find path must be a string")
+    if not isinstance(relative, str): raise ExecutorToolError(INVALID_ARGUMENTS, "find path must be a string")
     scope = safe_path(root, relative, must_exist=True)
-    if not scope.is_dir(): raise ValueError("find target is not a directory")
+    if not scope.is_dir(): raise ExecutorToolError(PATH_INVALID_TYPE, "find target is not a directory")
     pattern = arguments.get("glob", "*")
-    if not isinstance(pattern, str) or not pattern or len(pattern) > 500: raise ValueError("find glob must be a bounded non-empty string")
+    if not isinstance(pattern, str) or not pattern or len(pattern) > 500: raise ExecutorToolError(INVALID_ARGUMENTS, "find glob must be a bounded non-empty string")
     max_depth = arguments.get("max_depth", 10); requested = arguments.get("max_results", DEFAULT_FIND_RESULTS)
-    if not isinstance(max_depth, int) or isinstance(max_depth, bool) or not 0 <= max_depth <= 20: raise ValueError("max_depth must be an integer from 0 to 20")
-    if not isinstance(requested, int) or isinstance(requested, bool) or not 1 <= requested <= 2000: raise ValueError("max_results must be an integer from 1 to 2000")
+    if not isinstance(max_depth, int) or isinstance(max_depth, bool) or not 0 <= max_depth <= 20: raise ExecutorToolError(INVALID_ARGUMENTS, "max_depth must be an integer from 0 to 20")
+    if not isinstance(requested, int) or isinstance(requested, bool) or not 1 <= requested <= 2000: raise ExecutorToolError(INVALID_ARGUMENTS, "max_results must be an integer from 1 to 2000")
     maximum = min(requested, max_results); cursor = _decode_cursor(arguments.get("cursor")); details = bool(arguments.get("details", False))
     walk = _Walk(time.monotonic() + max_seconds); matches: list[Path] = []; skipped = 0; iterator = _iter_matches(root, scope, scope, 0, max_depth, pattern, walk)
     for path in iterator:
@@ -78,6 +79,6 @@ def _decode_cursor(value: object) -> int:
     if not value: return 0
     try:
         padding = "=" * (-len(str(value)) % 4); parsed = int(base64.urlsafe_b64decode(str(value) + padding).decode())
-    except (ValueError, UnicodeError, base64.binascii.Error): raise ValueError("Invalid find result cursor") from None
-    if parsed < 0 or parsed > MAX_CURSOR_OFFSET: raise ValueError("Find result cursor is outside the bounded pagination range")
+    except (ValueError, UnicodeError, base64.binascii.Error): raise ExecutorToolError(INVALID_ARGUMENTS, "Invalid find result cursor") from None
+    if parsed < 0 or parsed > MAX_CURSOR_OFFSET: raise ExecutorToolError(INVALID_ARGUMENTS, "Find result cursor is outside the bounded pagination range")
     return parsed

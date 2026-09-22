@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from shared.tools import PUBLISH_BATCH_MAX_BYTES, PUBLISH_BATCH_MAX_OPERATIONS, PublishOperation
+from .errors import LIMIT_EXCEEDED, ExecutorToolError
 from .config import ExecutorConfig
 from .paths import SECRET_PARTS, STAGING_EXCLUDED_PARTS, UnsafePath, assert_unique_paths, is_secret_path, is_staging_excluded
 
@@ -385,7 +386,7 @@ def publication_batches(changes: Sequence[WorkspaceChange]) -> list[list[Workspa
     for change in changes:
         item_size = 0 if change.operation == "delete" else int(change.staged_size_bytes or 0)
         if item_size > PUBLISH_BATCH_MAX_BYTES:
-            raise ValueError(f"Staged file exceeds the {PUBLISH_BATCH_MAX_BYTES}-byte publication batch limit: {change.path}")
+            raise ExecutorToolError(LIMIT_EXCEEDED, f"Staged file exceeds the {PUBLISH_BATCH_MAX_BYTES}-byte publication batch limit: {change.path}")
         if current and (len(current) >= PUBLISH_BATCH_MAX_OPERATIONS or size + item_size > PUBLISH_BATCH_MAX_BYTES):
             batches.append(current)
             current, size = [], 0

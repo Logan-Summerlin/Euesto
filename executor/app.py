@@ -18,7 +18,7 @@ from shared.tools import MUTATION_TOOLS, TOOL_NAMES, PublicationReceipt, Publish
 from .checkpoints import checkpoint_files, discard_staging
 from .config import ExecutorConfig
 from .egress import egress_status
-from .errors import classify_error
+from .errors import INVALID_ARGUMENTS, STAGING_CONFLICT, ExecutorToolError, classify_error
 from .permissions import enforce_capability
 from .staging import Snapshot, WorkspaceChange, advance_published_staging, load_snapshot, publication_batches, refresh_visible_files, seed_staging, workspace_changes
 from .tools import bash, edit, find, grep, ls, patch, read, status, write
@@ -62,7 +62,7 @@ class ExecutorService:
             elif request.tool == "ls":
                 requested_results = request.arguments.get("max_results")
                 output, data = await asyncio.to_thread(ls, root, request.arguments, max_results=self.config.effective_limit("max_ls_results", requested_results), max_seconds=self.config.effective_limit("max_search_seconds"))
-            else: raise ValueError(f"Unknown tool: {request.tool}")
+            else: raise ExecutorToolError(INVALID_ARGUMENTS, f"Unknown tool: {request.tool}")
             if request.mode == "agent" and request.tool in MUTATION_TOOLS:
                 data["workspace_status"] = self.workspace_status(self._post_mutation_files(request, data)); output = f"{output} {data['workspace_status']['summary']}"
             return _success_result(request.request_id, output, data, time.perf_counter() - started)
@@ -95,7 +95,7 @@ class ExecutorService:
         current remainder needs.
         """
         if isinstance(batch_index, bool) or not isinstance(batch_index, int) or batch_index < 1:
-            raise ValueError("batch_index must be a positive integer")
+            raise ExecutorToolError(INVALID_ARGUMENTS, "batch_index must be a positive integer")
         batches = publication_batches(workspace_changes(self.snapshot, self.config.work_root))
         selected = batches[0] if batches else []
         operations = tuple(self._publish_operation(change) for change in selected)
@@ -117,8 +117,8 @@ class ExecutorService:
         self.snapshot = discard_staging(self.config); return self.snapshot
 
     def mark_published(self, manifest: PublishManifest | PublicationReceipt) -> Snapshot:
-        if manifest.workspace_id != self.config.workspace_id: raise ValueError("Publication manifest belongs to another workspace")
-        if manifest.source_snapshot_id != self.snapshot.snapshot_id: raise ValueError("Publication manifest is stale for the current staging baseline")
+        if manifest.workspace_id != self.config.workspace_id: raise ExecutorToolError(INVALID_ARGUMENTS, "Publication manifest belongs to another workspace")
+        if manifest.source_snapshot_id != self.snapshot.snapshot_id: raise ExecutorToolError(STAGING_CONFLICT, "Publication manifest is stale for the current staging baseline")
         self.snapshot = advance_published_staging(self.config.work_root, self.snapshot, manifest.operations); return self.snapshot
 
 
@@ -185,7 +185,7 @@ def create_app(config: ExecutorConfig | None = None, service: ExecutorService | 
 
 async def _json(request: Request) -> dict:
     data = await request.json()
-    if not isinstance(data, dict): raise ValueError("Request body must be an object")
+    if not isinstance(data, dict): raise ExecutorToolError(INVALID_ARGUMENTS, "Request body must be an object")
     return data
 
 

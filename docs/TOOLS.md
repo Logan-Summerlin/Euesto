@@ -138,6 +138,35 @@ Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `ve
 - **Result:** returns `summary`, `findings`, `structured`, `files_examined`, `skipped_paths`, and `truncated`; nested `subagent.*` events remain in the journal for replay/audit. On failure the parent is told to fall back to direct tool use.
 - **Findings:** the investigator is asked to end with a JSON report; its `findings` become a list of up to 50 `{file, line, justification, observed}` entries (`line` is a positive integer or null, `justification` at most 1,000 characters, entries with invalid paths are dropped). `observed` is set by the harness, not the model: it is true only when the investigator itself successfully read the file or matched it with `grep` during the call, so the parent can trust observed claims or verify any finding with one `read`. When the final message is not a structured report, `structured` is false, `findings` is empty, and the whole message is the `summary`.
 
+## Error codes
+
+A failed result's `error_code` is chosen where the failure is detected (`ExecutorToolError` codes named in `executor/errors.py`), never inferred from message wording, so rewording a message cannot change it. `classify_error` only maps exceptions the executor did not raise itself, by type and `errno`: permission, timeout, decoding, missing-path, wrong-type, capacity, and other I/O failures, plus standard-library argument errors. Codes are stable; messages are human-readable, sanitized of absolute paths, and may change.
+
+| Code | Meaning |
+|---|---|
+| `request.invalid_arguments` | Unknown, missing, or malformed arguments (including bad cursors and ranges). |
+| `path.missing` | The path does not exist, or is hidden from tools (dependency, VCS, and executor metadata directories). |
+| `path.invalid_type` | The path is not the kind the tool needs (a directory for `read`, a file for `ls`/`find`, a hard-linked or special file). |
+| `path.invalid` | A `status` scope path failed validation. |
+| `path.unsafe` | Workspace containment rejected the path: absolute, traversal, links, reparse points, secret-like, reserved, or colliding names. |
+| `limit.exceeded` | A configured size, count, or capacity limit (including a full staging volume). |
+| `file.invalid_utf8` | The file or content is binary or not valid UTF-8 text. |
+| `working_directory.invalid` | `bash` `working_directory` is not a string naming an existing directory. |
+| `command.invalid_arguments` | Malformed `bash` command, timeout, rollback flag, or environment. |
+| `staging.conflict` | `expected_sha256` or the staging baseline no longer matches (retryable after re-reading). |
+| `staging.shrink_warning` | A replacement would shrink an unconfirmed file drastically; confirm with `expected_sha256`. |
+| `edit.no_match` | `old_str` matched nothing. |
+| `edit.too_many_matches` | `old_str` matched more often than `expected_occurrences`. |
+| `edit.too_few_matches` | `old_str` matched less often than `expected_occurrences`. |
+| `edit.malformed_context` | Empty `old_str`, NUL characters, or an invalid `expected_occurrences`. |
+| `patch.malformed` | A `patch` operation list or operation is malformed. |
+| `checkpoint.corrupt` | Checkpoint content or manifest failed verification. |
+| `checkpoint.not_found` | The referenced checkpoint does not exist. |
+| `permission.denied` | The mode or capability forbids the operation (for example a Plan-mode mutation). |
+| `tool.timeout` | The operation exceeded its approved timeout; staged changes were rolled back. |
+| `io.internal` | An operating-system failure the executor could not attribute (retryable). |
+| `tool.internal` | An unexpected executor failure. |
+
 ## Modes and permissions
 
 | Tool | Plan | Agent | Writes staging? |

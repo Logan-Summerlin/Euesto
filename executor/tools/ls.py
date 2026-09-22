@@ -5,6 +5,7 @@ import heapq
 import time
 from pathlib import Path
 
+from ..errors import INVALID_ARGUMENTS, PATH_INVALID_TYPE, ExecutorToolError
 from ..paths import is_tool_excluded, safe_path
 
 MAX_CURSOR_OFFSET = 100_000
@@ -13,13 +14,13 @@ DEFAULT_LS_RESULTS = 500
 
 def ls(root: Path, arguments: dict, *, max_results: int = DEFAULT_LS_RESULTS, max_seconds: float = 30.0) -> tuple[str, dict]:
     allowed = {"path", "max_results", "details", "cursor"}
-    if set(arguments) - allowed: raise ValueError("Unknown ls arguments")
+    if set(arguments) - allowed: raise ExecutorToolError(INVALID_ARGUMENTS, "Unknown ls arguments")
     relative = arguments.get("path", ".")
-    if not isinstance(relative, str): raise ValueError("ls path must be a string")
+    if not isinstance(relative, str): raise ExecutorToolError(INVALID_ARGUMENTS, "ls path must be a string")
     directory = safe_path(root, relative, must_exist=True)
-    if not directory.is_dir(): raise ValueError("ls target is not a directory")
+    if not directory.is_dir(): raise ExecutorToolError(PATH_INVALID_TYPE, "ls target is not a directory")
     requested = arguments.get("max_results", DEFAULT_LS_RESULTS)
-    if not isinstance(requested, int) or isinstance(requested, bool) or not 1 <= requested <= 2000: raise ValueError("max_results must be an integer from 1 to 2000")
+    if not isinstance(requested, int) or isinstance(requested, bool) or not 1 <= requested <= 2000: raise ExecutorToolError(INVALID_ARGUMENTS, "max_results must be an integer from 1 to 2000")
     maximum = min(requested, max_results); cursor = _decode_cursor(arguments.get("cursor")); details = bool(arguments.get("details", True)); needed = cursor + maximum + 1
     deadline = time.monotonic() + max_seconds; expired = False
     def visible():
@@ -51,6 +52,6 @@ def _decode_cursor(value: object) -> int:
     if not value: return 0
     try:
         padding = "=" * (-len(str(value)) % 4); parsed = int(base64.urlsafe_b64decode(str(value) + padding).decode())
-    except (ValueError, UnicodeError, base64.binascii.Error): raise ValueError("Invalid ls result cursor") from None
-    if parsed < 0 or parsed > MAX_CURSOR_OFFSET: raise ValueError("Ls result cursor is outside the bounded pagination range")
+    except (ValueError, UnicodeError, base64.binascii.Error): raise ExecutorToolError(INVALID_ARGUMENTS, "Invalid ls result cursor") from None
+    if parsed < 0 or parsed > MAX_CURSOR_OFFSET: raise ExecutorToolError(INVALID_ARGUMENTS, "Ls result cursor is outside the bounded pagination range")
     return parsed
