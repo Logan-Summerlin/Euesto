@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
@@ -136,7 +139,6 @@ class PublishOperation:
     staged_mode: int | None = None
     content_base64: str | None = None
     def __post_init__(self) -> None:
-        import hashlib
         if self.operation not in {"create", "update", "delete"}: raise ValueError("Unknown publish operation")
         if self.operation == "create" and self.base_sha256 is not None: raise ValueError("Created files cannot have a base hash")
         if self.operation == "delete" and (self.staged_sha256 is not None or self.content is not None or self.content_base64 is not None or self.staged_mode is not None): raise ValueError("Deleted files cannot include staged content")
@@ -150,8 +152,6 @@ class PublishOperation:
     def payload(self) -> bytes:
         """The exact bytes to publish (empty for a delete)."""
         if self.content_base64 is not None:
-            import base64
-            import binascii
             try: return base64.b64decode(self.content_base64.encode("ascii"), validate=True)
             except (UnicodeError, binascii.Error, ValueError): raise ValueError("Invalid content_base64 encoding") from None
         return (self.content or "").encode("utf-8")

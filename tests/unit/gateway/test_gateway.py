@@ -329,3 +329,17 @@ def test_agent_payload_offers_tools_by_mode_and_honours_an_empty_allow_list() ->
     assert names(agent_payload("m", [], "agent", allowed_tools={"read"})) == {"read"}
     synthesis = agent_payload("m", [], "plan", allowed_tools=set())
     assert synthesis["tool_choice"] == "none"
+
+
+def test_approval_endpoint_reports_bad_json_and_unknown_decisions_as_422(tmp_path: Path) -> None:
+    async def scenario() -> tuple[int, int, str]:
+        service = GatewayService(config(tmp_path), provider_factory=FakeProvider)
+        app = create_app(config(tmp_path), service)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1") as client:
+            url = "/v1/runs/run/approvals/approval"
+            bad_json = await client.post(url, headers=auth_headers(**{"Content-Type": "application/json"}), content=b"{")
+            unknown = await client.post(url, headers=auth_headers(), json={"decision": "maybe"})
+        await service.close()
+        return bad_json.status_code, unknown.status_code, unknown.json()["error"]["code"]
+
+    assert asyncio.run(scenario()) == (422, 422, "approval.invalid")

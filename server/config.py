@@ -56,6 +56,6 @@ class GatewayConfig:
 def _read_secret(path: Path) -> str | None:
     try:
         value = path.read_text(encoding="utf-8").strip()
-    except (FileNotFoundError, OSError, UnicodeError):
+    except (OSError, UnicodeError):
         return None
     return value or None

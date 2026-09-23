@@ -9,7 +9,7 @@ import httpx
 
 from shared.tools import PLAN_TOOLS
 
-from .client import OPENROUTER_URL, normalize_usage
+from .client import APP_TITLE, OPENROUTER_URL, normalize_usage, provider_routing
 from .errors import ProviderError
 
 
@@ -52,15 +52,14 @@ def tool_schemas(mode: str, allowed_tools: set[str] | None = None) -> list[dict[
 
 def agent_payload(model: str, messages: list[dict[str, Any]], mode: str, provider_preferences: dict[str, Any] | None = None, allowed_tools: set[str] | None = None) -> dict[str, Any]:
     tools = tool_schemas(mode, allowed_tools)
-    privacy = dict(provider_preferences or {})
     # An empty allow-list forbids tool calls; the mode's definitions stay so providers can
     # still validate earlier tool calls in the history.
-    return {"model": model, "messages": messages, "tools": tools or tool_schemas(mode), "tool_choice": "auto" if tools else "none", "stream": False, "usage": {"include": True}, "provider": {"data_collection": "allow" if privacy.get("data_collection") == "allow" else "deny", "zdr": bool(privacy.get("zdr", False))}}
+    return {"model": model, "messages": messages, "tools": tools or tool_schemas(mode), "tool_choice": "auto" if tools else "none", "stream": False, "usage": {"include": True}, "provider": provider_routing(provider_preferences or {})}
 
 
 async def agent_turn(model: str, messages: list[dict[str, Any]], api_key: str, mode: str, provider_preferences: dict[str, Any] | None = None, allowed_tools: set[str] | None = None) -> AgentTurn:
     payload = agent_payload(model, messages, mode, provider_preferences, allowed_tools)
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "X-Title": "Local OpenRouter Chat"}
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "X-Title": APP_TITLE}
     try:
         async with httpx.AsyncClient(timeout=90, follow_redirects=False) as client:
             response = await client.post(OPENROUTER_URL, headers=headers, json=payload)

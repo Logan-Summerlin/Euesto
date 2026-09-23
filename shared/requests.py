@@ -33,7 +33,7 @@ class ChatRequest:
 
     def __post_init__(self) -> None:
         if self.mode != "chat":
-            raise ValueError("The v0.3 chat endpoint accepts Chat mode only")
+            raise ValueError("The chat endpoint accepts Chat mode only")
         if not self.model.strip():
             raise ValueError("A model ID is required")
         if not self.messages:

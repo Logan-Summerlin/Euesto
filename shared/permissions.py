@@ -70,7 +70,7 @@ def request_paths(request: ToolRequest) -> list[str]:
     if request.tool == "apply_patch":
         operations = request.arguments.get("operations")
         return [str(item.get("path") or "") for item in operations if isinstance(item, dict)] if isinstance(operations, list) else []
-    return [str(request.arguments.get("path") or request.arguments.get("directory") or "")]
+    return [str(request.arguments.get("path") or "")]
 
 
 def rule_scope(request: ToolRequest) -> str | None:
@@ -135,7 +135,7 @@ def _permission_path(value: str) -> str | None:
     if not isinstance(value, str) or "\x00" in value:
         return None
     value = value.replace("\\", "/")
-    if not value or value.startswith("/") or re.match(r"^[A-Za-z]:", value) or value.startswith("//"):
+    if not value or value.startswith("/") or re.match(r"^[A-Za-z]:", value):
         return None
     parts = [part for part in PurePosixPath(value).parts if part not in ("", ".")]
     if any(part == ".." for part in parts):

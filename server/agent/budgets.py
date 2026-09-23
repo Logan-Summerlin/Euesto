@@ -114,10 +114,6 @@ class RunBudget:
         self.iterations += 1
         self.check()
 
-    def add_cost(self, value: float) -> None:
-        self.cost += max(0, value)
-        self.check()
-
     def add_usage(self, usage: dict[str, object]) -> None:
         """Add one provider call to the cumulative agent-turn usage."""
         prompt = max(

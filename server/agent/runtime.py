@@ -117,7 +117,7 @@ class AgentRuntime:
                     self._save_snapshot(run_id, request, messages, visible, budget, True)
                     await self.append(run_id, "run.paused", {"reason": "user.requested", "resumable": True, "budget": budget.snapshot()})
                     return
-                messages, _ = compact_agent_context(messages, max(4_000, int(request.context_limit_tokens * 0.8)))
+                messages = compact_agent_context(messages, max(4_000, int(request.context_limit_tokens * 0.8)))
                 budget.consume_iteration()
                 turn = await agent_turn(request.model, messages, api_key, request.mode, request.provider_preferences)
                 budget.add_usage(turn.usage)
