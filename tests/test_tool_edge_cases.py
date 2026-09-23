@@ -53,7 +53,7 @@ def test_edit_has_independent_target_and_result_limits(tmp_path: Path) -> None:
 def test_ls_is_not_recursive_and_find_is_recursive(tmp_path: Path) -> None:
     (tmp_path / "top.py").write_text("top", encoding="utf-8"); (tmp_path / "src").mkdir(); (tmp_path / "src" / "nested.py").write_text("nested", encoding="utf-8")
     ls_output, ls_data = ls(tmp_path, {"path": ".", "details": False}); find_output, find_data = find(tmp_path, {"path": ".", "glob": "*.py", "max_depth": 10, "max_results": 500, "details": False})
-    assert "top.py" in ls_output and "nested.py" not in ls_output; assert "top.py" in find_output and "src/nested.py" in find_output; assert ls_data["recursive"] is False and find_data["recursive"] is True
+    assert ls_output.splitlines() == ["src/", "top.py"]; assert "top.py" in find_output and "src/nested.py" in find_output; assert ls_data["recursive"] is False and find_data["recursive"] is True
 
 
 def test_result_limits_are_authoritative(tmp_path: Path) -> None:
@@ -65,6 +65,21 @@ def test_result_limits_are_authoritative(tmp_path: Path) -> None:
 def test_grep_preserves_literal_matching_and_case_sensitivity(tmp_path: Path) -> None:
     (tmp_path / "x.py").write_text("ExecutorService\nexecutorservice\n", encoding="utf-8"); output, data = grep(tmp_path, {"path": ".", "query": "ExecutorService", "case_sensitive": True, "max_results": 10}, max_scan_bytes=64_000, max_output_bytes=64_000)
     assert output.startswith("x.py:1:ExecutorService"); assert data["matches_returned"] == 1
+
+
+def test_read_rejects_out_of_range_lines_instead_of_empty_result(tmp_path: Path) -> None:
+    (tmp_path / "sample.txt").write_text("one\ntwo\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="line range is outside file"): read(tmp_path, {"path": "sample.txt", "start_line": 4, "end_line": 4}, max_bytes=64_000)
+
+
+def test_read_reports_exact_missing_path(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match=r"file not found: nested/missing.txt"): read(tmp_path, {"path": "nested/missing.txt"}, max_bytes=64_000)
+
+
+def test_grep_include_glob_limits_files_considered_and_searched(tmp_path: Path) -> None:
+    (tmp_path / "match.txt").write_text("needle\n", encoding="utf-8"); (tmp_path / "other.py").write_text("needle\n", encoding="utf-8")
+    output, data = grep(tmp_path, {"query": "needle", "include_glob": "*.txt"}, max_scan_bytes=64_000, max_output_bytes=64_000)
+    assert "match.txt:1:needle" in output and "other.py" not in output; assert data["files_considered"] == 1 and data["files_searched"] == 1
 
 
 def test_read_line_range_from_oversized_file(tmp_path: Path) -> None:

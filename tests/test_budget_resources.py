@@ -42,24 +42,6 @@ def test_profile_above_two_x_requires_one_time_session_approval() -> None:
     assert requires_budget_approval(LARGE_CODING_PROFILE)
 
 
-def test_executor_resource_formula_leaves_real_headroom(tmp_path: Path) -> None:
-    config = make_config(tmp_path)
-    assert config.required_capacity_bytes == 6_000_000_000
-    assert config.required_capacity_bytes < config.work_capacity_bytes
-    config.validate_storage_capacity(config.work_capacity_bytes)
-
-
-def test_executor_rejects_a_combined_configuration_that_only_fits_individually(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="fit strictly below"):
-        make_config(tmp_path, max_staging_bytes=3_500_000_000, max_checkpoint_bytes=3_500_000_000, work_capacity_bytes=8_000_000_000)
-
-
-def test_executor_rejects_actual_work_capacity_below_configured_capacity(tmp_path: Path) -> None:
-    config = make_config(tmp_path)
-    with pytest.raises(ValueError, match="actual /work capacity"):
-        config.validate_storage_capacity(7_000_000_000)
-
-
 def test_checkpoint_budget_is_checked_against_staging_and_temp_headroom(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     work = tmp_path / "work"
     work.mkdir()

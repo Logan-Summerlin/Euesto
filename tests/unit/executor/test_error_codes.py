@@ -118,6 +118,14 @@ def test_classify_error_never_reads_message_text() -> None:
     assert classify_error(KeyError("x")).code == "tool.internal"
 
 
+def test_safe_message_redacts_drive_unc_and_multiple_paths() -> None:
+    message = r"C:\\Users\\alice\\secret.txt and /srv/work/file.py plus \\server\\share\\private.txt"
+    safe = errors.safe_message(message)
+    assert "C:\\" not in safe and "/srv/" not in safe
+    assert "<workspace-path>" in safe
+    assert "alice" not in safe
+
+
 def test_typed_exception_families_carry_codes() -> None:
     assert UnsafePath("anything at all").code == "path.unsafe"
     assert isinstance(UnsafePath("x"), ValueError)

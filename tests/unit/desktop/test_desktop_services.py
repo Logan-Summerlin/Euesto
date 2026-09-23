@@ -153,14 +153,27 @@ def test_runtime_health_labels_and_catalog_refresh_only_when_healthy(host, stora
 def test_runtime_gateway_token_is_used_from_memory_immediately_after_save(host, storage, monkeypatch) -> None:
     saved: list[str] = []
     monkeypatch.setattr(runtime_module, "save_gateway_token", saved.append)
+    monkeypatch.setattr(runtime_module, "get_gateway_session_token", lambda: None)
+    monkeypatch.setattr(runtime_module, "get_gateway_token", lambda: None)
+    monkeypatch.setattr("src.desktop.preferences.get_api_key", lambda: None)
     runtime = _runtime(host, storage)
-    assert runtime.connection() is None
+    settings = SettingsService(host, storage, catalog=SimpleNamespace(is_stale=lambda: False, models=lambda: []))
+    assert runtime.connection() is None and settings.gateway_settings()["hasToken"] is False
     assert runtime.save_gateway("http://127.0.0.1:8765", "n" * 43) is True
     assert saved == ["n" * 43]
     connection = runtime.connection()
     assert connection is not None and connection.token == "n" * 43
+    assert settings.gateway_settings()["hasToken"] is True
     assert runtime.save_gateway("not a url", "") is False
     assert host.errorRequested.calls[-1][0] == "Invalid gateway settings"
+
+
+def test_runtime_prefers_the_active_local_gateway_session_token(host, storage, monkeypatch) -> None:
+    monkeypatch.setattr(runtime_module, "get_gateway_token", lambda: "k" * 43)
+    monkeypatch.setattr(runtime_module, "get_gateway_session_token", lambda: "s" * 43)
+    assert _runtime(host, storage).gateway_token == "s" * 43
+    monkeypatch.setattr(runtime_module, "get_gateway_session_token", lambda: None)
+    assert _runtime(host, storage).gateway_token == "k" * 43
 
 
 def test_runtime_failure_is_reported(host, storage) -> None:
@@ -376,6 +389,35 @@ def test_generation_forwards_tool_approvals_to_qml(host, storage, tmp_path: Path
     generation.on_agent_event(event)
     (request,) = host.approvalRequested.calls
     assert request[0]["key"] == "run-1:a1" and request[0]["allowRule"] is True
+
+
+def test_streamed_text_is_buffered_and_only_activity_events_refresh_the_transcript(host, storage, tmp_path: Path) -> None:
+    history = ConversationService(host, storage)
+    history.load()
+    generation = _generation(host, storage, tmp_path)
+    host.history = history
+    generation.controller.state.conversation_id = history.current_id
+    refreshes: list[str] = []
+    history.refresh_transcript = lambda **_kwargs: refreshes.append("now")
+    history.schedule_transcript_refresh = lambda: refreshes.append("scheduled")
+
+    # Streamed text is buffered for the final message, never pushed into the transcript.
+    generation.on_stream_chunk("partial ")
+    generation.on_stream_chunk("answer")
+    assert generation.controller.state.stream_text == "partial answer"
+    assert refreshes == []
+
+    # Deltas and tool output are not persisted; activity events are, and schedule one refresh.
+    for event_id, event_type in enumerate(("model.delta", "tool.output", "tool.completed"), 1):
+        generation.on_agent_event(EventEnvelope(event_id, "run-1", event_type, "2026-01-01T00:00:00Z", {"request_id": "1", "tool": "read", "text": "x", "output": "x"}))
+    assert storage.list_run_events(history.current_id) == []
+    generation.on_agent_event(EventEnvelope(4, "run-1", "tool.requested", "2026-01-01T00:00:00Z", {"request_id": "1", "tool": "read"}))
+    assert [event["type"] for event in storage.list_run_events(history.current_id)] == ["tool.requested"]
+    assert refreshes.count("scheduled") >= 1 and "now" not in refreshes
+
+    del history.refresh_transcript
+    history.refresh_transcript()
+    assert all("partial answer" not in str(item.get("content")) for item in history.transcript)
 
 
 # -- StagingPublicationService ---------------------------------------------------------

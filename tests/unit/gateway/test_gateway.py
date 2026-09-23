@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import httpx
+import pytest
 
 from server.app import create_app
 from server.config import GatewayConfig
@@ -12,9 +13,9 @@ from server.journal import JournalStore
 from server.logging_config import redact
 from server.openrouter.catalog import GatewayCatalog
 from server.openrouter.client import ProviderEvent, build_payload
-from server.service import GatewayService
+from server.service import GatewayService, GatewayServiceError
 from shared.permissions import PermissionDecision, PermissionRule
-from shared.requests import ChatRequest
+from shared.requests import AgentRunRequest, ChatRequest
 
 TOKEN = "t" * 43
 
@@ -343,3 +344,57 @@ def test_approval_endpoint_reports_bad_json_and_unknown_decisions_as_422(tmp_pat
         return bad_json.status_code, unknown.status_code, unknown.json()["error"]["code"]
 
     assert asyncio.run(scenario()) == (422, 422, "approval.invalid")
+
+
+class StatusOnlyExecutor:
+    """Executor fake that answers status and fails if a tool is executed."""
+
+    def __init__(self, environment: dict) -> None:
+        self.environment = environment
+        self.status_calls = 0
+
+    async def status(self) -> dict:
+        self.status_calls += 1
+        return {"workspace_id": "workspace", "environment": self.environment}
+
+    async def execute(self, _request):
+        raise AssertionError("staging checks must use executor status, not a tool call")
+
+
+def _status_only_service(tmp_path: Path, environment: dict) -> GatewayService:
+    socket = tmp_path / "executor.sock"
+    socket.touch()
+    service = GatewayService(GatewayConfig(TOKEN, tmp_path / "gateway.sqlite3", executor_socket=socket, executor_token="e" * 43, workspace_id="workspace"))
+    service.executor = StatusOnlyExecutor(environment)
+    return service
+
+
+def test_staging_inspection_uses_executor_status_not_a_tool_call(tmp_path: Path) -> None:
+    service = _status_only_service(tmp_path, {"unpublished_changes": True, "agent_snapshot": {"file_count": 3}})
+
+    async def scenario() -> dict:
+        try:
+            return await service.inspect_staging("workspace")
+        finally:
+            await service.close()
+
+    result = asyncio.run(scenario())
+    assert result["output"] == "Staging is dirty."
+    assert result["data"]["file_count"] == 3
+    assert service.executor.status_calls == 1
+
+
+def test_auto_preflight_requires_clean_staging_via_executor_status(tmp_path: Path) -> None:
+    service = _status_only_service(tmp_path, {"unpublished_changes": True})
+    service.configure_client_key("k" * 16)
+    request = AgentRunRequest(model="m", messages=({"role": "user", "content": "go"},), mode="agent", workspace_id="workspace", approval_policy="auto", investigation_model_id=None)
+
+    async def scenario() -> None:
+        try:
+            await service.start_agent(request)
+        finally:
+            await service.close()
+
+    with pytest.raises(GatewayServiceError, match="clean staging"):
+        asyncio.run(scenario())
+    assert service.executor.status_calls == 1

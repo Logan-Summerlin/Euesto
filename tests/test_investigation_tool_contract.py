@@ -8,6 +8,7 @@ import pytest
 from server.agent.budgets import RunBudget
 from server.agent.runtime import AgentRuntime
 from server.openrouter.agent import LOCAL_TOOL_SCHEMAS, AgentTurn
+from shared.events import EventEnvelope
 from shared.investigation import (
     MAX_FINDINGS,
     MAX_INSPECTED_PATHS,
@@ -15,8 +16,9 @@ from shared.investigation import (
     parse_investigation_report,
     reinspection_target,
 )
-from shared.requests import AgentRunRequest
-from shared.tools import ToolResult
+from shared.permissions import PermissionDecision, resolve_permission
+from shared.requests import DEFAULT_INVESTIGATION_MODEL, AgentRunRequest
+from shared.tools import INVESTIGATION_TOOLS, READ_TOOLS, ToolRequest, ToolResult
 
 
 def _investigation_schema() -> dict:
@@ -193,3 +195,28 @@ def test_reinspection_target_only_covers_read_and_ls() -> None:
     assert reinspection_target("grep", {"query": "x", "path": "docs"}, inspected) is None
     assert reinspection_target("find", {"path": "docs"}, inspected) is None
     assert reinspection_target("read", {"path": "docs/guide.md"}, inspected) is None
+
+
+def test_investigation_is_read_only_and_auto_safe() -> None:
+    request = ToolRequest("r", "run", "investigate_repository", "agent", {"query": "find architecture"})
+    assert request.tool in READ_TOOLS
+    assert request.tool in INVESTIGATION_TOOLS
+    assert resolve_permission(request, "workspace") == PermissionDecision.ALLOW_RUN
+
+
+def test_nested_event_family_is_replayable() -> None:
+    for event_type in ("subagent.started", "subagent.tool_call", "subagent.tool_result", "subagent.completed", "subagent.failed"):
+        event = EventEnvelope(1, "run", event_type, "2025-01-01T00:00:00Z", {"parent_tool_call_id": "call"})
+        assert EventEnvelope.from_dict(event.to_dict()).type == event_type
+
+
+@pytest.mark.parametrize("supplied", [{}, {"investigation_model_id": ""}])
+def test_agent_requests_default_a_missing_or_blank_investigation_model(supplied: dict) -> None:
+    request = AgentRunRequest.from_dict({
+        "model": "vendor/model",
+        "mode": "agent",
+        "workspace_id": "workspace",
+        "messages": [{"role": "user", "content": "inspect the repository"}],
+        **supplied,
+    })
+    assert request.investigation_model_id == DEFAULT_INVESTIGATION_MODEL

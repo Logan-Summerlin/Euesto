@@ -14,6 +14,19 @@ def test_public_tool_documentation_matches_registry() -> None:
     assert "ten model-facing tools" in docs
 
 
+def test_documentation_index_and_ownership_map_exist() -> None:
+    index = (ROOT / "docs" / "README.md").read_text(encoding="utf-8")
+    architecture = (ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
+    for name in ("ARCHITECTURE.md", "CONTRIBUTING.md", "TESTING.md", "TOOLS.md", "LIMITS.md", "PUBLICATION.md", "TROUBLESHOOTING.md"):
+        assert name in index
+    for owner in ("qml/", "src/", "app.py", "server/", "executor/", "shared/"):
+        assert owner in architecture
+
+
+def test_local_runtime_artifacts_are_ignored() -> None:
+    assert ".local-chat-checkpoints/" in (ROOT / ".gitignore").read_text(encoding="utf-8")
+
+
 def test_limits_document_active_coding_defaults_and_ceilings() -> None:
     docs = (ROOT / "docs" / "LIMITS.md").read_text(encoding="utf-8")
 

@@ -94,10 +94,17 @@ def test_bash_rejects_workspace_traversal_before_starting_shell(tmp_path: Path) 
 
 
 def test_bash_enforces_separate_command_and_stdin_limits(tmp_path: Path) -> None:
+    # Hard caps apply even when the caller passes no smaller limit.
     with pytest.raises(ValueError, match="command exceeds"):
         asyncio.run(run_bash(tmp_path, {"command": "x" * 1_000_001}))
     with pytest.raises(ValueError, match="stdin exceeds"):
         asyncio.run(run_bash(tmp_path, {"command": "true", "stdin": "x" * 8_000_001}))
+    # Configured limits below the caps are enforced the same way.
+    limits = {"max_seconds": 10, "max_output": 1_000, "max_checkpoint_bytes": 20_000_000}
+    with pytest.raises(ValueError, match="configured limit of 100 bytes"):
+        asyncio.run(bash("command-limit", tmp_path, {"command": "x" * 101}, max_command_bytes=100, **limits))
+    with pytest.raises(ValueError, match="configured limit of 100 bytes"):
+        asyncio.run(bash("stdin-limit", tmp_path, {"command": "cat", "stdin": "x" * 101}, max_stdin_bytes=100, **limits))
     assert not (tmp_path / CHECKPOINTS).exists()
 
 
@@ -189,6 +196,13 @@ def test_bash_large_stderr_and_mixed_streams_are_accounted_separately(tmp_path: 
     assert "ERR" in data["stderr"]
 
 
+def test_output_buffer_keeps_head_and_tail_beyond_its_limit() -> None:
+    buffer = bash_tool._OutputBuffer(8)
+    buffer.append(b"abcdefghijk")
+    assert buffer.truncated and buffer.total == 11
+    assert b"output truncated" in buffer.bytes()
+
+
 def test_bash_small_output_is_not_truncated(tmp_path: Path) -> None:
     output, data = asyncio.run(run_bash(tmp_path, {"command": "echo out; echo err >&2"}))
     assert output == "out\n\nerr\n"
@@ -235,13 +249,15 @@ def test_bash_success_keeps_changes_and_reports_no_rollback(tmp_path: Path) -> N
 
 def test_bash_rolls_back_nonzero_exit(tmp_path: Path) -> None:
     (tmp_path / "earlier.txt").write_text("earlier staged work", encoding="utf-8")
-    output, data = asyncio.run(run_bash(tmp_path, {"command": "echo changed > failed.txt; echo error >&2; exit 7"}))
+    (tmp_path / "state").write_text("before", encoding="utf-8")
+    output, data = asyncio.run(run_bash(tmp_path, {"command": "printf after > state; echo changed > failed.txt; echo error >&2; exit 7"}))
     assert data["exit_code"] == 7
     assert data["rolled_back"] is True
     assert data["rollback_reason"] == "nonzero_exit"
     assert data["rollback_on_failure"] is True
     assert data["stderr_bytes"] > 0
     assert not (tmp_path / "failed.txt").exists()
+    assert (tmp_path / "state").read_text(encoding="utf-8") == "before"
     # Only this command's transaction is discarded; earlier staged work remains.
     assert (tmp_path / "earlier.txt").read_text(encoding="utf-8") == "earlier staged work"
     assert "error" in output

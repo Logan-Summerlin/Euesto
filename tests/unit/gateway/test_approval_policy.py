@@ -7,6 +7,7 @@ import json
 import pytest
 
 from server.agent import runtime as runtime_module
+from server.agent.approvals import ApprovalCoordinator, ApprovalTimeoutError
 from server.agent.runtime import AgentRuntime
 from server.openrouter.agent import AgentTurn
 from shared.permissions import (
@@ -180,3 +181,53 @@ def test_resume_never_carries_a_session_approval_tier(tmp_path, policy: str) -> 
         return captured[0].approval_policy
 
     assert asyncio.run(scenario()) == "prompt"
+
+
+# Permission-rule resolution
+
+
+def _read_request(path: str) -> ToolRequest:
+    return ToolRequest("r", "run", "read", "agent", {"path": path})
+
+
+def _read_rule(decision: PermissionDecision, prefix: str) -> PermissionRule:
+    return PermissionRule("id-" + prefix, decision, "ws", "agent", "read", path_prefix=prefix)
+
+
+def test_permission_matching_normalizes_separators_and_case() -> None:
+    rules = (_read_rule(PermissionDecision.ALLOW_RULE, "src/project"),)
+    assert resolve_permission(_read_request(r"SRC\\PROJECT\\file.txt"), "ws", rules) == PermissionDecision.ALLOW_RULE
+    assert resolve_permission(_read_request("src/project/../secret.txt"), "ws", rules) == PermissionDecision.ALLOW_RUN
+
+
+def test_permission_precedence_uses_most_specific_allow_scope() -> None:
+    rules = (_read_rule(PermissionDecision.ALLOW_RUN, "src"), _read_rule(PermissionDecision.ALLOW_RULE, "src/private"))
+    assert resolve_permission(_read_request("src/private/a.txt"), "ws", rules) == PermissionDecision.ALLOW_RULE
+
+
+def test_restrictive_permission_decisions_win() -> None:
+    rules = (_read_rule(PermissionDecision.ALLOW_RUN, "src"), _read_rule(PermissionDecision.DENY, "src/private"))
+    assert resolve_permission(_read_request("src/private/a.txt"), "ws", rules) == PermissionDecision.DENY
+
+
+# Approval waits
+
+
+def test_approval_timeout_is_bounded_and_removed() -> None:
+    coordinator = ApprovalCoordinator()
+    with pytest.raises(ApprovalTimeoutError) as error:
+        asyncio.run(coordinator.wait("run", "approval", timeout=0.01))
+    assert error.value.approval_id == "approval"
+    assert coordinator.get("run", "approval") is None
+
+
+def test_approval_can_be_resolved_before_timeout() -> None:
+    coordinator = ApprovalCoordinator()
+
+    async def resolve_while_waiting() -> PermissionDecision:
+        task = asyncio.create_task(coordinator.wait("run", "approval", timeout=1))
+        await asyncio.sleep(0)  # let the wait register its pending approval
+        assert coordinator.resolve("run", "approval", PermissionDecision.ALLOW_ONCE)
+        return await task
+
+    assert asyncio.run(resolve_while_waiting()) == PermissionDecision.ALLOW_ONCE
