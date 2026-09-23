@@ -1,10 +1,10 @@
-"""Structured multi-file patch: several write/edit/delete operations under one checkpoint."""
+"""Structured multi-file `apply_patch`: several write/edit/delete operations under one checkpoint."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from ..errors import INVALID_ARGUMENTS, LIMIT_EXCEEDED, PATCH_MALFORMED, PATH_INVALID_TYPE, PATH_MISSING, STAGING_CONFLICT, ExecutorToolError, classify_error
+from ..errors import INVALID_ARGUMENTS, LIMIT_EXCEEDED, APPLY_PATCH_MALFORMED, PATH_INVALID_TYPE, PATH_MISSING, STAGING_CONFLICT, ExecutorToolError, classify_error
 from ..mutations import create_mutation_checkpoint, rollback_mutation, sha256
 from ..paths import normalize_relative, safe_path
 from .edit import EDIT_ARGUMENTS, apply_edit, edit_result, prepare_edit
@@ -26,7 +26,7 @@ def patch_payload_bytes(operations: object) -> int:
     return total
 
 
-def patch(
+def apply_patch(
     root: Path,
     arguments: dict,
     *,
@@ -46,15 +46,15 @@ def patch(
     fails, raises, or is interrupted.
     """
     if set(arguments) - {"operations"}:
-        raise ExecutorToolError(INVALID_ARGUMENTS, "Unknown patch arguments")
+        raise ExecutorToolError(INVALID_ARGUMENTS, "Unknown apply_patch arguments")
     operations = arguments.get("operations")
     if not isinstance(operations, list) or not operations:
-        raise _malformed("patch requires a non-empty operations array")
+        raise _malformed("apply_patch requires a non-empty operations array")
     if len(operations) > max_operations:
-        raise ExecutorToolError(LIMIT_EXCEEDED, f"patch accepts at most {max_operations} operations; split the change into smaller patches", details={"failure": "too_many_operations", "operations": len(operations), "max_patch_operations": max_operations})
+        raise ExecutorToolError(LIMIT_EXCEEDED, f"apply_patch accepts at most {max_operations} operations; split the change into smaller patches", details={"failure": "too_many_operations", "operations": len(operations), "max_patch_operations": max_operations})
     payload = patch_payload_bytes(operations)
     if payload > max_patch_bytes:
-        raise ExecutorToolError(LIMIT_EXCEEDED, f"patch content totals {payload} bytes, above the {max_patch_bytes}-byte patch limit", details={"failure": "patch_too_large", "payload_bytes": payload, "max_patch_bytes": max_patch_bytes})
+        raise ExecutorToolError(LIMIT_EXCEEDED, f"apply_patch content totals {payload} bytes, above the {max_patch_bytes}-byte patch limit", details={"failure": "patch_too_large", "payload_bytes": payload, "max_patch_bytes": max_patch_bytes})
     for index, item in enumerate(operations):
         _validate_shape(index, item)
 
@@ -72,7 +72,7 @@ def patch(
         details = {"failure": "operation_failed", "failed_operation": index, "operation": operations[index].get("operation"), "path": operations[index].get("path"), "applied_before_failure": len(results), "rolled_back": True, "cause_code": cause.code}
         if cause.details:
             details["cause"] = cause.details
-        raise ExecutorToolError(cause.code, f"patch operation {index} ({operations[index].get('operation')} {operations[index].get('path')}) failed: {cause.message} No operation was applied.", cause.retryable, details) from exc
+        raise ExecutorToolError(cause.code, f"apply_patch operation {index} ({operations[index].get('operation')} {operations[index].get('path')}) failed: {cause.message} No operation was applied.", cause.retryable, details) from exc
 
     _bound_diffs(results)
     paths = list(dict.fromkeys(item["path"] for item in results))
@@ -92,7 +92,7 @@ def patch(
     return output, data
 
 
-def patch_paths(arguments: dict) -> list[str]:
+def apply_patch_paths(arguments: dict) -> list[str]:
     """Normalized operation paths in request order (used for status refresh and permissions)."""
     operations = arguments.get("operations")
     paths: list[str] = []
@@ -104,16 +104,16 @@ def patch_paths(arguments: dict) -> list[str]:
 
 def _validate_shape(index: int, item: object) -> None:
     if not isinstance(item, dict):
-        raise _malformed(f"patch operation {index} must be an object", index)
+        raise _malformed(f"apply_patch operation {index} must be an object", index)
     operation = item.get("operation")
     if operation not in PATCH_OPERATIONS:
-        raise _malformed(f"patch operation {index} must be one of {', '.join(PATCH_OPERATIONS)}", index)
+        raise _malformed(f"apply_patch operation {index} must be one of {', '.join(PATCH_OPERATIONS)}", index)
     allowed = {"write": WRITE_ARGUMENTS, "edit": EDIT_ARGUMENTS, "delete": DELETE_ARGUMENTS}[operation] | {"operation"}
     unknown = sorted(set(item) - allowed)
     if unknown:
-        raise _malformed(f"patch operation {index} ({operation}) has unknown fields: {', '.join(unknown)}", index)
+        raise _malformed(f"apply_patch operation {index} ({operation}) has unknown fields: {', '.join(unknown)}", index)
     if not isinstance(item.get("path"), str) or not item["path"]:
-        raise _malformed(f"patch operation {index} requires a path", index)
+        raise _malformed(f"apply_patch operation {index} requires a path", index)
     normalize_relative(item["path"])
 
 
@@ -177,4 +177,4 @@ def _malformed(message: str, index: int | None = None) -> ExecutorToolError:
     details: dict[str, object] = {"failure": "malformed_patch"}
     if index is not None:
         details["failed_operation"] = index
-    return ExecutorToolError(PATCH_MALFORMED, message, details=details)
+    return ExecutorToolError(APPLY_PATCH_MALFORMED, message, details=details)

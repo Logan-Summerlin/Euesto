@@ -136,7 +136,7 @@ ApplicationWindow {
                             && !backend.generating && !backend.stagingBusy
                         onClicked: backend.requestAcceptEdits(checked)
                         ToolTip.visible: hovered
-                        ToolTip.text: "Apply write, edit, and patch to staging without prompts; Bash and publication still ask"
+                        ToolTip.text: "Apply write, edit, and apply_patch to staging without prompts; Bash and publication still ask"
                     }
 
                     Button {

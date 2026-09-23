@@ -41,7 +41,9 @@ def bridge(tmp_path: Path):
     backend.errorRequested.connect(lambda title, _body: errors.append(title))
     backend.selectMode("agent")
     yield backend, confirmations, errors
-    backend.runtime.health_timer.stop()
+    # shutdown() also neutralizes the gateway check queued at construction, so a later test
+    # that pumps the Qt event loop cannot run it against the closed storage.
+    backend.runtime.shutdown()
     storage.close()
 
 

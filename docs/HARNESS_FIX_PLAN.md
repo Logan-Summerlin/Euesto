@@ -2,6 +2,8 @@
 
 ## 0. How to use this document
 
+This plan lives at `docs/HARNESS_FIX_PLAN.md` (it was the root-level `EUESTO_HARNESS_FIX_PLAN.md` until P2-5). The file and line citations below describe the tree as it was verified; each task's **Status** line records what changed since.
+
 This merges two prior write-ups — `Coding-harness weaknesses.txt` (terse bug list) and
 `Euesto_Critique_Analysis.md` (line-by-line critique review) — into one execution plan,
 **re-verified directly against the repository** at:
@@ -410,7 +412,7 @@ raw `git` in `bash`.)*
 
 ### P1-2. Structured multi-file patch operation + advisory shrink guard
 
-**Status: implemented** — mutation tool `patch` (`executor/tools/patch.py`; named `patch` because `apply_patch` is a removed legacy name the regression suite forbids), advisory shrink guard for confirmed changes, and `edit` newline policy/diagnostics.
+**Status: implemented** — mutation tool `apply_patch` (`executor/tools/apply_patch.py`; first shipped as `patch`, then renamed to `apply_patch`, with `patch` now on the regression suite's removed-name list and no alias), advisory shrink guard for confirmed changes, and `edit` newline policy/diagnostics.
 
 **Files:** new `executor/tools/patch.py` (or similar), `executor/mutations.py`, `executor/app.py`,
 `server/openrouter/agent.py`, `shared/tools.py`, `docs/TOOLS.md`
@@ -742,6 +744,8 @@ tests / `scripts/qml_smoke.py`).
 
 ### P2-5. Root-level doc/plan sprawl and naming drift
 
+**Status: implemented** — every living plan and the roadmap now live in `docs/` (`EUESTO_HARNESS_FIX_PLAN.md` → `docs/HARNESS_FIX_PLAN.md`, `PROJECT_PLAN.md` → `docs/ROADMAP.md`) and are indexed in `docs/README.md` (Plans). `Euesto QoL Plan.md` was reconciled item by item (each is implemented, deliberately reverted, or continues as P2-7) and archived as `archived-doc/improvement-plan.md` with a disposition table; `Coding Harness Fixes_9_6_2026.txt` (the bash-rollback write-up, implemented per §1) was removed. The repository root keeps only `README.md`, `AGENTS.md`, and `CHANGELOG.md`, and `tests/structural/test_documentation_layout.py` enforces the root allowlist, `UPPER_SNAKE_CASE.md`/lowercase-hyphen naming with no spaces or dates, and that no document links to a removed location.
+
 **Files (verified present at repo root):** `Coding Harness Fixes_9_6_2026.txt` (space + date in
 filename), `Euesto QoL Plan.md` (≈19 KB, duplicating `docs/HARNESS_QOL_PLAN.md`), plus the
 already-existing `docs/` tree (`HARNESS_QOL_PLAN.md`, `HARNESS_VALIDATION_PLAN.md`,
@@ -759,6 +763,8 @@ plan content between root and `docs/`.
 ---
 
 ### P2-6. Test taxonomy migration left real coverage gaps
+
+**Status: implemented** — `tests/unit/executor/test_bash.py` restores all 14 original assertions (the loss was an accidental truncation in commit `9b604c2`, not a deliberate trim) and absorbs the duplicate `test_bash_regressions.py`; it adds `rollback_on_failure` coverage (default rollback, opt-out retaining partial progress, opt-out never bypassing timeout or cancellation rollback, argument validation). Writing those tests exposed that an explicitly cancelled command with `rollback_on_failure: false` kept its changes; cancellation now always rolls back and reports `rollback_reason: "cancelled"`. Commands also get `/dev/null` stdin instead of inheriting the executor's, so TTY rejection holds regardless of how the service was started (tested with a pseudo-terminal). The QML transcript tests are restored as `tests/ui/test_transcript_qml.py` (marked `slow`, synchronized on observable conditions) and `docs/ORGANIZATION_PLAN.md` §3a records the resolution.
 
 **Files:** `docs/ORGANIZATION_PLAN.md`, `tests/unit/executor/test_bash.py`, (deleted)
 `tests/test_transcript_qml.py`

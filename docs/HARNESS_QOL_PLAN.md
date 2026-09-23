@@ -33,7 +33,7 @@ Acceptance criteria:
 
 ### 3. Provide an auditable structured patch operation (implemented)
 
-Implemented as the `patch` tool (`executor/tools/patch.py`); see `docs/TOOLS.md` (`patch`).
+Implemented as the `apply_patch` tool (`executor/tools/apply_patch.py`); see `docs/TOOLS.md` (`apply_patch`).
 
 Add a harness-native way to apply a bounded multi-file patch, instead of requiring a Bash/Python script for routine source changes. It should use the same staging, checkpoint, path, size, and rollback primitives as existing mutations.
 

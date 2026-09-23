@@ -8,8 +8,8 @@ Limits below describe the current `coding` executor profile. `executor/config.py
 | `write` bytes | 1,000,000 | 8,000,000 | Exact byte values: 1,000,000 / 8,000,000. UTF-8 text content. |
 | `edit` target | 2,000,000 | 16,000,000 | Exact byte values: 2,000,000 / 16,000,000. Target file size. |
 | `edit` result | 2,000,000 | 16,000,000 | Exact byte values: 2,000,000 / 16,000,000. Resulting file size. |
-| `patch` operations | 100 | 500 | Exact counts: 100 / 500 (`max_patch_operations`). Operations per atomic patch. |
-| `patch` content | 2,000,000 bytes | 16,000,000 bytes | Exact byte values: 2,000,000 / 16,000,000 (`max_patch_bytes`). Combined `content`/`old_str`/`new_str` across all operations; each operation also obeys the `write`/`edit` limits. |
+| `apply_patch` operations | 100 | 500 | Exact counts: 100 / 500 (`max_patch_operations`). Operations per atomic patch. |
+| `apply_patch` content | 2,000,000 bytes | 16,000,000 bytes | Exact byte values: 2,000,000 / 16,000,000 (`max_patch_bytes`). Combined `content`/`old_str`/`new_str` across all operations; each operation also obeys the `write`/`edit` limits. |
 | Bash command | 1,000,000 bytes | 1,000,000 bytes | Exact byte values: 1,000,000 / 1,000,000. Hard ceiling equals default. |
 | Bash stdin | 1,000,000 bytes | 8,000,000 bytes | Exact byte values: 1,000,000 / 8,000,000. Schema also bounds stdin to 8,000,000 characters. |
 | Bash output | 1,000,000 bytes | 8,000,000 bytes | Exact byte values: 1,000,000 / 8,000,000. Output is bounded/truncatable. |
@@ -22,7 +22,7 @@ Limits below describe the current `coding` executor profile. `executor/config.py
 | `ls` results | 500 | 2,000 | Exact counts: 500 / 2,000. Also the default when `max_results` is omitted. Immediate directory only. |
 | `status` results | 100 | 500 | Per-page change entries; `cursor` continues. Diffs share 64,000 bytes / 800 lines per call and skip files over 1,000,000 bytes. |
 | Parallel read-only calls | 8 | 8 | Consecutive `read`/`grep`/`find`/`ls`/`status` calls in one turn run concurrently, at most 8 at a time (`MAX_PARALLEL_TOOL_CALLS`). |
-| Tool arguments (protocol) | 17,000,000 bytes | 17,000,000 bytes | `MAX_TOOL_ARGUMENT_BYTES` in `shared/tools.py`, measured as unescaped UTF-8 JSON. Derived as the largest argument-carrying hard ceiling (16,000,000 bytes: the `edit` result, which also bounds `old_str` + `new_str` together, and `patch` content; `write` needs 8,000,000 and `bash` command + stdin + env about 10,050,000) plus a 1,000,000-byte envelope, so it never binds below a per-tool limit in any profile. |
+| Tool arguments (protocol) | 17,000,000 bytes | 17,000,000 bytes | `MAX_TOOL_ARGUMENT_BYTES` in `shared/tools.py`, measured as unescaped UTF-8 JSON. Derived as the largest argument-carrying hard ceiling (16,000,000 bytes: the `edit` result, which also bounds `old_str` + `new_str` together, and `apply_patch` content; `write` needs 8,000,000 and `bash` command + stdin + env about 10,050,000) plus a 1,000,000-byte envelope, so it never binds below a per-tool limit in any profile. |
 | Staged files | 300,000 | 1,000,000 | Exact counts: 300,000 / 1,000,000. Shared staging resource. |
 | Staging bytes | 2.5 GB (2,500,000,000 bytes) | 4 GB (4,000,000,000 bytes) | Exact decimal byte values: 2,500,000,000 / 4,000,000,000. Must fit the work-volume resource model. |
 | Checkpoint bytes | 2.5 GB (2,500,000,000 bytes) | 3.5 GB (3,500,000,000 bytes) | Exact decimal byte values: 2,500,000,000 / 3,500,000,000. Shares work-volume capacity with staging/temp headroom. |

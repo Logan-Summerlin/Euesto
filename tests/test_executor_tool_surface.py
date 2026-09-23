@@ -8,14 +8,14 @@ import pytest
 
 from executor.app import ExecutorService
 from executor.config import ExecutorConfig
-from executor.tools import bash, edit, find, grep, ls, patch, read, status, write
+from executor.tools import apply_patch, bash, edit, find, grep, ls, read, status, write
 from server.openrouter.agent import LOCAL_TOOL_SCHEMAS
 from shared.tools import AGENT_TOOLS, INVESTIGATION_TOOLS, PLAN_TOOLS, READ_TOOLS, TOOL_NAMES, ToolRequest
 
-CANONICAL_TOOLS = ("read", "write", "edit", "patch", "bash", "grep", "find", "ls", "status")
+CANONICAL_TOOLS = ("read", "write", "edit", "apply_patch", "bash", "grep", "find", "ls", "status")
 MODEL_TOOL_NAMES = CANONICAL_TOOLS + ("investigate_repository",)
 READ_ONLY_TOOLS = frozenset({"read", "grep", "find", "ls"})
-LEGACY_TOOL_NAMES = {"read_file", "write_file", "edit_file", "apply_patch", "run_command", "list_files", "search_files", "move", "copy", "checkpoint", "restore"}
+LEGACY_TOOL_NAMES = {"read_file", "write_file", "edit_file", "patch", "run_command", "list_files", "search_files", "move", "copy", "checkpoint", "restore"}
 
 
 def _schema_map() -> dict[str, dict]:
@@ -23,7 +23,7 @@ def _schema_map() -> dict[str, dict]:
 
 
 def test_executor_import_surface_is_loadable() -> None:
-    modules = ("executor.app", "executor.config", "executor.errors", "executor.mutations", "executor.paths", "executor.permissions", "executor.staging", "executor.tools", "executor.tools.bash", "executor.tools.edit", "executor.tools.find", "executor.tools.grep", "executor.tools.ls", "executor.tools.patch", "executor.tools.read", "executor.tools.status", "executor.tools.write", "server.openrouter.agent")
+    modules = ("executor.app", "executor.config", "executor.errors", "executor.mutations", "executor.paths", "executor.permissions", "executor.staging", "executor.tools", "executor.tools.bash", "executor.tools.edit", "executor.tools.find", "executor.tools.grep", "executor.tools.ls", "executor.tools.apply_patch", "executor.tools.read", "executor.tools.status", "executor.tools.write", "server.openrouter.agent")
     for module in modules:
         importlib.import_module(module)
 
@@ -61,7 +61,7 @@ def test_tool_schemas_match_executor_argument_names() -> None:
         "read": {"path", "start_line", "end_line", "max_bytes"},
         "write": {"path", "content", "expected_sha256", "create_parents"},
         "edit": {"path", "old_str", "new_str", "expected_occurrences", "expected_sha256"},
-        "patch": {"operations"},
+        "apply_patch": {"operations"},
         "status": {"paths", "include_diffs", "max_results", "cursor"},
         "bash": {"command", "working_directory", "timeout_seconds", "env", "stdin", "rollback_on_failure"},
         "grep": {"query", "path", "regex", "case_sensitive", "include_glob", "exclude_glob", "max_results", "context_lines", "include_metadata", "cursor"},

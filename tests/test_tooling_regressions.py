@@ -7,7 +7,7 @@ import pytest
 from server.openrouter.agent import LOCAL_TOOL_SCHEMAS
 from shared.tools import AGENT_TOOLS, PLAN_TOOLS, TOOL_NAMES, ToolRequest
 
-CANONICAL_TOOLS = ("read", "write", "edit", "patch", "bash", "grep", "find", "ls", "status")
+CANONICAL_TOOLS = ("read", "write", "edit", "apply_patch", "bash", "grep", "find", "ls", "status")
 MODEL_TOOL_NAMES = CANONICAL_TOOLS + ("investigate_repository",)
 READ_ONLY_TOOLS = frozenset({"read", "grep", "find", "ls"})
 LEGACY_TOOL_NAMES = {
@@ -19,7 +19,7 @@ LEGACY_TOOL_NAMES = {
     "search_text",
     "inspect_workspace",
     "inspect_checkpoint",
-    "apply_patch",
+    "patch",
     "run_command",
     "move_file",
     "copy_file",
@@ -76,16 +76,16 @@ def test_gateway_and_agent_tool_vocabularies_cannot_diverge() -> None:
     assert 'AGENT_TOOL_PROFILE = "pi-compatible"' in source
     assert '"inspect_workspace"' not in source
     assert '"run_command"' not in source
-    assert '"apply_patch"' not in source
+    assert '"patch"' not in source
 
 
 def test_gateway_status_advertises_canonical_local_tools() -> None:
     source = Path("server/service.py").read_text(encoding="utf-8")
-    assert '("read", "write", "edit", "patch", "bash", "grep", "find", "ls", "status")' in source
+    assert '("read", "write", "edit", "apply_patch", "bash", "grep", "find", "ls", "status")' in source
     assert '"investigate_repository"' not in source
     assert '"inspect_workspace"' not in source
     assert '"inspect_checkpoint"' not in source
-    assert '"apply_patch"' not in source
+    assert '"patch"' not in source
     assert '"run_command"' not in source
 
 

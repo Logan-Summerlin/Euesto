@@ -26,11 +26,15 @@ Check that the loopback gateway is healthy and that the desktop is using the cur
 
 ## Executor failures
 
-Check `/v1/status` and its reported workspace identity, snapshot identity, tool list, and effective limits. Executor authentication requires the current credential plus a fresh nonce. A Plan request for `write`, `edit`, `patch`, `bash`, or `status` is intentionally rejected.
+Check `/v1/status` and its reported workspace identity, snapshot identity, tool list, and effective limits. Executor authentication requires the current credential plus a fresh nonce. A Plan request for `write`, `edit`, `apply_patch`, `bash`, or `status` is intentionally rejected.
 
 ## Staging failures
 
 A failed mutation should roll back its checkpoint. If staging is inconsistent, discard staging and reseed from the current workspace. Resource failures can occur when staged bytes, checkpoint bytes, file count, or work-volume headroom are exhausted.
+
+## Hard-linked files
+
+Files with more than one hard link are rejected because a hard link lets a write through one path change content reachable through another, which path containment and hash validation cannot see. Staging seeding fails with `Unsupported source file: <path>` when the selected workspace contains one; `read` reports that it rejects hard-linked files, and `write`, `edit`, and `apply_patch` report that the target must be a regular, non-hard-linked file. The restriction applies to reading and mutation alike. To work around it, replace the link with an independent copy in the workspace (for example, copy the file to a temporary name and move it back over the original), or select a workspace that does not contain hard-linked files.
 
 ## Publication failures
 

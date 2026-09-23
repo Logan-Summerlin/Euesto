@@ -7,7 +7,7 @@ from shared.tools import AGENT_TOOLS, INVESTIGATION_TOOLS, PLAN_TOOLS, TOOL_NAME
 
 def test_public_tool_contract_includes_canonical_tools_and_investigation() -> None:
     names = [item["function"]["name"] for item in LOCAL_TOOL_SCHEMAS]
-    canonical = ["read", "write", "edit", "patch", "bash", "grep", "find", "ls", "status"]
+    canonical = ["read", "write", "edit", "apply_patch", "bash", "grep", "find", "ls", "status"]
     assert names == canonical + ["investigate_repository"]
     assert TOOL_NAMES == set(names)
     assert PLAN_TOOLS == {"read", "grep", "find", "ls"}

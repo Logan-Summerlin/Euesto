@@ -11,7 +11,7 @@ from .tools import MUTATION_TOOLS, READ_TOOLS, STAGED_EDIT_TOOLS, ToolRequest
 
 # Session approval policies for Agent runs, from most to least prompting:
 #   prompt        every mutation or command asks unless a rule matches
-#   accept_edits  staged file edits (write/edit/patch) run without asking; bash still asks
+#   accept_edits  staged file edits (write/edit/apply_patch) run without asking; bash still asks
 #   auto          every otherwise-valid call runs without asking
 # Explicit DENY rules win under every policy, and publication stays separately approved
 # except under auto.
@@ -48,7 +48,7 @@ class PermissionRule:
         if self.path_prefix is not None:
             normalized_prefix = _permission_path(self.path_prefix)
             paths = [_permission_path(path) for path in request_paths(request)]
-            # A multi-file patch matches a path-scoped rule only when every path is in scope.
+            # A multi-file apply_patch matches a path-scoped rule only when every path is in scope.
             if normalized_prefix is None or not paths or any(path is None for path in paths):
                 return False
             if not all(path == normalized_prefix or path.startswith(normalized_prefix + "/") for path in paths):
@@ -66,8 +66,8 @@ class PermissionRule:
 
 
 def request_paths(request: ToolRequest) -> list[str]:
-    """Workspace paths a request names: one ``path``, or every ``patch`` operation path."""
-    if request.tool == "patch":
+    """Workspace paths a request names: one ``path``, or every ``apply_patch`` operation path."""
+    if request.tool == "apply_patch":
         operations = request.arguments.get("operations")
         return [str(item.get("path") or "") for item in operations if isinstance(item, dict)] if isinstance(operations, list) else []
     return [str(request.arguments.get("path") or request.arguments.get("directory") or "")]
@@ -76,11 +76,11 @@ def request_paths(request: ToolRequest) -> list[str]:
 def rule_scope(request: ToolRequest) -> str | None:
     """The path prefix a saved or per-run rule should cover for this request.
 
-    Single-path tools scope to their path. A patch scopes to the deepest directory shared by
+    Single-path tools scope to their path. An apply_patch scopes to the deepest directory shared by
     all of its paths, or to the whole workspace (``None``) when they share none.
     """
     paths = [path for path in request_paths(request) if path]
-    if request.tool != "patch":
+    if request.tool != "apply_patch":
         return paths[0] if paths else None
     normalized = [_permission_path(path) for path in paths]
     if not normalized or any(path is None for path in normalized):

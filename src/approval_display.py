@@ -34,9 +34,9 @@ def _command_summary(detail: object) -> str:
 
 def _tool_summary(tool: str, detail: object) -> str:
     values = detail if isinstance(detail, dict) else {}
-    if tool == "patch" and isinstance(values.get("operations"), list):
+    if tool == "apply_patch" and isinstance(values.get("operations"), list):
         operations = [item for item in values["operations"] if isinstance(item, dict)]
-        lines = [f"Tool approval: patch · {len(operations)} operation(s), applied all-or-nothing"]
+        lines = [f"Tool approval: apply_patch · {len(operations)} operation(s), applied all-or-nothing"]
         lines.extend(f"{item.get('operation', '?')}: {item.get('path', '?')}" for item in operations[:12])
         if len(operations) > 12:
             lines.append(f"… and {len(operations) - 12} more operation(s)")

@@ -94,7 +94,7 @@ class GatewayService:
             and self.config.executor_socket.exists()
         )
         local_tools = (
-            ("read", "write", "edit", "patch", "bash", "grep", "find", "ls", "status")
+            ("read", "write", "edit", "apply_patch", "bash", "grep", "find", "ls", "status")
             if executor_ready
             else ()
         )

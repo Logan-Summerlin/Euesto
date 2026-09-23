@@ -17,17 +17,17 @@ def openrouter_tools(enabled: Mapping[str, bool]) -> list[dict[str, Any]]:
     return tools
 
 TOOL_PROFILE = "pi-compatible"
-TOOL_NAMES = frozenset({"read", "write", "edit", "patch", "bash", "grep", "find", "ls", "status", "investigate_repository"})
+TOOL_NAMES = frozenset({"read", "write", "edit", "apply_patch", "bash", "grep", "find", "ls", "status", "investigate_repository"})
 PLAN_TOOLS = frozenset({"read", "grep", "find", "ls"})
 INVESTIGATION_TOOLS = frozenset({"investigate_repository"})
 # Agent-only, read-only inspection of the staged workspace against the publication baseline.
 STAGING_READ_TOOLS = frozenset({"status"})
 AGENT_TOOLS = TOOL_NAMES
 READ_TOOLS = PLAN_TOOLS | INVESTIGATION_TOOLS | STAGING_READ_TOOLS
-MUTATION_TOOLS = frozenset({"write", "edit", "patch", "bash"})
+MUTATION_TOOLS = frozenset({"write", "edit", "apply_patch", "bash"})
 # File edits confined to staging: checkpointed, reversible, previewable as diffs, and still gated
 # by publication approval. Bash is a mutation too but its effects are broader and harder to preview.
-STAGED_EDIT_TOOLS = frozenset({"write", "edit", "patch"})
+STAGED_EDIT_TOOLS = frozenset({"write", "edit", "apply_patch"})
 # Independent, side-effect-free executor calls that a turn may run concurrently. Investigation
 # is read-only too, but it drives a nested model loop against the shared parent budget, so it
 # stays serialized with the mutations.
@@ -40,7 +40,7 @@ PARALLEL_SAFE_TOOLS = PLAN_TOOLS | STAGING_READ_TOOLS
 #   bash:        command <= max_command_bytes (1 MB) + stdin <= max_bash_stdin_bytes (8 MB)
 #                + env <= 64 values x 16,384 bytes (~1.05 MB)                     = ~10.05 MB
 #   edit:        old_str + new_str share the max_edit_result_bytes ceiling (16 MB) = 16 MB  <- largest
-#   patch:       all content/old_str/new_str share max_patch_bytes (16 MB)        = 16 MB  <- largest
+#   apply_patch: all content/old_str/new_str share max_patch_bytes (16 MB)        = 16 MB  <- largest
 # plus a fixed envelope for paths, hashes, env names, flags, and JSON structure.
 MAX_TOOL_ARGUMENT_PAYLOAD_BYTES = 16_000_000
 TOOL_ARGUMENT_ENVELOPE_BYTES = 1_000_000

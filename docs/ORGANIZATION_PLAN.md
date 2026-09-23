@@ -39,6 +39,7 @@ This plan compares the current repository with the ten-point organization checkl
 1. Confirm local snapshot/checkpoint state is ignored and absent from version control; if this repository is distributed as a source tree, add an explicit local-state note to the contributor/troubleshooting documentation.
 2. Keep only the minimal historical archive, or move it outside the active source tree if design rationale is no longer needed. Do not create new archive folders for superseded plans.
 3. Keep root metadata files as-is unless a packaging/build convention requires a change; moving `app.py` solely for aesthetic reasons would add churn without improving the architecture.
+4. Keep planning documents out of the root: the roadmap and every living plan live in `docs/` (indexed in `docs/README.md`), and superseded plans move to `archived-doc/`. `tests/structural/test_documentation_layout.py` enforces the root allowlist and file naming.
 
 ### 3. Separate production code, tests, documentation, and tooling
 
@@ -53,6 +54,8 @@ This plan compares the current repository with the ten-point organization checkl
 4. Still avoid `conftest.py` proliferation, an `experiments/` directory, or additional taxonomy tiers beyond the five already documented unless a concrete need appears.
 
 ### 3a. Verify no test coverage was lost during the reorganization
+
+**Resolved.** The bash loss was unintentional: the file was accidentally truncated by the later import-ordering commit `9b604c2`, not trimmed on purpose. `tests/unit/executor/test_bash.py` again carries every original assertion, absorbs the duplicate `tests/unit/executor/test_bash_regressions.py`, and adds `rollback_on_failure` coverage. The QML transcript rendering tests are restored as `tests/ui/test_transcript_qml.py`, marked `slow` (they need a Qt Quick runtime) and synchronized on observable conditions instead of fixed waits. The record below is kept for context.
 
 **Problem:** The reorganization commit did not purely move files — in at least two cases it reduced coverage:
 
@@ -138,7 +141,7 @@ Add a "Where to make a change" table, not a second architecture narrative. Link 
 
 ### 9. Keep documentation and code close to reality
 
-**What is working:** The authoritative docs describe the current eight-tool API, staging, publication, limits, and security model. `PROJECT_PLAN.md` is labeled as a status roadmap and the archive is labeled non-normative.
+**What is working:** The authoritative docs describe the current eight-tool API, staging, publication, limits, and security model. `docs/ROADMAP.md` is labeled as a status roadmap and the archive is labeled non-normative.
 
 **Known discrepancy:** `executor/tools/__init__.py` says `Canonical seven-tool executor surface`, while the current public vocabulary is eight tools. The eighth tool is gateway-delegated rather than implemented in that package, so the package docstring should say what it actually exports rather than claim a count that conflicts with repository docs.
 
@@ -177,7 +180,7 @@ Keep the commands authoritative in one place where possible and link to it elsew
 - Confirm `.local-chat-snapshot.json` and `.local-chat-checkpoints/` are local-only and ignored.
 - Decide whether to retain and, if retained, normalize the archive directory name.
 - Decide and document canonical product naming without changing runtime identifiers yet.
-- Resolve the 3a coverage gap: confirm the dropped bash-tool and transcript-QML tests were an intentional trim, and restore or re-tag/relocate them if not.
+- ~~Resolve the 3a coverage gap~~ — done: bash-tool and transcript-QML coverage restored (see 3a).
 
 ### Phase 2 — desktop bridge characterization
 

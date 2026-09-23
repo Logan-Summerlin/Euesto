@@ -1,10 +1,10 @@
 # Euesto — Project Roadmap
 
-This document is a status-oriented roadmap. It is not the authoritative architecture or tool specification. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/TOOLS.md](docs/TOOLS.md), [docs/LIMITS.md](docs/LIMITS.md), and [docs/PUBLICATION.md](docs/PUBLICATION.md) for current behavior.
+This document is a status-oriented roadmap. It is not the authoritative architecture or tool specification. See [ARCHITECTURE.md](ARCHITECTURE.md), [TOOLS.md](TOOLS.md), [LIMITS.md](LIMITS.md), and [PUBLICATION.md](PUBLICATION.md) for current behavior. Open work items are tracked in the plans listed in [README.md](README.md#plans).
 
 ## Completed
 
-- Ten-tool model-facing API: `read`, `write`, `edit`, `patch`, `bash`, `grep`, `find`, `ls`, `status`, and scoped read-only `investigate_repository` delegation.
+- Ten-tool model-facing API: `read`, `write`, `edit`, `apply_patch`, `bash`, `grep`, `find`, `ls`, `status`, and scoped read-only `investigate_repository` delegation.
 - Plan/Agent capability separation with Plan mutation denial enforced in code.
 - Incremental file inspection and localized editing for larger files.
 - Bounded Bash execution, output, stdin, command time, process cleanup, and rollback.

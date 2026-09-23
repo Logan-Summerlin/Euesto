@@ -35,7 +35,7 @@ class DelayedExecutor:
         finally:
             self.active -= 1
         self.log.append(("end", request.request_id, time.perf_counter()))
-        data = {"checkpoint_id": f"cp-{request.request_id}", "workspace_status": {"staged": True}} if request.tool in {"write", "edit", "patch"} else {}
+        data = {"checkpoint_id": f"cp-{request.request_id}", "workspace_status": {"staged": True}} if request.tool in {"write", "edit", "apply_patch"} else {}
         return ToolResult(request.request_id, True, output=f"{request.tool}:{request.request_id}", data=data)
 
 

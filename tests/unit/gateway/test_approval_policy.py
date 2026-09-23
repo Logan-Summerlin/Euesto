@@ -27,7 +27,7 @@ ARGUMENTS = {
     "status": {},
     "write": {"path": "a.txt", "content": "x"},
     "edit": {"path": "a.txt", "old_str": "x", "new_str": "y"},
-    "patch": {"operations": [{"operation": "write", "path": "a.txt", "content": "x"}]},
+    "apply_patch": {"operations": [{"operation": "write", "path": "a.txt", "content": "x"}]},
     "bash": {"command": "pytest -q"},
 }
 
@@ -39,7 +39,7 @@ def _decision(tool: str, policy: str, rules: tuple[PermissionRule, ...] = ()) ->
 
 def test_policies_are_ordered_and_edit_tier_is_staged_file_edits_only() -> None:
     assert APPROVAL_POLICIES == ("prompt", "accept_edits", "auto")
-    assert STAGED_EDIT_TOOLS == {"write", "edit", "patch"}
+    assert STAGED_EDIT_TOOLS == {"write", "edit", "apply_patch"}
     assert STAGED_EDIT_TOOLS < MUTATION_TOOLS and "bash" not in STAGED_EDIT_TOOLS
 
 
@@ -105,7 +105,7 @@ class StagingExecutor:
 
 
 def _run(policy: str, monkeypatch) -> tuple[RecordingApprovals, StagingExecutor, list[tuple[str, dict]], list[str]]:
-    calls = tuple({"id": f"c-{tool}", "type": "function", "function": {"name": tool, "arguments": json.dumps(ARGUMENTS[tool])}} for tool in ("read", "write", "edit", "patch", "bash"))
+    calls = tuple({"id": f"c-{tool}", "type": "function", "function": {"name": tool, "arguments": json.dumps(ARGUMENTS[tool])}} for tool in ("read", "write", "edit", "apply_patch", "bash"))
     turns: list[int] = []
     contexts: list[str] = []
 
@@ -139,17 +139,17 @@ def _run(policy: str, monkeypatch) -> tuple[RecordingApprovals, StagingExecutor,
 def test_accept_edits_runs_staged_edits_without_prompts_but_still_asks_for_bash(monkeypatch) -> None:
     approvals, executor, events, extra = _run("accept_edits", monkeypatch)
     assert approvals.asked == ["bash"]
-    assert executor.executed == ["read", "write", "edit", "patch", "bash"]
+    assert executor.executed == ["read", "write", "edit", "apply_patch", "bash"]
     required = [payload["tool"] for kind, payload in events if kind == "approval.required"]
     assert required == ["bash"]
-    assert any("accept_edits: write, edit, and patch run without prompts" in item for item in extra)
+    assert any("accept_edits: write, edit, and apply_patch run without prompts" in item for item in extra)
     # Publication is offered for separate approval, never auto-published under this tier.
     assert extra[-1] == "accept_edits"
 
 
 def test_prompt_and_auto_behavior_is_unchanged(monkeypatch) -> None:
     approvals, _executor, _events, _extra = _run("prompt", monkeypatch)
-    assert approvals.asked == ["write", "edit", "patch", "bash"]
+    assert approvals.asked == ["write", "edit", "apply_patch", "bash"]
     approvals, _executor, _events, _extra = _run("auto", monkeypatch)
     assert approvals.asked == []
 

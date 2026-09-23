@@ -125,7 +125,7 @@ class BashRunner:
         stdout_task = stderr_task = stdin_task = None
         process: asyncio.subprocess.Process | None = None
         try:
-            process = await asyncio.create_subprocess_exec("/bin/bash", "-lc", command, cwd=cwd, env=environment, stdin=asyncio.subprocess.PIPE if stdin_text is not None else None, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True)
+            process = await asyncio.create_subprocess_exec("/bin/bash", "-lc", command, cwd=cwd, env=environment, stdin=asyncio.subprocess.PIPE if stdin_text is not None else asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True)
             self._processes[request_id] = process
             stdout_task = asyncio.create_task(self._read_stream(request_id, "stdout", process.stdout, max_output))
             stderr_task = asyncio.create_task(self._read_stream(request_id, "stderr", process.stderr, max_output))
@@ -148,7 +148,10 @@ class BashRunner:
 
             stdout = stdout_result[0]
             stderr = stderr_result[0]
-            rolled_back = process.returncode != 0 and rollback_on_failure
+            # Cancellation always rolls back; rollback_on_failure only governs non-zero exits.
+            cancelled = request_id in self._cancelled
+            rollback_reason = "cancelled" if cancelled else ("nonzero_exit" if process.returncode != 0 and rollback_on_failure else "none")
+            rolled_back = rollback_reason != "none"
             if rolled_back:
                 rollback_mutation(root, checkpoint_id)
             combined = self._model_output(stdout, stderr, max_output)
@@ -166,10 +169,10 @@ class BashRunner:
                 "stderr_truncated": stderr.truncated,
                 "stdin_bytes": len(stdin_text.encode("utf-8")) if stdin_text is not None else 0,
                 "truncated": stdout.truncated or stderr.truncated,
-                "cancelled": request_id in self._cancelled,
+                "cancelled": cancelled,
                 "rolled_back": rolled_back,
                 "rollback_on_failure": rollback_on_failure,
-                "rollback_reason": "nonzero_exit" if rolled_back else "none",
+                "rollback_reason": rollback_reason,
             }
         except Exception:
             if process is None:

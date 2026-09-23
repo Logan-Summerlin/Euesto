@@ -499,9 +499,9 @@ def _render_executor_context(status: dict[str, Any], mode: str, approval_policy:
     if mode == "agent":
         lines.append("- Tools write an ephemeral staged copy; host publication is pending review unless session Auto is active.")
         if approval_policy == "accept_edits":
-            lines.append("- Approval policy accept_edits: write, edit, and patch run without prompts; bash still requires approval.")
+            lines.append("- Approval policy accept_edits: write, edit, and apply_patch run without prompts; bash still requires approval.")
         lines.append("- After mutations, the tool reports created/modified/deleted files and permission changes; checkpoint hashes are audit metadata. Use status (optionally with diffs) to review everything staged before publication.")
-        lines.append("- Use patch for multi-file changes: its operations apply atomically, all or none.")
+        lines.append("- Use apply_patch for multi-file changes: its operations apply atomically, all or none.")
         lines.append("- Independent read-only calls (read, grep, find, ls, status) issued together in one turn run concurrently.")
         lines.append("- Bash runs non-interactively with bounded environment, output, timeout, and process cleanup.")
         egress = environment.get("egress")

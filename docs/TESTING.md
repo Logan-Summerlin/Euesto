@@ -31,7 +31,7 @@ pytest -m "not docker"        # all non-container tests
 pytest --co                   # inspect collection
 ```
 
-Every test must be discoverable through `testpaths`; CI must use marker expressions, never curated file lists or test-count allowlists. New tests should be placed by domain under `tests/` (unit, integration, security, ui, or docker) as the suite is reorganized.
+Qt Quick rendering tests (`tests/ui/test_transcript_qml.py`) are `slow`: they load QML through an offscreen `QQmlApplicationEngine` and skip when PySide6/Qt Quick cannot load (on Linux, install `libegl1`). Every test must be discoverable through `testpaths`; CI must use marker expressions, never curated file lists or test-count allowlists. New tests should be placed by domain under `tests/` (unit, integration, security, ui, or docker) as the suite is reorganized.
 
 ## Async test policy
 

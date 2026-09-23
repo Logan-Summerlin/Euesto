@@ -23,6 +23,20 @@ Euesto is a local-first Windows chatbot. The desktop talks to an authenticated g
 | Protocol and registries | `shared/` | Framework-neutral structures; no desktop or gateway orchestration. |
 | Tests | `tests/` | Follow the taxonomy in `TESTING.md`; security and container tests must remain credential-free. |
 
+## Plans
+
+Every living plan and the roadmap live in this directory, one authoritative copy each. Status is recorded per item inside each document; when a plan is fully implemented or superseded it moves to `archived-doc/` (non-normative) rather than being kept alongside a newer copy.
+
+| Document | Scope |
+|---|---|
+| [ROADMAP.md](ROADMAP.md) | Completed, active, planned, deferred, and non-goal status for the product. |
+| [HARNESS_FIX_PLAN.md](HARNESS_FIX_PLAN.md) | Verified coding-harness fixes by tier (P0 correctness through P3 roadmap-scope), with acceptance criteria. |
+| [HARNESS_QOL_PLAN.md](HARNESS_QOL_PLAN.md) | Coding-harness quality-of-life improvements (edits, patches, status, investigation budget, validation). |
+| [HARNESS_VALIDATION_PLAN.md](HARNESS_VALIDATION_PLAN.md) | Making every documented validation check runnable locally and reproducible in CI. |
+| [ORGANIZATION_PLAN.md](ORGANIZATION_PLAN.md) | Repository organization, naming, and the desktop-bridge decomposition. |
+
+Documentation file names are predictable: `UPPER_SNAKE_CASE.md` in `docs/`, lowercase-hyphenated names in `archived-doc/`, and no spaces or embedded dates anywhere (dates belong in commit history or `CHANGELOG.md`). The repository root keeps only `README.md`, `AGENTS.md`, and `CHANGELOG.md`. `tests/structural/test_documentation_layout.py` enforces this.
+
 ## Local-only state
 
 `.local-chat-snapshot.json` and `.local-chat-checkpoints/` are runtime artifacts. They are ignored and must not be committed. The historical `archived-doc/` directory is non-normative.

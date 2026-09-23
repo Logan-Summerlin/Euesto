@@ -4,9 +4,9 @@ This is the authoritative human-readable reference for the ten model-facing tool
 
 ## Common contract
 
-Every executor request contains `request_id`, `run_id`, `tool`, `mode`, and an object-valued `arguments` field. `mode` is `plan` or `agent`. Tool requests are rejected when the tool is unknown, when Plan requests a mutation, or when arguments exceed the 17,000,000-byte protocol cap (`MAX_TOOL_ARGUMENT_BYTES` in `shared/tools.py`). The cap is measured as unescaped UTF-8 JSON, so newline- or control-character-heavy payloads do not lose capacity to escaping, and it is derived from the largest argument-carrying hard ceiling (`edit` result and `patch` content, 16,000,000 bytes) plus a 1,000,000-byte envelope, so it is never the binding constraint below a documented per-tool limit (see `docs/LIMITS.md`).
+Every executor request contains `request_id`, `run_id`, `tool`, `mode`, and an object-valued `arguments` field. `mode` is `plan` or `agent`. Tool requests are rejected when the tool is unknown, when Plan requests a mutation, or when arguments exceed the 17,000,000-byte protocol cap (`MAX_TOOL_ARGUMENT_BYTES` in `shared/tools.py`). The cap is measured as unescaped UTF-8 JSON, so newline- or control-character-heavy payloads do not lose capacity to escaping, and it is derived from the largest argument-carrying hard ceiling (`edit` result and `apply_patch` content, 16,000,000 bytes) plus a 1,000,000-byte envelope, so it is never the binding constraint below a documented per-tool limit (see `docs/LIMITS.md`).
 
-Every result contains `request_id`, `ok`, `output`, `data`, `error_code`, `truncated`, `elapsed_seconds`, `returned`, `total_known`, `limit`, and `next_cursor`. Optional counts are non-negative integers. Errors are classified and returned rather than exposing arbitrary exception details to the model. A failed result may carry bounded, JSON-serializable diagnostics in `data` (for example why an exact edit did not match, or which `patch` operation failed).
+Every result contains `request_id`, `ok`, `output`, `data`, `error_code`, `truncated`, `elapsed_seconds`, `returned`, `total_known`, `limit`, and `next_cursor`. Optional counts are non-negative integers. Errors are classified and returned rather than exposing arbitrary exception details to the model. A failed result may carry bounded, JSON-serializable diagnostics in `data` (for example why an exact edit did not match, or which `apply_patch` operation failed).
 
 All tools operate on relative POSIX paths that are normalized and contained beneath the workspace root. Absolute, drive, UNC, traversal (`..`), Windows-alias, reserved-DOS-name, non-canonical-Unicode, and secret-like paths are rejected, as are symlinks and hard-linked files. Only UTF-8 text is readable and writable; binary content is refused.
 
@@ -52,12 +52,12 @@ Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `ve
 - **Localized edits:** exact replacement avoids rewriting unrelated files; target/result limits make larger files incrementally inspectable and locally editable.
 - **Failure:** checkpoint restoration occurs on failed mutation.
 
-## `patch`
+## `apply_patch`
 
 - **Purpose:** apply one logical change across several UTF-8 text files atomically.
 - **Arguments:** `operations` (required, 1–`max_patch_operations`): an ordered list of objects with `operation` and `path` plus the fields of that operation — `write` (`content`, optional `expected_sha256`, `create_parents`), `edit` (`old_str`, `new_str`, optional `expected_occurrences`, `expected_sha256`), or `delete` (optional `expected_sha256`).
 - **Modes:** Agent only.
-- **Permission:** mutation; checkpointed and staged. A path-scoped approval rule matches a patch only when every operation path is inside its scope; "allow for this run"/saved rules scope to the deepest directory the paths share.
+- **Permission:** mutation; checkpointed and staged. A path-scoped approval rule matches an `apply_patch` request only when every operation path is inside its scope; "allow for this run"/saved rules scope to the deepest directory the paths share.
 - **Defaults:** 100 operations and 2,000,000 bytes of combined `content`/`old_str`/`new_str` in `coding`; each operation also obeys the `write`/`edit` limits.
 - **Hard maximums:** 500 operations and 16,000,000 combined bytes.
 - **Semantics:** one checkpoint is taken, then operations run in order against the state left by the previous one (so several edits to one file compose). `write` and `edit` behave exactly as the standalone tools, including hash checks, the shrink guard, the newline policy, and diagnostics; `delete` removes one regular, non-hard-linked file. It is additive: `write` and `edit` remain the tools for single-file changes.
@@ -72,10 +72,10 @@ Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `ve
 - **Permission:** mutation-capable; checkpointed and staged.
 - **Defaults:** 300 seconds, 1,000,000 bytes of command text, stdin, and output in `coding`.
 - **Hard maximums:** 900 seconds; 1,000,000 command bytes; 8,000,000 stdin/output bytes.
-- **Execution:** `/bin/bash -lc`, non-interactive, no network, restricted environment, process-group cleanup. Under the opt-in allowlisted-egress profile (`docs/EGRESS.md`) the base environment also carries `HTTPS_PROXY`/`HTTP_PROXY` for the allowlisted registry proxy; nothing else becomes reachable.
+- **Execution:** `/bin/bash -lc`, non-interactive (a new session with no controlling terminal; stdin is `/dev/null` unless `stdin` is supplied), no network, restricted environment, process-group cleanup. Under the opt-in allowlisted-egress profile (`docs/EGRESS.md`) the base environment also carries `HTTPS_PROXY`/`HTTP_PROXY` for the allowlisted registry proxy; nothing else becomes reachable.
 - **Environment:** a fixed base environment (`PATH`, `HOME`, locale, UTF-8 Python flags) is always applied. User-supplied `env` is limited to 64 variables with POSIX-identifier names and ≤16,384-byte values; `PATH`, `HOME`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, and `BASH_ENV*` are refused.
 - **Output:** stdout/stderr is bounded; oversized output is retained as a bounded head/tail preview with a truncation marker. Command event cursors are exposed separately through the executor event endpoint.
-- **Failure:** timed-out and cancelled commands always roll staged filesystem changes back to their checkpoint. Non-zero-exit commands roll back by default; set `rollback_on_failure: false` when retaining partial progress is intentional. Results separate the process `exit_code` from checkpoint outcome with `rolled_back` and `rollback_reason` (`nonzero_exit` or `none`).
+- **Failure:** timed-out and cancelled commands always roll staged filesystem changes back to their checkpoint. Non-zero-exit commands roll back by default; set `rollback_on_failure: false` when retaining partial progress is intentional. Results separate the process `exit_code` from checkpoint outcome with `rolled_back` and `rollback_reason` (`cancelled`, `nonzero_exit`, or `none`); `rollback_on_failure: false` never retains the changes of a cancelled command.
 
 ## `grep`
 
@@ -159,7 +159,7 @@ A failed result's `error_code` is chosen where the failure is detected (`Executo
 | `edit.too_many_matches` | `old_str` matched more often than `expected_occurrences`. |
 | `edit.too_few_matches` | `old_str` matched less often than `expected_occurrences`. |
 | `edit.malformed_context` | Empty `old_str`, NUL characters, or an invalid `expected_occurrences`. |
-| `patch.malformed` | A `patch` operation list or operation is malformed. |
+| `apply_patch.malformed` | An `apply_patch` operation list or operation is malformed. |
 | `checkpoint.corrupt` | Checkpoint content or manifest failed verification. |
 | `checkpoint.not_found` | The referenced checkpoint does not exist. |
 | `permission.denied` | The mode or capability forbids the operation (for example a Plan-mode mutation). |
@@ -174,7 +174,7 @@ A failed result's `error_code` is chosen where the failure is detected (`Executo
 | `read` | yes | yes | no |
 | `write` | no | yes | yes |
 | `edit` | no | yes | yes |
-| `patch` | no | yes | yes |
+| `apply_patch` | no | yes | yes |
 | `bash` | no | yes | potentially |
 | `grep` | yes | yes | no |
 | `find` | yes | yes | no |
@@ -184,7 +184,7 @@ A failed result's `error_code` is chosen where the failure is detected (`Executo
 
 Read-only tools never prompt. Agent runs choose one of three approval policies (`APPROVAL_POLICIES` in `shared/permissions.py`, applied by `apply_approval_policy` after rule resolution):
 
-| Policy | `write` / `edit` / `patch` | `bash` | Publication |
+| Policy | `write` / `edit` / `apply_patch` | `bash` | Publication |
 |---|---|---|---|
 | `prompt` (default) | ask | ask | approve each batch |
 | `accept_edits` | allowed | ask | approve each batch |
@@ -196,7 +196,7 @@ The public ten-tool model-facing API includes the scoped read-only `investigate_
 
 ## Concurrency within a turn
 
-When one model turn issues several calls, consecutive independent read-only calls (`read`, `grep`, `find`, `ls`, `status`) run concurrently (at most 8 at a time) and the executor serves them off its event loop. Mutations (`write`, `edit`, `patch`, `bash`) and `investigate_repository` run one at a time in their original order, so each keeps its own checkpoint and a read issued after a write observes it. Results are always returned to the model in the original call order.
+When one model turn issues several calls, consecutive independent read-only calls (`read`, `grep`, `find`, `ls`, `status`) run concurrently (at most 8 at a time) and the executor serves them off its event loop. Mutations (`write`, `edit`, `apply_patch`, `bash`) and `investigate_repository` run one at a time in their original order, so each keeps its own checkpoint and a read issued after a write observes it. Results are always returned to the model in the original call order.
 
 
 ## Permission matching

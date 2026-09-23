@@ -139,7 +139,7 @@ class GenerationService(QObject):
         self.host.confirm(
             f"enable-accept-edits:{self.host.runtime.workspace_path}",
             "Accept staged edits for this Agent session?",
-            "write, edit, and patch will change the private staged copy without asking. "
+            "write, edit, and apply_patch will change the private staged copy without asking. "
             "Bash commands still require approval, and publishing to the host is still reviewed separately. "
             "This stops on resume, mode or workspace change, or app restart.",
             enable,

@@ -19,10 +19,10 @@ Desktop -> authenticated gateway -> Unix-socket executor -> ephemeral staging ->
 
 ## Public tools
 
-The model-facing local tools are `read`, `write`, `edit`, `patch`, `bash`, `grep`, `find`, `ls`, `status`, and `investigate_repository`.
+The model-facing local tools are `read`, `write`, `edit`, `apply_patch`, `bash`, `grep`, `find`, `ls`, `status`, and `investigate_repository`.
 
 - Plan: `read`, `grep`, `find`, `ls` only.
-- Agent: all ten; mutations (`write`, `edit`, `patch`, `bash`) remain in staging; `status` is read-only staged-change review.
+- Agent: all ten; mutations (`write`, `edit`, `apply_patch`, `bash`) remain in staging; `status` is read-only staged-change review.
 - Consecutive read-only calls in one turn may run concurrently; mutations stay serialized in call order.
 - `investigate_repository` is Agent-only, read-only, capped at four calls per turn, and restricted to the Plan tool set inside its nested loop.
 - Do not add aliases, legacy compatibility tools, hidden capabilities, or alternate public vocabularies.
@@ -44,6 +44,8 @@ See `docs/TOOLS.md` for the contract and `docs/LIMITS.md` for limits.
 When changing a public tool, update `shared/tools.py`, `server/openrouter/agent.py`, executor dispatch/permissions, relevant tests, and the corresponding `docs/TOOLS.md`/`docs/LIMITS.md` sections together. Do not preserve stale compatibility code merely for old callers.
 
 When changing publication or security behavior, update the authoritative documentation and regression/security tests in the same change.
+
+Keep one authoritative copy of each document. Planning documents and the roadmap live in `docs/` with `UPPER_SNAKE_CASE.md` names (no spaces or dates) and are indexed in `docs/README.md`; superseded plans move to `archived-doc/` instead of staying beside a newer copy. The root holds only `README.md`, `AGENTS.md`, and `CHANGELOG.md` as documentation.
 
 ## Checks
 
@@ -73,7 +75,7 @@ Concise guide to each top-level folder:
 | `assets/` | Application icon and screenshot used by the desktop app and README. |
 | `build/` | PyInstaller spec and version metadata for Windows packaging. |
 | `docker/` | Gateway/executor images, Compose topology, secrets wiring, and the container operator guide (`README.container.md`). |
-| `docs/` | Authoritative architecture, tools, limits, publication, contributor, and troubleshooting references. |
+| `docs/` | Authoritative architecture, tools, limits, publication, contributor, and troubleshooting references, plus the roadmap and every living plan (indexed in `docs/README.md`). |
 | `egress/` | Opt-in allowlisted HTTPS egress proxy (standard library only) for the install-capable executor profile. |
 | `executor/` | The sandboxed tool service: dispatch, path safety, staging, checkpoints, resource limits. |
 | `installer/` | Inno Setup script for the Windows installer. |
@@ -84,4 +86,4 @@ Concise guide to each top-level folder:
 | `src/` | Desktop application code: thin QML adapter (`qml_backend.py`) over the services in `src/desktop/`, controllers, storage/migrations, gateway client, runtime manager, publication broker. |
 | `tests/` | Unit, integration, contract, regression, and security tests (no provider credentials required). |
 
-Root files: `app.py` (desktop entry point), `AGENTS.md` (durable invariants), `README.md` (product overview), `PROJECT_PLAN.md` (status roadmap), `CHANGELOG.md` (release summary), `pyproject.toml` / `requirements*.txt` (Python configuration).
+Root files: `app.py` (desktop entry point), `AGENTS.md` (durable invariants), `README.md` (product overview), `CHANGELOG.md` (release summary), `pyproject.toml` / `requirements*.txt` (Python configuration).

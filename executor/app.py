@@ -21,8 +21,8 @@ from .egress import egress_status
 from .errors import INVALID_ARGUMENTS, STAGING_CONFLICT, ExecutorToolError, classify_error
 from .permissions import enforce_capability
 from .staging import Snapshot, WorkspaceChange, advance_published_staging, load_snapshot, publication_batches, refresh_visible_files, seed_staging, workspace_changes
-from .tools import bash, edit, find, grep, ls, patch, read, status, write
-from .tools.patch import patch_paths
+from .tools import apply_patch, bash, edit, find, grep, ls, read, status, write
+from .tools.apply_patch import apply_patch_paths
 from .tools.bash import cancel as cancel_bash
 from .tools.bash import events as bash_events
 
@@ -47,8 +47,8 @@ class ExecutorService:
                 output, data = write(root, request.arguments, max_bytes=self.config.effective_limit("max_write_bytes"), max_checkpoint_files=self.config.max_staged_files, max_checkpoint_bytes=self.config.max_checkpoint_bytes, max_staging_bytes=self.config.max_staging_bytes)
             elif request.tool == "edit":
                 output, data = edit(root, request.arguments, max_target_bytes=self.config.effective_limit("max_edit_target_bytes"), max_result_bytes=self.config.effective_limit("max_edit_result_bytes"), max_checkpoint_files=self.config.max_staged_files, max_checkpoint_bytes=self.config.max_checkpoint_bytes,)
-            elif request.tool == "patch":
-                output, data = patch(root, request.arguments, max_operations=self.config.effective_limit("max_patch_operations"), max_patch_bytes=self.config.effective_limit("max_patch_bytes"), max_write_bytes=self.config.effective_limit("max_write_bytes"), max_edit_target_bytes=self.config.effective_limit("max_edit_target_bytes"), max_edit_result_bytes=self.config.effective_limit("max_edit_result_bytes"), max_checkpoint_files=self.config.max_staged_files, max_checkpoint_bytes=self.config.max_checkpoint_bytes, max_staging_bytes=self.config.max_staging_bytes)
+            elif request.tool == "apply_patch":
+                output, data = apply_patch(root, request.arguments, max_operations=self.config.effective_limit("max_patch_operations"), max_patch_bytes=self.config.effective_limit("max_patch_bytes"), max_write_bytes=self.config.effective_limit("max_write_bytes"), max_edit_target_bytes=self.config.effective_limit("max_edit_target_bytes"), max_edit_result_bytes=self.config.effective_limit("max_edit_result_bytes"), max_checkpoint_files=self.config.max_staged_files, max_checkpoint_bytes=self.config.max_checkpoint_bytes, max_staging_bytes=self.config.max_staging_bytes)
             elif request.tool == "bash":
                 output, data = await bash(request.request_id, root, request.arguments, max_seconds=self.config.effective_limit("max_command_seconds"), max_output=self.config.effective_limit("max_bash_output_bytes"), max_command_bytes=self.config.effective_limit("max_command_bytes"), max_stdin_bytes=self.config.effective_limit("max_bash_stdin_bytes"), max_checkpoint_files=self.config.max_staged_files, max_checkpoint_bytes=self.config.max_checkpoint_bytes)
             elif request.tool == "status":
@@ -72,14 +72,14 @@ class ExecutorService:
 
     def _post_mutation_files(self, request: ToolRequest, data: dict) -> dict[str, tuple[str, int, int]] | None:
         """Reuse the listing the mutation's own checkpoint just walked when the touched paths
-        are known exactly (write/edit/patch), instead of walking the tree a second time.
+        are known exactly (write/edit/apply_patch), instead of walking the tree a second time.
         Bash can touch anything, so it always gets a fresh walk."""
         if request.tool == "bash":
             return None
         base = checkpoint_files(str(data.get("checkpoint_id") or ""))
         if base is None:
             return None
-        paths = patch_paths(request.arguments) if request.tool == "patch" else [str(data.get("path") or "")]
+        paths = apply_patch_paths(request.arguments) if request.tool == "apply_patch" else [str(data.get("path") or "")]
         return refresh_visible_files(self.config.work_root, base, [path for path in paths if path])
 
     def workspace_status(self, current: dict[str, tuple[str, int, int]] | None = None) -> dict[str, object]:

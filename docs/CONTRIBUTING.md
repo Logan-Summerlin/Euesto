@@ -53,4 +53,4 @@ Unit tests should use fake provider responses or dependency injection. No test s
 
 ## Documentation
 
-Use `docs/ARCHITECTURE.md`, `docs/TOOLS.md`, `docs/LIMITS.md`, and `docs/PUBLICATION.md` as authoritative references. `PROJECT_PLAN.md` is a status roadmap, and `AGENTS.md` contains only durable agent invariants.
+Use `docs/ARCHITECTURE.md`, `docs/TOOLS.md`, `docs/LIMITS.md`, and `docs/PUBLICATION.md` as authoritative references. `docs/ROADMAP.md` is a status roadmap, `AGENTS.md` contains only durable agent invariants, and planning documents live only in `docs/` (see the plan index in `docs/README.md`).
