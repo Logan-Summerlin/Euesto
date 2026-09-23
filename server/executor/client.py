@@ -61,16 +61,6 @@ class ExecutorClient:
         async with httpx.AsyncClient(transport=self._transport(), base_url="http://executor", timeout=3, follow_redirects=False) as client:
             await client.post(f"/v1/tools/{request_id}/cancel", headers=self._headers())
 
-    async def command_events(self, request_id: str, after: int = 0) -> dict:
-        async with httpx.AsyncClient(transport=self._transport(), base_url="http://executor", timeout=3, follow_redirects=False) as client:
-            response = await client.get(
-                f"/v1/tools/{request_id}/events",
-                headers=self._headers(),
-                params={"after": max(0, after)},
-            )
-            response.raise_for_status()
-            return dict(response.json())
-
     async def discard_staging(self) -> dict:
         async with httpx.AsyncClient(transport=self._transport(), base_url="http://executor", timeout=30, follow_redirects=False) as client:
             response = await client.post("/v1/staging/discard", headers=self._headers())

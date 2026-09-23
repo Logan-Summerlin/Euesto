@@ -8,12 +8,9 @@ import pytest
 from executor.tools.bash import (
     BASE_ENVIRONMENT,
     MAX_COMMAND_SECONDS,
-    MAX_EVENT_BYTES,
-    MAX_EVENT_COUNT,
     MAX_RETAINED_OUTPUT_BYTES,
     bash,
     cancel,
-    events,
 )
 
 # executor.tools/__init__.py does `from .bash import bash`, which shadows the
@@ -198,34 +195,13 @@ def test_bash_small_output_is_not_truncated(tmp_path: Path) -> None:
     assert data["stdout_truncated"] is False and data["stderr_truncated"] is False
 
 
-# Event retention
-
-
-def test_bash_event_retention_and_cursors_are_bounded(tmp_path: Path) -> None:
-    _, data = asyncio.run(run_bash(tmp_path, {"command": "python3 -c 'import sys; [sys.stdout.write(\"x\" * 16384) for _ in range(700)]'"}, max_output=1000))
-    assert data["exit_code"] == 0
-    event_data = events("test-request")
-    assert len(event_data["events"]) <= MAX_EVENT_COUNT
-    assert sum(len(item["text"].encode()) for item in event_data["events"]) <= MAX_EVENT_BYTES
-    assert event_data["next_cursor"] >= event_data["first_cursor"]
-    assert event_data["active"] is False
-    first_page = events("test-request", event_data["first_cursor"] - 1)
-    assert first_page["events"]
-    assert first_page["truncated"] is False
-    old_page = events("test-request", 0)
-    assert old_page["truncated"] is True
-    assert old_page["next_cursor"] == event_data["next_cursor"]
-
-
-def test_bash_events_page_from_a_cursor(tmp_path: Path) -> None:
-    asyncio.run(run_bash(tmp_path, {"command": "printf 'event\\n'"}, request_id="cursor-request"))
-    result = events("cursor-request", 0)
-    assert result["next_cursor"] >= 1
-    assert "".join(item["text"] for item in result["events"]) == "event\n"
-    assert events("cursor-request", result["next_cursor"])["events"] == []
-
-
 # Timeout, cancellation, and rollback
+
+
+def test_cancelling_an_unknown_request_records_nothing() -> None:
+    assert asyncio.run(cancel("not-running")) is False
+    assert bash_tool._runner._cancelled == set()
+
 
 
 def test_bash_enforces_timeout_and_rolls_back(tmp_path: Path) -> None:

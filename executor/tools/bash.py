@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import signal
 import time
@@ -18,9 +17,6 @@ from ..errors import (
 from ..mutations import create_mutation_checkpoint, rollback_mutation
 from ..paths import safe_path
 
-MAX_EVENT_COUNT = 512
-MAX_EVENT_BYTES = 512_000
-MAX_EVENT_REQUESTS = 64
 MAX_RETAINED_OUTPUT_BYTES = 512_000
 MAX_STREAM_PREVIEW_BYTES = MAX_RETAINED_OUTPUT_BYTES // 2
 MAX_STDIN_BYTES = 8_000_000
@@ -84,14 +80,10 @@ class _OutputBuffer:
 
 
 class BashRunner:
-    """Track shell processes and bounded output/event streams."""
+    """Track running shell processes so they can be cancelled."""
 
     def __init__(self) -> None:
         self._processes: dict[str, asyncio.subprocess.Process] = {}
-        self._events: dict[str, deque[dict[str, object]]] = {}
-        self._event_bytes: dict[str, int] = {}
-        self._sequence: dict[str, int] = {}
-        self._event_order: deque[str] = deque()
         self._cancelled: set[str] = set()
 
     async def run(self, request_id: str, root: Path, arguments: dict, *, max_seconds: int, max_output: int, max_command_bytes: int = MAX_COMMAND_BYTES, max_stdin_bytes: int = MAX_STDIN_BYTES, max_checkpoint_files: int = 300_000, max_checkpoint_bytes: int = 2_000_000_000) -> tuple[str, dict]:
@@ -126,14 +118,14 @@ class BashRunner:
         environment = self._environment(arguments.get("env", {}))
         checkpoint_id = create_mutation_checkpoint(root, max_files=max_checkpoint_files, max_total_bytes=max_checkpoint_bytes)
         started = time.perf_counter()
-        self._start_events(request_id)
+        self._cancelled.discard(request_id)
         stdout_task = stderr_task = stdin_task = None
         process: asyncio.subprocess.Process | None = None
         try:
             process = await asyncio.create_subprocess_exec("/bin/bash", "-lc", command, cwd=cwd, env=environment, stdin=asyncio.subprocess.PIPE if stdin_text is not None else asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True)
             self._processes[request_id] = process
-            stdout_task = asyncio.create_task(self._read_stream(request_id, "stdout", process.stdout, max_output))
-            stderr_task = asyncio.create_task(self._read_stream(request_id, "stderr", process.stderr, max_output))
+            stdout_task = asyncio.create_task(self._read_stream(process.stdout, max_output))
+            stderr_task = asyncio.create_task(self._read_stream(process.stderr, max_output))
             stdin_task = asyncio.create_task(self._write_stdin(process, stdin_text))
             try:
                 stdout_result, stderr_result, _ = await asyncio.wait_for(asyncio.gather(stdout_task, stderr_task, stdin_task), timeout=timeout)
@@ -183,6 +175,8 @@ class BashRunner:
             if process is None:
                 rollback_mutation(root, checkpoint_id)
             raise
+        finally:
+            self._cancelled.discard(request_id)
 
     @staticmethod
     def _model_output(stdout: _OutputBuffer, stderr: _OutputBuffer, max_output: int) -> str:
@@ -219,20 +213,6 @@ class BashRunner:
             environment[key] = value
         return environment
 
-    def _start_events(self, request_id: str) -> None:
-        if request_id not in self._events:
-            self._event_order.append(request_id)
-        while len(self._event_order) > MAX_EVENT_REQUESTS:
-            expired = self._event_order.popleft()
-            self._events.pop(expired, None)
-            self._event_bytes.pop(expired, None)
-            self._sequence.pop(expired, None)
-            self._cancelled.discard(expired)
-        self._events[request_id] = deque(maxlen=MAX_EVENT_COUNT)
-        self._event_bytes[request_id] = 0
-        self._sequence[request_id] = 0
-        self._cancelled.discard(request_id)
-
     @staticmethod
     async def _write_stdin(process: asyncio.subprocess.Process, value: str | None) -> None:
         if value is None or process.stdin is None:
@@ -245,16 +225,12 @@ class BashRunner:
         finally:
             process.stdin.close()
 
-    def events(self, request_id: str, after: int = 0) -> dict[str, object]:
-        values = list(self._events.get(request_id, ()))
-        first = int(values[0]["sequence"]) if values else self._sequence.get(request_id, 0) + 1
-        cursor = max(0, after)
-        return {"events": [item for item in values if int(item["sequence"]) > cursor], "next_cursor": self._sequence.get(request_id, 0), "first_cursor": first, "truncated": bool(values and cursor < first - 1), "active": request_id in self._processes}
-
     async def cancel(self, request_id: str) -> bool:
         process = self._processes.get(request_id)
+        if not process:
+            return False
         self._cancelled.add(request_id)
-        if not process or process.returncode is not None:
+        if process.returncode is not None:
             return False
         try:
             os.killpg(process.pid, signal.SIGTERM)
@@ -264,26 +240,14 @@ class BashRunner:
             await process.wait()
         return True
 
-    async def _read_stream(self, request_id: str, name: str, stream: asyncio.StreamReader | None, max_output: int) -> tuple[_OutputBuffer]:
+    @staticmethod
+    async def _read_stream(stream: asyncio.StreamReader | None, max_output: int) -> tuple[_OutputBuffer]:
         retained = _OutputBuffer(max_output)
         if stream is None:
             return (retained,)
         while chunk := await stream.read(16_384):
             retained.append(chunk)
-            self._append_event(request_id, name, chunk)
         return (retained,)
-
-    def _append_event(self, request_id: str, stream: str, chunk: bytes) -> None:
-        event = {"sequence": self._sequence.get(request_id, 0) + 1, "stream": stream, "text": chunk[:4_096].decode("utf-8", errors="replace")}
-        event_bytes = len(json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-        self._sequence[request_id] = int(event["sequence"])
-        queue = self._events.setdefault(request_id, deque(maxlen=MAX_EVENT_COUNT))
-        retained_bytes = self._event_bytes.get(request_id, 0)
-        while queue and (retained_bytes + event_bytes > MAX_EVENT_BYTES or len(queue) >= MAX_EVENT_COUNT):
-            expired = queue.popleft()
-            retained_bytes -= len(json.dumps(expired, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-        queue.append(event)
-        self._event_bytes[request_id] = max(0, retained_bytes + event_bytes)
 
 
 _runner = BashRunner()
@@ -296,6 +260,3 @@ async def bash(request_id: str, root: Path, arguments: dict, *, max_seconds: int
 async def cancel(request_id: str) -> bool:
     return await _runner.cancel(request_id)
 
-
-def events(request_id: str, after: int = 0) -> dict[str, object]:
-    return _runner.events(request_id, after)

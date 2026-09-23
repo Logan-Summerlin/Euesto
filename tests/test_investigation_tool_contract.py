@@ -70,7 +70,7 @@ def _run(monkeypatch, turns: list[AgentTurn], arguments: dict, executor=None):
     runtime._api_keys["run"] = "test-key"
     runtime._tool_result_bytes["run"] = 0
     messages: list[dict[str, object]] = []
-    asyncio.run(runtime._investigate_repository("run", _request(), "parent", {"arguments": json.dumps(arguments)}, messages, RunBudget(10, 120, 1.0, 10, "test")))
+    asyncio.run(runtime._investigate_repository("run", _request(), "parent", json.dumps(arguments), messages, RunBudget(10, 120, 1.0, 10, "test")))
     return json.loads(str(messages[-1]["content"])), prompts, events, executor
 
 

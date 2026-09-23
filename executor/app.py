@@ -42,7 +42,6 @@ from .staging import (
 from .tools import apply_patch, bash, edit, find, grep, ls, read, status, write
 from .tools.apply_patch import apply_patch_paths
 from .tools.bash import cancel as cancel_bash
-from .tools.bash import events as bash_events
 
 DEVELOPER_EXECUTABLE_CANDIDATES = ("python", "python3", "pytest", "ruff", "node", "npm", "pnpm", "yarn", "make", "gcc", "g++", "clang", "go", "cargo", "rustc", "java", "javac")
 
@@ -185,19 +184,13 @@ def create_app(config: ExecutorConfig | None = None, service: ExecutorService | 
         return JSONResponse({"snapshot_id": snapshot.snapshot_id, "file_count": snapshot.file_count})
     async def cancel(request: Request):
         denied = await authenticate(request); return denied or JSONResponse({"cancelled": await cancel_bash(request.path_params["request_id"])})
-    async def command_events(request: Request):
-        denied = await authenticate(request)
-        if denied: return denied
-        try: after = max(0, int(request.query_params.get("after", "0")))
-        except ValueError: return _error("request.invalid_cursor", "after must be an integer", 422)
-        return JSONResponse(bash_events(request.path_params["request_id"], after))
     async def discard(request: Request):
         denied = await authenticate(request)
         if denied: return denied
         try: snapshot = executor.discard()
         except (OSError, ValueError, RuntimeError) as exc: return _error("staging.discard_failed", str(exc), 409)
         return JSONResponse({"snapshot_id": snapshot.snapshot_id, "file_count": snapshot.file_count})
-    app = Starlette(routes=[Route("/v1/status", status, methods=["GET"]), Route("/v1/tools", tool, methods=["POST"]), Route("/v1/tools/{request_id:str}/events", command_events, methods=["GET"]), Route("/v1/manifest", manifest, methods=["POST"]), Route("/v1/staging/mark-published", mark_published, methods=["POST"]), Route("/v1/staging/discard", discard, methods=["POST"]), Route("/v1/tools/{request_id:str}/cancel", cancel, methods=["POST"])])
+    app = Starlette(routes=[Route("/v1/status", status, methods=["GET"]), Route("/v1/tools", tool, methods=["POST"]), Route("/v1/manifest", manifest, methods=["POST"]), Route("/v1/staging/mark-published", mark_published, methods=["POST"]), Route("/v1/staging/discard", discard, methods=["POST"]), Route("/v1/tools/{request_id:str}/cancel", cancel, methods=["POST"])])
     app.state.executor = executor; return app
 
 

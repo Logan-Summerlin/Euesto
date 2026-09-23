@@ -45,7 +45,7 @@ def test_repository_investigation_uses_request_model(monkeypatch) -> None:
 
     result = asyncio.run(
         runtime._investigate_repository(
-            "run", request, "parent", {"arguments": '{"query":"find the entry point"}'}, messages, budget
+            "run", request, "parent", '{"query":"find the entry point"}', messages, budget
         )
     )
 

@@ -74,7 +74,7 @@ def test_investigator_prompt_explains_plan_harness_and_budget(monkeypatch):
             "run-1",
             make_request(),
             "investigate-1",
-            {"arguments": json.dumps({"query": "find the relevant implementation"})},
+            json.dumps({"query": "find the relevant implementation"}),
             messages,
             parent_budget,
         )
@@ -121,7 +121,7 @@ def test_investigator_reserves_final_budget_for_synthesis(monkeypatch):
             "run-1",
             make_request(),
             "investigate-1",
-            {"arguments": json.dumps({"query": "find the relevant implementation"})},
+            json.dumps({"query": "find the relevant implementation"}),
             messages,
             parent_budget,
         )
@@ -189,7 +189,7 @@ def test_investigation_rejects_hallucinated_tool_and_recovers(monkeypatch):
             "run-1",
             make_request(),
             "investigate-1",
-            {"arguments": json.dumps({"query": "find the relevant implementation"})},
+            json.dumps({"query": "find the relevant implementation"}),
             messages,
             parent_budget,
         )
@@ -255,7 +255,7 @@ def test_investigation_rejects_malformed_and_non_object_json_arguments(monkeypat
             "run-1",
             make_request(),
             "investigate-1",
-            {"arguments": json.dumps({"query": "find the relevant implementation"})},
+            json.dumps({"query": "find the relevant implementation"}),
             messages,
             parent_budget,
         )
@@ -299,7 +299,7 @@ def test_investigation_budget_exhaustion_returns_partial_success(monkeypatch):
             "run-1",
             make_request(),
             "investigate-1",
-            {"arguments": json.dumps({"query": "find the relevant implementation"})},
+            json.dumps({"query": "find the relevant implementation"}),
             messages,
             parent_budget,
         )
@@ -332,7 +332,7 @@ def test_investigation_child_wall_time_is_capped_independently_of_parent(monkeyp
     runtime._api_keys["run-1"] = "api-key"
     parent_budget = RunBudget(100, 1_500, 1.0, 100, "test")
 
-    asyncio.run(runtime._investigate_repository("run-1", make_request(), "investigate-1", {"arguments": json.dumps({"query": "q"})}, [], parent_budget))
+    asyncio.run(runtime._investigate_repository("run-1", make_request(), "investigate-1", json.dumps({"query": "q"}), [], parent_budget))
 
     started = next(payload for kind, payload in events if kind == "subagent.started")
     assert started["budget"]["max_wall_seconds"] == runtime_module.INVESTIGATION_MAX_WALL_SECONDS
