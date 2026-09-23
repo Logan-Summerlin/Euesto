@@ -42,6 +42,34 @@ def test_legacy_investigation_model_migrates_to_mimo(tmp_path: Path) -> None:
         storage.close()
 
 
+def test_legacy_default_migrates_only_once(tmp_path: Path) -> None:
+    storage = Storage(tmp_path / "settings.sqlite")
+    try:
+        storage.set_setting("investigation_model_id", "deepseek/deepseek-chat-v3-0324")
+        bridge = DesktopBridge(storage)
+        assert bridge.investigationModel == DEFAULT_INVESTIGATION_MODEL
+        # Choosing the old default explicitly afterwards must stick across reloads and restarts.
+        bridge.saveInvestigationModel("deepseek/deepseek-chat-v3-0324")
+        bridge.reload_models()
+        assert bridge.investigationModel == "deepseek/deepseek-chat-v3-0324"
+        assert DesktopBridge(storage).investigationModel == "deepseek/deepseek-chat-v3-0324"
+    finally:
+        storage.close()
+
+
+def test_blank_investigation_model_is_rejected(tmp_path: Path) -> None:
+    storage = Storage(tmp_path / "settings.sqlite")
+    try:
+        bridge = DesktopBridge(storage)
+        errors = []
+        bridge.errorRequested.connect(lambda title, _body: errors.append(title))
+        bridge.saveInvestigationModel("   ")
+        assert errors == ["Invalid investigation model"]
+        assert bridge.investigationModel == DEFAULT_INVESTIGATION_MODEL
+    finally:
+        storage.close()
+
+
 def test_saved_investigation_model_survives_backend_reload(tmp_path: Path) -> None:
     storage = Storage(tmp_path / "settings.sqlite")
     try:

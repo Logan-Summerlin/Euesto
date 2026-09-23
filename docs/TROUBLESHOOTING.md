@@ -48,8 +48,9 @@ A stale manifest means the publication baseline changed. Discard/reseed staging 
 
 - `investigation.call_limit`: more than four `investigate_repository` calls were attempted in one turn. Continue with the direct tools instead.
 - `investigation.tool_not_permitted`: the nested loop tried a non-Plan tool; enforcement is in code, so this indicates the investigator model attempted an out-of-scope call.
-- `investigation.failed`: the nested loop errored (provider, budget, or tool failure). The parent is told to fall back to direct `read`/`grep`/`find`/`ls` use. A failed call still counts toward the four-call cap.
-- Truncated or thin summaries: the child budget ran out and forced synthesis. Re-run with a narrower query or investigate directly.
+- `investigation.failed`: the nested loop errored before gathering any evidence (for example an invalid key, unknown model ID, or provider outage that persisted through retries). The message includes the provider's error text. The parent is told to fall back to direct `read`/`grep`/`find`/`ls` use. A failed call still counts toward the four-call cap.
+- Truncated or thin summaries: exploration stopped (`stop_reason` in the result) and the harness forced synthesis. `provider_error` means a provider failure cut exploration short; check the `provider_error` text. Re-run with a narrower query or investigate directly.
+- Investigation model does not change: pick or type the model in Settings → Connection and press **Save investigation model**; the status bar confirms the saved ID.
 
 ## Resource-limit failures
 

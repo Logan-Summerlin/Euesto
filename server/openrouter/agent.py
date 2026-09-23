@@ -20,6 +20,7 @@ def _tool(name: str, description: str, properties: dict[str, Any], required: lis
     return {"type": "function", "function": {"name": name, "description": description, "parameters": params}}
 
 
+RETRYABLE_STATUS = frozenset({408, 409, 425, 429})
 LOCAL_TOOL_SCHEMAS = [
     _tool("read", "Read a UTF-8 text file.", {"path": {"type": "string"}, "start_line": {"type": "integer", "minimum": 1}, "end_line": {"type": "integer", "minimum": 1}, "max_bytes": {"type": "integer", "minimum": 1, "maximum": 8_000_000}}, ["path"]),
     _tool("write", "Create or replace a UTF-8 text file.", {"path": {"type": "string"}, "content": {"type": "string"}, "expected_sha256": {"type": ["string", "null"]}, "create_parents": {"type": "boolean"}}, ["path", "content"]),
@@ -57,20 +58,24 @@ def agent_payload(model: str, messages: list[dict[str, Any]], mode: str, provide
     return {"model": model, "messages": messages, "tools": tools or tool_schemas(mode), "tool_choice": "auto" if tools else "none", "stream": False, "usage": {"include": True}, "provider": provider_routing(provider_preferences or {})}
 
 
-async def agent_turn(model: str, messages: list[dict[str, Any]], api_key: str, mode: str, provider_preferences: dict[str, Any] | None = None, allowed_tools: set[str] | None = None) -> AgentTurn:
+async def agent_turn(model: str, messages: list[dict[str, Any]], api_key: str, mode: str, provider_preferences: dict[str, Any] | None = None, allowed_tools: set[str] | None = None, *, timeout: float = 90) -> AgentTurn:
     payload = agent_payload(model, messages, mode, provider_preferences, allowed_tools)
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "X-Title": APP_TITLE}
     try:
-        async with httpx.AsyncClient(timeout=90, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=15.0), follow_redirects=False) as client:
             response = await client.post(OPENROUTER_URL, headers=headers, json=payload)
             if response.status_code >= 400:
-                raise ProviderError("provider.agent_error", f"OpenRouter agent request failed ({response.status_code}).", retryable=response.status_code >= 500)
+                detail = _error_detail(_json_or_empty(response))
+                raise ProviderError("provider.agent_error", f"OpenRouter agent request failed ({response.status_code}){detail}.", retryable=response.status_code in RETRYABLE_STATUS or response.status_code >= 500)
             data = response.json()
     except httpx.HTTPError as exc:
-        raise ProviderError("provider.connection", f"Agent request failed: {exc}", retryable=True) from exc
+        raise ProviderError("provider.connection", f"Agent request failed: {type(exc).__name__}: {exc}", retryable=True) from exc
+    except ValueError as exc:
+        raise ProviderError("provider.invalid_agent_response", "OpenRouter returned a non-JSON agent response.", retryable=True) from exc
     choices = data.get("choices") or []
     if not choices or not isinstance(choices[0].get("message"), dict):
-        raise ProviderError("provider.invalid_agent_response", "OpenRouter returned no agent message.")
+        # OpenRouter reports upstream failures after the 200 status line as an error body.
+        raise ProviderError("provider.invalid_agent_response", f"OpenRouter returned no agent message{_error_detail(data)}.", retryable=bool(data.get("error")))
     message = _normalize_message(choices[0]["message"])
     content = message.get("content")
     if isinstance(content, list):
@@ -79,8 +84,29 @@ async def agent_turn(model: str, messages: list[dict[str, Any]], api_key: str, m
     return AgentTurn(str(content or ""), calls, message, normalize_usage(data.get("usage") or {}))
 
 
+def _json_or_empty(response: httpx.Response) -> dict[str, Any]:
+    try:
+        data = response.json()
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _error_detail(data: dict[str, Any]) -> str:
+    error = data.get("error")
+    message = error.get("message") if isinstance(error, dict) else error
+    text = " ".join(str(message or "").split())[:300]
+    return f": {text}" if text else ""
+
+
 def _normalize_message(raw: dict[str, Any]) -> dict[str, Any]:
     normalized = {"role": "assistant", "content": raw.get("content")}
+    # Reasoning models (tool-calling with interleaved thinking) require their reasoning to be
+    # sent back unchanged with the tool calls it produced; dropping it breaks later turns.
+    if isinstance(raw.get("reasoning_details"), list) and raw["reasoning_details"]:
+        normalized["reasoning_details"] = raw["reasoning_details"]
+    if isinstance(raw.get("reasoning"), str) and raw["reasoning"]:
+        normalized["reasoning"] = raw["reasoning"]
     calls = []
     for item in raw.get("tool_calls") or ():
         if not isinstance(item, dict):

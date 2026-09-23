@@ -33,6 +33,7 @@ BUILTIN_COMMANDS = (
 )
 SYNCED_WORKSPACE_KEYS = ("instructions", "active_skills", "default_mode", "context_policy", "custom_tools")
 LEGACY_INVESTIGATION_DEFAULT = "deepseek/deepseek-chat-v3-0324"
+LEGACY_INVESTIGATION_MIGRATED = "investigation_model_legacy_migrated"
 INVESTIGATION_MODEL_ENTRY = {
     "id": DEFAULT_INVESTIGATION_MODEL,
     "label": "MiMo-V2.5",
@@ -99,11 +100,15 @@ class SettingsService(QObject):
         return self.storage.get_setting("investigation_model_id", "") or ""
 
     def ensure_investigation_model(self) -> str:
-        """Return the saved investigation model, defaulting (and migrating the legacy default) to MiMo."""
+        """Return the saved investigation model, defaulting it to MiMo and migrating the legacy
+        default once, so a later explicit choice of that model is kept."""
         value = self.investigation_model.strip()
-        if value in {"", LEGACY_INVESTIGATION_DEFAULT}:
+        migrated = self.storage.get_setting(LEGACY_INVESTIGATION_MIGRATED, "") == "1"
+        if not value or (value == LEGACY_INVESTIGATION_DEFAULT and not migrated):
             value = DEFAULT_INVESTIGATION_MODEL
             self.storage.set_setting("investigation_model_id", value)
+        if not migrated:
+            self.storage.set_setting(LEGACY_INVESTIGATION_MIGRATED, "1")
         return value
 
     def save_investigation_model(self, model_id: str) -> None:

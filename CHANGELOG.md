@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — Repository investigation reliability and model selection
+
+- `investigate_repository` now always returns a summary unless the provider fails before any evidence is gathered. Fixed: tool calls left unanswered when the nested loop stopped mid-turn (providers rejected the synthesis request); the nested wall-time limit aborting the loop with no summary instead of reserving time for synthesis; a paid final answer being discarded when it pushed usage over the nested cost cap; nested results sharing, and being starved by, the parent run's 512,000-byte result ledger; unbounded nested context; empty final answers accepted as summaries; and no retry for transient provider errors. Mid-conversation synthesis instructions are sent as `user` messages, reasoning is sent back with tool calls, and provider error text is included in failures. Results report `stop_reason`.
+- The Settings investigation-model control works again: the Save button called an out-of-scope `currentText` (a QML ReferenceError), so the setting never changed from MiMo-V2.5. The picker also accepts any typed OpenRouter model ID, keeps its selection across model-list reloads, and the legacy DeepSeek default is migrated only once, so choosing it later sticks.
+
 ## Unreleased — Code simplification
 
 A KISS/YAGNI pass that keeps behavior, the QML bridge surface, HTTP/protocol shapes, and tool contracts unchanged except for the fixes below. The completed plan is archived as `archived-doc/simplification-plan.md`; the findings it left for a product or security decision are listed in `docs/ROADMAP.md`.
