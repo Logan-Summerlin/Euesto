@@ -32,7 +32,7 @@ def main() -> int:
         if completed.returncode:
             return completed.returncode
     print("Installed validation dependencies:")
-    for requirement in ("PySide6", "pytest", "pytest-asyncio", "pytest-timeout", "ruff", "Pillow", "PyInstaller"):
+    for requirement in ("PySide6", "pytest", "pytest-timeout", "ruff", "PyInstaller"):
         try:
             version = importlib.metadata.version(requirement)
         except importlib.metadata.PackageNotFoundError:

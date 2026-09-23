@@ -16,6 +16,7 @@ from shared.tools import openrouter_tools
 from .errors import ProviderError
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+APP_TITLE = "Local OpenRouter Chat"
 
 
 @dataclass(slots=True)
@@ -29,9 +30,6 @@ class ProviderEvent:
 
 
 class OpenRouterGatewayClient:
-    def __init__(self, *, transport: httpx.AsyncBaseTransport | None = None):
-        self.transport = transport
-
     async def stream_chat(
         self, request: ChatRequest, api_key: str, cancel_event: asyncio.Event
     ) -> AsyncIterator[ProviderEvent]:
@@ -39,7 +37,7 @@ class OpenRouterGatewayClient:
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "X-Title": "Local OpenRouter Chat",
+            "X-Title": APP_TITLE,
         }
         timeout = httpx.Timeout(connect=15.0, read=None, write=30.0, pool=15.0)
         started = time.perf_counter()
@@ -49,9 +47,7 @@ class OpenRouterGatewayClient:
         latest_provider: str | None = None
         latest_finish: str | None = None
         try:
-            async with httpx.AsyncClient(
-                timeout=timeout, transport=self.transport, follow_redirects=False
-            ) as client:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
                 async with client.stream(
                     "POST", OPENROUTER_URL, json=payload, headers=headers
                 ) as response:
@@ -115,7 +111,7 @@ def build_payload(request: ChatRequest) -> dict[str, Any]:
         "messages": [{"role": item.role, "content": item.content} for item in request.messages],
         "stream": True,
         "usage": {"include": True},
-        "provider": _provider_preferences(request.provider_preferences),
+        "provider": provider_routing(request.provider_preferences),
     }
     tools = openrouter_tools(request.server_tools)
     if tools:
@@ -138,7 +134,7 @@ def build_payload(request: ChatRequest) -> dict[str, Any]:
     return payload
 
 
-def _provider_preferences(value: dict[str, Any]) -> dict[str, Any]:
+def provider_routing(value: dict[str, Any]) -> dict[str, Any]:
     """Fail closed to non-training providers unless the desktop explicitly opts in."""
     return {
         "data_collection": ("allow" if value.get("data_collection") == "allow" else "deny"),

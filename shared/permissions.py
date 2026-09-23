@@ -1,13 +1,21 @@
 from __future__ import annotations
 
-import shlex
 import re
+import shlex
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import Any
 
-from .tools import MUTATION_TOOLS, READ_TOOLS, ToolRequest
+from .tools import MUTATION_TOOLS, READ_TOOLS, STAGED_EDIT_TOOLS, ToolRequest
+
+# Session approval policies for Agent runs, from most to least prompting:
+#   prompt        every mutation or command asks unless a rule matches
+#   accept_edits  staged file edits (write/edit/apply_patch) run without asking; bash still asks
+#   auto          every otherwise-valid call runs without asking
+# Explicit DENY rules win under every policy, and publication stays separately approved
+# except under auto.
+APPROVAL_POLICIES = ("prompt", "accept_edits", "auto")
 
 
 class PermissionDecision(StrEnum):
@@ -37,13 +45,13 @@ class PermissionRule:
     def matches(self, request: ToolRequest, workspace_id: str) -> bool:
         if not self.enabled or self.workspace_id != workspace_id or self.mode != request.mode or self.tool != request.tool:
             return False
-        path = str(request.arguments.get("path") or request.arguments.get("directory") or "")
         if self.path_prefix is not None:
-            normalized_path = _permission_path(path)
             normalized_prefix = _permission_path(self.path_prefix)
-            if normalized_path is None or normalized_prefix is None:
+            paths = [_permission_path(path) for path in request_paths(request)]
+            # A multi-file apply_patch matches a path-scoped rule only when every path is in scope.
+            if normalized_prefix is None or not paths or any(path is None for path in paths):
                 return False
-            if not (normalized_path == normalized_prefix or normalized_path.startswith(normalized_prefix + "/")):
+            if not all(path == normalized_prefix or path.startswith(normalized_prefix + "/") for path in paths):
                 return False
         if self.executable is not None:
             if request.tool != "bash":
@@ -55,6 +63,35 @@ class PermissionRule:
             if not tokens or tokens[0] != self.executable or tokens[1 : 1 + len(self.argument_prefix)] != list(self.argument_prefix):
                 return False
         return True
+
+
+def request_paths(request: ToolRequest) -> list[str]:
+    """Workspace paths a request names: one ``path``, or every ``apply_patch`` operation path."""
+    if request.tool == "apply_patch":
+        operations = request.arguments.get("operations")
+        return [str(item.get("path") or "") for item in operations if isinstance(item, dict)] if isinstance(operations, list) else []
+    return [str(request.arguments.get("path") or "")]
+
+
+def rule_scope(request: ToolRequest) -> str | None:
+    """The path prefix a saved or per-run rule should cover for this request.
+
+    Single-path tools scope to their path. An apply_patch scopes to the deepest directory shared by
+    all of its paths, or to the whole workspace (``None``) when they share none.
+    """
+    paths = [path for path in request_paths(request) if path]
+    if request.tool != "apply_patch":
+        return paths[0] if paths else None
+    normalized = [_permission_path(path) for path in paths]
+    if not normalized or any(path is None for path in normalized):
+        return None
+    parts = [path.split("/")[:-1] for path in normalized if path]
+    shared: list[str] = []
+    for segments in zip(*parts, strict=False):
+        if len(set(segments)) != 1:
+            break
+        shared.append(segments[0])
+    return "/".join(shared) or None
 
 
 def resolve_permission(request: ToolRequest, workspace_id: str, rules: tuple[PermissionRule, ...] = ()) -> PermissionDecision:
@@ -74,6 +111,21 @@ def resolve_permission(request: ToolRequest, workspace_id: str, rules: tuple[Per
     return PermissionDecision.ALLOW_RUN if request.tool in READ_TOOLS else PermissionDecision.ASK
 
 
+def apply_approval_policy(decision: PermissionDecision, request: ToolRequest, policy: str) -> PermissionDecision:
+    """Resolve a rule-level ``ASK`` under the session approval policy.
+
+    Only ``ASK`` changes: ``DENY`` (including Plan-mode mutation denial and explicit deny
+    rules) and already-allowed decisions pass through untouched.
+    """
+    if decision != PermissionDecision.ASK:
+        return decision
+    if policy == "auto":
+        return PermissionDecision.ALLOW_RUN
+    if policy == "accept_edits" and request.mode == "agent" and request.tool in STAGED_EDIT_TOOLS:
+        return PermissionDecision.ALLOW_RUN
+    return PermissionDecision.ASK
+
+
 def _permission_path(value: str) -> str | None:
     """Return the canonical relative form used by permission scopes.
 
@@ -83,7 +135,7 @@ def _permission_path(value: str) -> str | None:
     if not isinstance(value, str) or "\x00" in value:
         return None
     value = value.replace("\\", "/")
-    if not value or value.startswith("/") or re.match(r"^[A-Za-z]:", value) or value.startswith("//"):
+    if not value or value.startswith("/") or re.match(r"^[A-Za-z]:", value):
         return None
     parts = [part for part in PurePosixPath(value).parts if part not in ("", ".")]
     if any(part == ".." for part in parts):

@@ -4,7 +4,7 @@ This is the developer/operator guide for a source checkout. Users of the Windows
 need Python, a virtual environment, or these Docker commands; the installed desktop runs the same
 bounded topology and manages its runtime in the background.
 
-This guide runs Local OpenRouter Chat v1.1 developer services with Docker Desktop on Windows. Chat uses only the
+This guide runs the Euesto developer services with Docker Desktop on Windows. Chat uses only the
 loopback gateway. Plan and Agent add a separate executor that has no network, sees one selected
 workspace read-only, and writes only to an ephemeral in-container staging area.
 
@@ -12,7 +12,8 @@ workspace read-only, and writes only to an ephemeral in-container staging area.
 
 Validation is separate from the production images. From the repository root, run
 `python scripts/bootstrap.py`, then `python scripts/validate.py preflight` and
-`python scripts/validate.py all`. QML checks use PySide6's `pyside6-qmllint` with offscreen/software
+`python scripts/validate.py all`; the individual commands are listed once, in
+[docs/TESTING.md](../docs/TESTING.md#required-checks). QML checks use PySide6's `pyside6-qmllint` with offscreen/software
 settings; `python scripts/qml_smoke.py` is an optional deterministic startup check. Container
 security checks must run on Linux with Docker and use disposable fixtures from
 `scripts/docker-fixtures.sh`; the script removes its temporary workspace and Compose volumes on
@@ -38,7 +39,7 @@ git clone https://github.com/Logan-Summerlin/Euesto.git
 cd Euesto
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements-dev.txt
+python -m pip install -r requirements-dev.lock
 ```
 
 Never put the OpenRouter key in `.env`, Compose environment values, the repository, or a
@@ -72,7 +73,8 @@ In the desktop app, choose **Workspace**, select the same folder, and then choos
 
 The executor automatically omits standard local metadata, dependency, and cache directories from
 its staging copy and staged publication review, including `.git`, `.hg`, `.svn`, `.venv`, `venv`,
-`env`, `.tox`, `.nox`, `node_modules`, Python bytecode caches, and common test/type-checker caches.
+`.tox`, `.nox`, `node_modules`, Python bytecode caches, and common test/type-checker caches. A plain
+`env/` directory is ordinary source and is not excluded.
 It supports up to 300,000 materialized regular files with a 2.5 GB staging budget (4 GB hard
 ceiling) in the default `coding` profile. The `/work` tmpfs is sized by
 `LOCAL_CHAT_WORK_TMPFS_SIZE` (8 GB default) and the executor container is capped at 3 GB of
@@ -84,7 +86,7 @@ approval. Agent can create or replace files, make exact-string edits, run non-in
 commands inside the container, and delegate read-only repository investigations to a configured
 cheaper model. Approving an edit or command lets it mutate files in ephemeral staging only; it does
 not permit a host write. Host publication requires a second approval showing the exact manifest.
-See `docs/TOOLS.md` for the full eight-tool contract and `docs/LIMITS.md` for effective limits.
+See `docs/TOOLS.md` for the full ten-tool contract and `docs/LIMITS.md` for effective limits.
 
 ## 5. Verify the isolation before trusting it
 
@@ -120,10 +122,26 @@ Expected results:
 Do not add `privileged`, host networking, writable source mounts, devices, Docker socket mounts,
 added capabilities, or unconfined security profiles to “fix” a launch problem.
 
+## 5a. Optional: allowlisted package installs (prototype)
+
+The default executor has no network. To let `pip install` reach PyPI (and npm reach its registry)
+without opening anything else, add the egress overlay:
+
+```powershell
+.\scripts\dev-up.ps1 -Workspace "C:\Users\you\Projects\example" -AllowlistedEgress
+```
+
+The executor then joins an internal-only Docker network whose only other member is a CONNECT proxy
+that allows `pypi.org`, `files.pythonhosted.org`, and `registry.npmjs.org` (override with
+`LOCAL_CHAT_EGRESS_ALLOWED_HOSTS`), refuses IP literals and non-public resolutions, and writes a JSON
+audit line per request (`docker compose --file docker\compose.yaml --file docker\compose.egress.yaml logs egress-proxy`).
+Requires Docker Compose 2.24 or later. See `docs/EGRESS.md` for the design, limits, and residual risks.
+
 ## 6. Approval and recovery rules
 
-- Read every executable, argument, working directory, timeout, and mutation warning.
-- Shells, PowerShell, SSH, Docker, and other host-control programs are rejected by the executor.
+- Read every command, working directory, timeout, and mutation warning.
+- Agent commands run as non-interactive `bash -lc` inside the network-disabled executor container,
+  never on the host; the executor has no host shell, SSH, or Docker access.
 - Treat repository `AGENTS.md`, source text, tool output, and model output as untrusted.
 - Review every path in the publish manifest. Publication fails if a host file changed after review.
 - Successful publications create recovery copies in
@@ -151,7 +169,7 @@ That deletion is irreversible and is not required for normal use.
 
 - **Agent unavailable:** restart with `-Workspace`, then select the identical canonical folder.
 - **Executor exits during startup:** inspect `docker compose --profile agent logs executor`; the
-  most common causes are a workspace exceeding 300,000 materialized files or 2 GB, an insufficient
+  most common causes are a workspace exceeding 300,000 materialized files or the 2.5 GB staging budget, an insufficient
   Docker Desktop memory allocation, or an unreadable source file. Remove unnecessary generated data
   or select a narrower project folder.
 - **Workspace identity mismatch:** run `dev-down.ps1`; do not reuse the old executor.

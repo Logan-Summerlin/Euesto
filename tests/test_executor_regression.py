@@ -1,59 +1,20 @@
 from __future__ import annotations
 
-import asyncio
 import os
 from pathlib import Path
 
 import pytest
 
-from executor.config import ExecutorConfig
-from executor.mutations import guard_shrink, sha256
+from executor.mutations import guard_shrink
 from executor.paths import UnsafePath, assert_unique_paths, normalize_relative, safe_path
-from executor.tools.bash import BashRunner, _OutputBuffer
+from executor.staging import sha256_file
 from executor.tools.edit import edit
 from executor.tools.find import find
+from executor.tools.grep import search_text
 from executor.tools.ls import ls
 from executor.tools.read import read
-from executor.tools.search_text import search_text
 from executor.tools.write import write
 from server.agent.budgets import BudgetExceededError, RunBudget
-
-
-def config(tmp_path: Path, **overrides: object) -> ExecutorConfig:
-    values: dict[str, object] = {"source_root": tmp_path / "source", "work_root": tmp_path / "work", "socket_path": tmp_path / "executor.sock", "token": "x" * 32, "workspace_id": "phase6"}
-    values.update(overrides)
-    return ExecutorConfig(**values)  # type: ignore[arg-type]
-
-
-@pytest.mark.parametrize("name", ExecutorConfig._LIMIT_FIELDS)
-def test_every_limit_reports_effective_value_and_enforces_hard_cap(tmp_path: Path, name: str) -> None:
-    cfg = config(tmp_path)
-    status = cfg.limit_status(name, 10**12)
-    assert status["configured"] == getattr(cfg, name)
-    assert status["hard_ceiling"] == ExecutorConfig.HARD_CEILINGS[name]
-    assert status["effective"] == getattr(cfg, name)
-    assert cfg.effective_limit(name, 1) == 1
-    with pytest.raises(ValueError, match="positive integers"):
-        config(tmp_path, **{name: 0})
-    with pytest.raises(ValueError, match="hard ceilings"):
-        config(tmp_path, **{name: ExecutorConfig.HARD_CEILINGS[name] + 1})
-
-
-def test_configuration_contradictions_environment_overrides_and_runtime_sources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    with pytest.raises(ValueError, match="fit strictly below"):
-        config(tmp_path, max_staging_bytes=3_500_000_000, max_checkpoint_bytes=3_500_000_000)
-    token = tmp_path / "token"
-    token.write_text("t" * 32, encoding="utf-8")
-    monkeypatch.setenv("LOCAL_CHAT_EXECUTOR_TOKEN_FILE", str(token))
-    monkeypatch.setenv("LOCAL_CHAT_WORKSPACE_ID", "phase6-env")
-    monkeypatch.setenv("LOCAL_CHAT_EXECUTOR_PROFILE", "small")
-    monkeypatch.setenv("LOCAL_CHAT_MAX_READ_BYTES", "123456")
-    cfg = ExecutorConfig.from_environment()
-    assert cfg.max_read_bytes == 123456
-    assert cfg.sources["max_read_bytes"] == "environment:LOCAL_CHAT_MAX_READ_BYTES"
-    monkeypatch.setenv("LOCAL_CHAT_MAX_READ_BYTES", "bad")
-    with pytest.raises(ValueError, match="positive integer"):
-        ExecutorConfig.from_environment()
 
 
 @pytest.mark.parametrize("size", (16, 70_000, 200_000))
@@ -65,9 +26,9 @@ def test_read_small_medium_large_and_utf8_metadata(tmp_path: Path, size: int) ->
     text, metadata = read(root, {"path": "text.txt", "max_bytes": 1_000}, max_bytes=1_000)
     assert len(text.encode()) == min(size, 1_000)
     assert metadata["truncated"] is (size > 1_000)
-    assert metadata["sha256"] == sha256(path)
+    assert metadata["sha256"] == sha256_file(path)
     unicode_path = root / "unicode.txt"
-    unicode_path.write_text("a\n€uro\n", encoding="utf-8")
+    unicode_path.write_bytes("a\n€uro\n".encode())
     with pytest.raises(ValueError, match="UTF-8 character boundary"):
         read(root, {"path": "unicode.txt", "offset": 3}, max_bytes=100)
 
@@ -90,16 +51,16 @@ def test_read_binary_invalid_utf8_and_ranges_are_rejected(tmp_path: Path) -> Non
 def test_write_edit_hash_occurrence_result_and_shrink_guards(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
-    write(root, {"path": "file.txt", "content": "alpha\nbeta\n"}, max_bytes=100)
+    write(root, {"path": "file.txt", "content": "alpha\nbeta\n"}, max_bytes=100, max_checkpoint_bytes=100_000_000)
     with pytest.raises(ValueError, match="Staging hash conflict"):
-        write(root, {"path": "file.txt", "content": "x", "expected_sha256": "0" * 64}, max_bytes=100)
-    old_hash = sha256(root / "file.txt")
-    _, result = edit(root, {"path": "file.txt", "old_str": "beta", "new_str": "gamma", "expected_occurrences": 1, "expected_sha256": old_hash}, max_target_bytes=100, max_result_bytes=100)
+        write(root, {"path": "file.txt", "content": "x", "expected_sha256": "0" * 64}, max_bytes=100, max_checkpoint_bytes=100_000_000)
+    old_hash = sha256_file(root / "file.txt")
+    _, result = edit(root, {"path": "file.txt", "old_str": "beta", "new_str": "gamma", "expected_occurrences": 1, "expected_sha256": old_hash}, max_target_bytes=100, max_result_bytes=100, max_checkpoint_bytes=100_000_000)
     assert result["old_sha256"] == old_hash
     with pytest.raises(ValueError, match="occurrence conflict"):
-        edit(root, {"path": "file.txt", "old_str": "missing", "new_str": "x"}, max_target_bytes=100, max_result_bytes=100)
+        edit(root, {"path": "file.txt", "old_str": "missing", "new_str": "x"}, max_target_bytes=100, max_result_bytes=100, max_checkpoint_bytes=100_000_000)
     with pytest.raises(ValueError, match="mutation limit"):
-        write(root, {"path": "large", "content": "x" * 101}, max_bytes=100)
+        write(root, {"path": "large", "content": "x" * 101}, max_bytes=100, max_checkpoint_bytes=100_000_000)
     large = root / "large-edit"
     large.write_text("line\n" * 50, encoding="utf-8")
     with pytest.raises(Exception, match="shrink"):
@@ -158,57 +119,6 @@ def test_path_traversal_links_hard_links_and_secret_restrictions(tmp_path: Path)
         read(root, {"path": "hard"}, max_bytes=100)
 
 
-def test_bash_limits_output_retention_and_environment_policy() -> None:
-    with pytest.raises(ValueError, match="command exceeds"):
-        asyncio.run(BashRunner().run("cmd", Path("."), {"command": "x" * 1_000_001}, max_seconds=10, max_output=100))
-    with pytest.raises(ValueError, match="stdin exceeds"):
-        asyncio.run(BashRunner().run("stdin", Path("."), {"command": "true", "stdin": "x" * 8_000_001}, max_seconds=10, max_output=100))
-    with pytest.raises(ValueError, match="restricted"):
-        BashRunner._environment({"PATH": "unsafe"})
-    output = _OutputBuffer(8)
-    output.append(b"abcdefghijk")
-    assert output.truncated and b"output truncated" in output.bytes()
-
-
-def test_bash_failure_and_timeout_roll_back_staging(tmp_path: Path) -> None:
-    root = tmp_path / "root"
-    root.mkdir()
-    target = root / "state"
-    target.write_text("before", encoding="utf-8")
-    _, result = asyncio.run(BashRunner().run("failure", root, {"command": "printf after > state; exit 7"}, max_seconds=10, max_output=100))
-    assert result["rolled_back"] is True and result["rollback_reason"] == "nonzero_exit" and target.read_text(encoding="utf-8") == "before"
-    _, retained = asyncio.run(BashRunner().run("retained", root, {"command": "printf retained > state; exit 7", "rollback_on_failure": False}, max_seconds=10, max_output=100))
-    assert retained["exit_code"] == 7 and retained["rolled_back"] is False and retained["rollback_reason"] == "none"
-    assert target.read_text(encoding="utf-8") == "retained"
-    target.write_text("before", encoding="utf-8")
-    with pytest.raises(TimeoutError):
-        asyncio.run(BashRunner().run("timeout", root, {"command": "printf after > state; sleep 5", "timeout_seconds": 1}, max_seconds=1, max_output=100))
-    assert target.read_text(encoding="utf-8") == "before"
-
-
-def test_failed_bash_preserves_previous_staged_changes(tmp_path: Path) -> None:
-    root = tmp_path / "root"
-    root.mkdir()
-    previous = root / "previous.txt"
-    target = root / "state"
-    previous.write_text("earlier staged work", encoding="utf-8")
-    target.write_text("before", encoding="utf-8")
-
-    _, result = asyncio.run(BashRunner().run(
-        "failed-after-previous",
-        root,
-        {"command": "printf changed > state; printf new > created.txt; exit 7"},
-        max_seconds=10,
-        max_output=100,
-    ))
-
-    assert result["exit_code"] == 7
-    assert result["rolled_back"] is True
-    assert previous.read_text(encoding="utf-8") == "earlier staged work"
-    assert target.read_text(encoding="utf-8") == "before"
-    assert not (root / "created.txt").exists()
-
-
 def test_budget_iteration_tool_wall_and_cost_exhaustion_and_remaining_reporting(monkeypatch: pytest.MonkeyPatch) -> None:
     for expected, attribute, value in (("iteration", "iterations", 3), ("tool-call", "tool_calls", 3), ("cost", "cost", 2.0)):
         budget = RunBudget(2, 5, 1.0, max_tool_calls=2)
@@ -248,4 +158,4 @@ def test_reparse_point_security_contract_and_hashes(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(Path, "lstat", lambda self: FakeStat())
     with pytest.raises(UnsafePath, match="reparse"):
         safe_path(root, "target")
-    assert sha256(target) == sha256(target)
+    assert sha256_file(target) == sha256_file(target)

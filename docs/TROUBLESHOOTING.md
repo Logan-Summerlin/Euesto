@@ -26,11 +26,15 @@ Check that the loopback gateway is healthy and that the desktop is using the cur
 
 ## Executor failures
 
-Check `/v1/status` and its reported workspace identity, snapshot identity, tool list, and effective limits. Executor authentication requires the current credential plus a fresh nonce. A Plan request for `write`, `edit`, or `bash` is intentionally rejected.
+Check `/v1/status` and its reported workspace identity, snapshot identity, tool list, and effective limits. Executor authentication requires the current credential plus a fresh nonce. A Plan request for `write`, `edit`, `apply_patch`, `bash`, or `status` is intentionally rejected.
 
 ## Staging failures
 
 A failed mutation should roll back its checkpoint. If staging is inconsistent, discard staging and reseed from the current workspace. Resource failures can occur when staged bytes, checkpoint bytes, file count, or work-volume headroom are exhausted.
+
+## Hard-linked files
+
+Files with more than one hard link are rejected because a hard link lets a write through one path change content reachable through another, which path containment and hash validation cannot see. Staging seeding fails with `Unsupported source file: <path>` when the selected workspace contains one; `read`, `write`, `edit`, and `apply_patch` report that the target must be a regular, non-hard-linked file. The restriction applies to reading and mutation alike. To work around it, replace the link with an independent copy in the workspace (for example, copy the file to a temporary name and move it back over the original), or select a workspace that does not contain hard-linked files.
 
 ## Publication failures
 
@@ -44,8 +48,9 @@ A stale manifest means the publication baseline changed. Discard/reseed staging 
 
 - `investigation.call_limit`: more than four `investigate_repository` calls were attempted in one turn. Continue with the direct tools instead.
 - `investigation.tool_not_permitted`: the nested loop tried a non-Plan tool; enforcement is in code, so this indicates the investigator model attempted an out-of-scope call.
-- `investigation.failed`: the nested loop errored (provider, budget, or tool failure). The parent is told to fall back to direct `read`/`grep`/`find`/`ls` use. A failed call still counts toward the four-call cap.
-- Truncated or thin summaries: the child budget ran out and forced synthesis. Re-run with a narrower query or investigate directly.
+- `investigation.failed`: the nested loop errored before gathering any evidence (for example an invalid key, unknown model ID, or provider outage that persisted through retries). The message includes the provider's error text. The parent is told to fall back to direct `read`/`grep`/`find`/`ls` use. A failed call still counts toward the four-call cap.
+- Truncated or thin summaries: exploration stopped (`stop_reason` in the result) and the harness forced synthesis. `provider_error` means a provider failure cut exploration short; check the `provider_error` text. Re-run with a narrower query or investigate directly.
+- Investigation model does not change: pick or type the model in Settings → Connection and press **Save investigation model**; the status bar confirms the saved ID.
 
 ## Resource-limit failures
 

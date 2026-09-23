@@ -17,8 +17,6 @@ from src.transcript import (
 )
 from src.workers import AgentWorker
 
-ROOT = Path(__file__).resolve().parents[2]
-
 
 def _message(message_id: int, role: str, parent: int | None = None) -> Message:
     return Message(
@@ -156,79 +154,6 @@ def test_unknown_provider_privacy_fields_fail_closed() -> None:
         )
 
 
-def test_v1_uses_qml_as_the_only_main_window_and_packages_assets() -> None:
-    app_source = (ROOT / "app.py").read_text(encoding="utf-8")
-    spec_source = (ROOT / "build" / "chatbot.spec").read_text(encoding="utf-8")
-
-    assert "QQmlApplicationEngine" in app_source
-    assert 'QQuickStyle.setStyle("Basic")' in app_source
-    assert app_source.index('QQuickStyle.setStyle("Basic")') < app_source.index(
-        "QApplication(sys.argv)"
-    )
-    assert "src.main_window" not in app_source
-    assert not (ROOT / "src" / "main_window.py").exists()
-    assert not (ROOT / "src" / "chat_view.py").exists()
-    for name in ("Main.qml", "Sidebar.qml", "Transcript.qml", "Composer.qml"):
-        assert (ROOT / "qml" / name).is_file()
-    assert 'project_root / "qml"' in spec_source
-
-
-def test_settings_loads_optional_values_without_assigning_undefined() -> None:
-    source = (ROOT / "qml" / "Main.qml").read_text(encoding="utf-8")
-
-    assert "function optionalText(value)" in source
-    assert "temperature.text = optionalText(options.temperature)" in source
-    assert "topP.text = optionalText(options.top_p)" in source
-    assert 'Shortcut { sequence: "Ctrl+Comma"; onActivated: settingsDialog.openAndLoad() }' in source
-    assert 'text: "Auto"' in source
-    assert "backend.requestAutoMode(checked)" in source
-
-
-def test_transcript_uses_native_style_safe_activity_button() -> None:
-    source = (ROOT / "qml" / "Transcript.qml").read_text(encoding="utf-8")
-
-    activity_button = source[
-        source.index("id: activityButton") : source.index(
-            "id: activityLoader", source.index("id: activityButton")
-        )
-    ]
-    assert "contentItem:" not in activity_button
-    assert "palette.buttonText: root.mutedColor" in activity_button
-
-
-def test_transcript_uses_exact_height_scrolling_and_incremental_rows() -> None:
-    source = (ROOT / "qml" / "Transcript.qml").read_text(encoding="utf-8")
-
-    assert "Flickable {" in source
-    assert "ListView {" not in source
-    assert "model: transcriptModel" in source
-    assert "model: backend.transcriptModel" not in source
-    assert "required property var rowData" in source
-    assert 'objectName: "transcriptMessageBody"' in source
-    assert "height: visible ? Math.ceil(contentHeight) : 0" in source
-    assert "Layout.preferredHeight: implicitHeight" not in source
-    assert "Layout.maximumHeight: implicitHeight" not in source
-    assert "verticalAlignment: TextEdit.AlignTop" in source
-    assert "contentHeight: Math.ceil(transcriptColumn.implicitHeight)" in source
-    assert "height: Math.ceil(content.implicitHeight + 24)" in source
-    assert "width: parent.width" in source
-    assert "height: active ? implicitHeight : 0" in source
-    assert "activityOverrides" in source
-    assert "Loader {" in source
-
-
-def test_tool_checkboxes_use_compact_indicators() -> None:
-    source = (ROOT / "qml" / "Composer.qml").read_text(encoding="utf-8")
-
-    assert "component ToolCheckBox: CheckBox" in source
-    assert "width: 13" in source
-    assert "height: 13" in source
-    assert "leftPadding: 0" in source
-    assert "leftPadding: control.indicator.width + control.spacing" in source
-    assert "contentItem: Label" in source
-    assert source.count("ToolCheckBox {") == 3
-
-
 def test_transcript_never_loads_tool_outputs_into_qml_activity(tmp_path: Path) -> None:
     storage = Storage(tmp_path / "chat.sqlite3")
     conversation = storage.create_conversation("Chat", "model/a", "System")
@@ -260,27 +185,6 @@ def test_transcript_never_loads_tool_outputs_into_qml_activity(tmp_path: Path) -
     storage.close()
 
 
-def test_responses_are_buffered_and_optional_qml_values_are_guarded() -> None:
-    backend_source = (ROOT / "src" / "qml_backend.py").read_text(encoding="utf-8")
-    worker_source = (ROOT / "src" / "workers.py").read_text(encoding="utf-8")
-    transcript_source = (ROOT / "qml" / "Transcript.qml").read_text(encoding="utf-8")
-    main_source = (ROOT / "qml" / "Main.qml").read_text(encoding="utf-8")
-    chunk_handler = backend_source[backend_source.index("def onStreamChunk") : backend_source.index("def onStreamComplete")]
-
-    assert "_refresh_transcript" not in chunk_handler
-    assert 'live_text=""' in backend_source
-    assert 'if event_type not in {"model.delta", "tool.output", "tool.completed"}' in backend_source
-    assert 'self.chunk.emit("".join(chunks))' in worker_source
-    assert 'if event.type in {"tool.output", "tool.completed"}' in worker_source
-    assert "card.value.streaming === true" in transcript_source
-    assert 'String(card.value.metadata || "").length' in transcript_source
-    assert "policy: ScrollBar.AlwaysOn" in transcript_source
-    assert "minimumSize: 0.08" in transcript_source
-    assert "self._schedule_transcript_refresh()" in backend_source
-    assert "TranscriptListModel" in backend_source
-    assert "enabled: presetBox.currentIndex >= 0" in main_source
-
-
 def test_agent_worker_delivers_one_answer_and_drops_large_transport_events() -> None:
     events = (
         EventEnvelope(1, "run-1", "model.delta", "2026-08-09T00:00:00Z", {"text": "hel"}),
@@ -302,11 +206,18 @@ def test_agent_worker_delivers_one_answer_and_drops_large_transport_events() -> 
     assert completions == [({"tokens": 9, "run_id": "run-1"}, False)]
 
 
-def test_gateway_token_is_used_from_memory_immediately_after_save() -> None:
-    source = (ROOT / "src" / "qml_backend.py").read_text(encoding="utf-8")
-    assert 'get_gateway_session_token() or get_gateway_token() or ""' in source
-    assert "self._gateway_token = new_token" in source
-    assert '"hasToken": bool(self._gateway_token)' in source
+def test_agent_worker_flushes_partial_output_before_reporting_failure() -> None:
+    events = (
+        EventEnvelope(1, "run-1", "model.delta", "2026-08-09T00:00:00Z", {"text": "partial"}),
+        EventEnvelope(2, "run-1", "run.failed", "2026-08-09T00:00:01Z", {"message": "boom"}),
+    )
+    worker = AgentWorker(SimpleNamespace(cancel=lambda: None), lambda _stop: iter(events))
+    chunks: list[str] = []
+    failures: list[str] = []
+    worker.chunk.connect(chunks.append)
+    worker.failed.connect(failures.append)
+    worker.run()
+    assert (chunks, failures, worker.last_usage) == (["partial"], ["boom"], {})
 
 
 def test_active_local_gateway_token_is_discovered_without_manual_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -316,10 +227,3 @@ def test_active_local_gateway_token_is_discovered_without_manual_entry(tmp_path:
     token = "a" * 43
     (session_dir / "gateway_token.txt").write_text(token, encoding="utf-8")
     assert settings.get_gateway_session_token() == token
-
-
-def test_catalog_autorefresh_waits_for_gateway_health_and_stays_nonblocking() -> None:
-    source = (ROOT / "src" / "qml_backend.py").read_text(encoding="utf-8")
-    assert "QTimer.singleShot(250, self.refreshCatalog)" not in source
-    assert "result.state in {HealthState.READY, HealthState.DEGRADED}" in source
-    assert "self._start_catalog_refresh(report_errors=False)" in source

@@ -48,6 +48,7 @@ def test_write_at_exact_profile_limit_succeeds_end_to_end(tmp_path: Path, profil
         assert not (config.work_root / "over.txt").exists()
 
 
+@pytest.mark.posix
 @pytest.mark.parametrize("profile", ["coding", "large-workspace"])
 def test_bash_stdin_at_exact_profile_limit_succeeds_end_to_end(tmp_path: Path, profile: str) -> None:
     config = _profile_config(tmp_path, profile)

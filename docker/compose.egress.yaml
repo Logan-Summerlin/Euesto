@@ -1,0 +1,84 @@
+# Opt-in, install-capable executor profile (see docs/EGRESS.md). Never loaded by default.
+#
+#   docker compose --file docker/compose.yaml --file docker/compose.egress.yaml --profile agent up --detach --build
+#
+# The executor still has no route to any network: it leaves `network_mode: none` only to join
+# `egress-internal`, an internal (no gateway, no NAT) network whose sole other member is the
+# allowlisted proxy. Its embedded-DNS upstream is disabled, so it cannot resolve or tunnel
+# through external names; it reaches the proxy by fixed address and the proxy resolves
+# allowlisted registries itself.
+services:
+  executor:
+    network_mode: !reset null
+    networks:
+      egress-internal:
+        ipv4_address: 172.31.250.10
+    dns:
+      - 127.0.0.1
+    # Installed packages need to execute from staging (console scripts, native extensions),
+    # so this profile mounts /work with `exec`; the default profile keeps Docker's noexec.
+    # The process is still non-root with no capabilities, no-new-privileges, and nosuid.
+    tmpfs: !override
+      - /work:size=${LOCAL_CHAT_WORK_TMPFS_SIZE:-8g},mode=0700,uid=10002,gid=10001,nosuid,nodev,exec
+      - /tmp:size=64m,mode=1777,noexec,nosuid,nodev
+    environment:
+      LOCAL_CHAT_EGRESS_PROXY: http://172.31.250.2:3128
+      LOCAL_CHAT_EGRESS_ALLOWED_HOSTS: ${LOCAL_CHAT_EGRESS_ALLOWED_HOSTS:-pypi.org,files.pythonhosted.org,registry.npmjs.org}
+    depends_on:
+      egress-proxy:
+        condition: service_healthy
+
+  egress-proxy:
+    profiles: ["agent"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.egress-proxy
+    image: ${LOCAL_CHAT_EGRESS_PROXY_IMAGE:-local-openrouter-chat-egress-proxy:1.1.0}
+    init: true
+    restart: "no"
+    read_only: true
+    user: "10003:10003"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      LOCAL_CHAT_EGRESS_LISTEN: 172.31.250.2:3128
+      LOCAL_CHAT_EGRESS_ALLOWED_HOSTS: ${LOCAL_CHAT_EGRESS_ALLOWED_HOSTS:-pypi.org,files.pythonhosted.org,registry.npmjs.org}
+      LOCAL_CHAT_EGRESS_ALLOWED_PORTS: "443"
+      LOCAL_CHAT_EGRESS_MAX_CONNECTIONS: "32"
+      LOCAL_CHAT_EGRESS_MAX_CONNECTIONS_PER_MINUTE: "240"
+    networks:
+      egress-internal:
+        ipv4_address: 172.31.250.2
+      egress-external: {}
+    tmpfs:
+      - /tmp:size=8m,mode=1777,noexec,nosuid,nodev
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.5
+    stop_grace_period: 5s
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import socket; socket.create_connection(('172.31.250.2', 3128), timeout=2).close()"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "5"
+
+networks:
+  egress-internal:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.250.0/24
+  egress-external:
+    driver: bridge

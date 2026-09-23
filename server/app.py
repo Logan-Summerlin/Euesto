@@ -11,7 +11,7 @@ from starlette.routing import Route
 
 from shared.requests import AgentRunRequest, ChatRequest
 from shared.responses import ErrorResponse
-from shared.tools import PublishManifest
+from shared.tools import PublicationReceipt
 
 from .auth import GatewaySecurityMiddleware
 from .config import GatewayConfig
@@ -51,8 +51,9 @@ def create_app(config: GatewayConfig | None = None, service: GatewayService | No
         Route("/v1/workspaces/{workspace_id:str}/staging/inspect", _inspect_staging, methods=["GET"]),
         Route("/v1/workspaces/{workspace_id:str}/staging/discard", _discard_staging, methods=["POST"]),
         Route("/v1/workspaces/{workspace_id:str}/staging/mark-published", _mark_staging_published, methods=["POST"]),
+        Route("/v1/workspaces/{workspace_id:str}/staging/manifest", _publication_batch, methods=["POST"]),
     ]
-    app = Starlette(routes=routes, lifespan=lifespan)
+    app = Starlette(routes=routes, lifespan=lifespan, exception_handlers={GatewayServiceError: _service_error})
     app.state.gateway = resolved_service
     app.add_middleware(GatewaySecurityMiddleware, config=resolved_config)
     return app
@@ -76,8 +77,6 @@ async def _session_key(request: Request) -> Response:
         service.configure_client_key(str(data.get("api_key") or ""))
     except (TypeError, ValueError) as exc:
         return _error("request.invalid_json", str(exc), status=422)
-    except GatewayServiceError as exc:
-        return _service_error(exc)
     return JSONResponse({"configured": True})
 
 
@@ -103,8 +102,6 @@ async def _chat_stream(request: Request) -> Response:
         run_id = await _service(request).start_chat(chat)
     except (KeyError, TypeError, ValueError) as exc:
         return _error("request.invalid_chat", str(exc), status=422)
-    except GatewayServiceError as exc:
-        return _service_error(exc)
     return StreamingResponse(
         _sse(_service(request), run_id, 0),
         media_type="text/event-stream",
@@ -118,8 +115,6 @@ async def _create_run(request: Request) -> Response:
         run_id = await _service(request).start_agent(agent)
     except (TypeError, ValueError) as exc:
         return _error("request.invalid_agent", str(exc), status=422)
-    except GatewayServiceError as exc:
-        return _service_error(exc)
     return JSONResponse({"run_id": run_id, "events_url": f"/v1/runs/{run_id}/events"}, status_code=202)
 
 
@@ -158,10 +153,7 @@ async def _pause_run(request: Request) -> Response:
 async def _resume_run(request: Request) -> Response:
     existing = _service(request).journal.events_after(request.path_params["run_id"])
     after_event_id = existing[-1].event_id if existing else 0
-    try:
-        resumed = await _service(request).resume_agent(request.path_params["run_id"])
-    except GatewayServiceError as exc:
-        return _service_error(exc)
+    resumed = await _service(request).resume_agent(request.path_params["run_id"])
     return JSONResponse(
         {"resumed": resumed, "after_event_id": after_event_id},
         status_code=202 if resumed else 200,
@@ -171,11 +163,11 @@ async def _resume_run(request: Request) -> Response:
 async def _resolve_approval(request: Request) -> Response:
     try:
         data = await _json(request)
-        found = _service(request).resolve_approval(
-            request.path_params["run_id"], request.path_params["approval_id"], str(data.get("decision") or "")
-        )
-    except GatewayServiceError as exc:
-        return _service_error(exc)
+    except ValueError as exc:
+        return _error("request.invalid_json", str(exc), status=422)
+    found = _service(request).resolve_approval(
+        request.path_params["run_id"], request.path_params["approval_id"], str(data.get("decision") or "")
+    )
     return JSONResponse({"resolved": True}) if found else _error("approval.not_found", "Approval is no longer pending.", status=404)
 
 
@@ -234,31 +226,40 @@ async def _workspace_config(request: Request) -> Response:
 
 
 async def _discard_staging(request: Request) -> Response:
-    try:
-        result = await _service(request).discard_staging(request.path_params["workspace_id"])
-    except GatewayServiceError as exc:
-        return _service_error(exc)
-    return JSONResponse(result)
+    return JSONResponse(await _service(request).discard_staging(request.path_params["workspace_id"]))
 
 
 async def _mark_staging_published(request: Request) -> Response:
     workspace_id = request.path_params["workspace_id"]
     try:
-        manifest = PublishManifest.from_dict(await _json(request))
-        result = await _service(request).mark_staging_published(workspace_id, manifest)
+        receipt = PublicationReceipt.from_dict(await _json(request))
+        result = await _service(request).mark_staging_published(workspace_id, receipt)
     except (KeyError, TypeError, ValueError) as exc:
         return _error("request.invalid_staging_manifest", str(exc), status=422)
-    except GatewayServiceError as exc:
-        return _service_error(exc)
     return JSONResponse(result)
+
+
+async def _publication_batch(request: Request) -> Response:
+    workspace_id = request.path_params["workspace_id"]
+    try:
+        data = await _json(request)
+        if set(data) - {"run_id", "publication_id", "batch_index"}:
+            raise ValueError("Unknown publication batch fields")
+        batch_index = data.get("batch_index")
+        if isinstance(batch_index, bool) or not isinstance(batch_index, int) or batch_index < 2:
+            raise ValueError("batch_index must be an integer of at least 2")
+        run_id = str(data.get("run_id") or "")
+        publication_id = str(data.get("publication_id") or "")
+        if not run_id or not publication_id:
+            raise ValueError("run_id and publication_id are required")
+        manifest = await _service(request).publication_batch(workspace_id, run_id, publication_id, batch_index)
+    except (KeyError, TypeError, ValueError) as exc:
+        return _error("request.invalid_publication_batch", str(exc), status=422)
+    return JSONResponse(manifest.to_dict())
 
 
 async def _inspect_staging(request: Request) -> Response:
-    try:
-        result = await _service(request).inspect_staging(request.path_params["workspace_id"])
-    except GatewayServiceError as exc:
-        return _service_error(exc)
-    return JSONResponse(result)
+    return JSONResponse(await _service(request).inspect_staging(request.path_params["workspace_id"]))
 
 
 async def _sse(service: GatewayService, run_id: str, after_id: int):
@@ -284,7 +285,8 @@ def _service(request: Request) -> GatewayService:
     return request.app.state.gateway
 
 
-def _service_error(exc: GatewayServiceError) -> JSONResponse:
+async def _service_error(_request: Request, exc: Exception) -> JSONResponse:
+    assert isinstance(exc, GatewayServiceError)
     return _error(exc.code, str(exc), retryable=exc.retryable, status=exc.status)
 
 

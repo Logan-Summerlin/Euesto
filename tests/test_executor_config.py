@@ -29,31 +29,41 @@ def test_coding_profile_defaults_are_explicit(tmp_path: Path) -> None:
     assert config.max_bash_stdin_bytes == 1_000_000
     assert config.max_command_seconds == 300
     assert config.max_search_results == 500
+    assert config.max_staged_files == 300_000
     assert config.max_staging_bytes == 2_500_000_000
     assert config.max_checkpoint_bytes == 2_500_000_000
     assert config.work_capacity_bytes == 8_000_000_000
     assert config.required_capacity_bytes == 6_000_000_000
 
 
-def test_every_limit_is_a_positive_integer(tmp_path: Path) -> None:
-    for name in ExecutorConfig.HARD_CEILINGS:
+@pytest.mark.parametrize("name", ExecutorConfig.HARD_CEILINGS)
+def test_every_limit_is_positive_bounded_and_reports_its_effective_value(tmp_path: Path, name: str) -> None:
+    config = _config(tmp_path)
+    status = config.limit_status(name, 10**12)
+    assert status["configured"] == status["effective"] == getattr(config, name)
+    assert status["hard_ceiling"] == ExecutorConfig.HARD_CEILINGS[name]
+    assert config.effective_limit(name, 1) == 1
+    for invalid in (0, -1):
         with pytest.raises(ValueError, match="positive integers"):
-            _config(tmp_path, **{name: 0})
-        with pytest.raises(ValueError, match="positive integers"):
-            _config(tmp_path, **{name: -1})
-
-
-def test_limits_cannot_exceed_hard_ceilings(tmp_path: Path) -> None:
-    for name, ceiling in ExecutorConfig.HARD_CEILINGS.items():
-        with pytest.raises(ValueError, match="hard ceilings"):
-            _config(tmp_path, **{name: ceiling + 1})
+            _config(tmp_path, **{name: invalid})
+    with pytest.raises(ValueError, match="hard ceilings"):
+        _config(tmp_path, **{name: ExecutorConfig.HARD_CEILINGS[name] + 1})
 
 
 def test_staging_checkpoint_and_headroom_must_fit_together(tmp_path: Path) -> None:
     config = _config(tmp_path, max_checkpoint_bytes=500, max_staging_bytes=501)
     assert config.required_capacity_bytes == 1_000_001_001
+    # Each value fits its own ceiling, but together they leave no headroom below /work.
     with pytest.raises(ValueError, match="fit strictly below"):
-        _config(tmp_path, max_checkpoint_bytes=3_500_000_000, max_staging_bytes=3_500_000_000)
+        _config(tmp_path, max_checkpoint_bytes=3_500_000_000, max_staging_bytes=3_500_000_000, work_capacity_bytes=8_000_000_000)
+
+
+def test_actual_work_capacity_must_cover_the_resource_model(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    assert config.required_capacity_bytes == 6_000_000_000 < config.work_capacity_bytes
+    config.validate_storage_capacity(config.work_capacity_bytes)
+    with pytest.raises(ValueError, match="actual /work capacity"):
+        config.validate_storage_capacity(7_000_000_000)
 
 
 def test_effective_limit_reports_requested_configured_and_hard_values(tmp_path: Path) -> None:
@@ -111,3 +121,15 @@ def test_runtime_limit_status_contains_all_limit_sources(tmp_path: Path) -> None
         assert values["effective"] == getattr(config, name)
         assert values["source"] == "constructor"
     assert status["required_temp_headroom_bytes"]["configured"] == 1_000_000_000
+
+
+def test_coding_profile_is_the_constructor_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    token_path = tmp_path / "token"
+    token_path.write_text("x" * 32, encoding="utf-8")
+    monkeypatch.setenv("LOCAL_CHAT_EXECUTOR_TOKEN_FILE", str(token_path))
+    monkeypatch.setenv("LOCAL_CHAT_WORKSPACE_ID", "env-workspace")
+    monkeypatch.setenv("LOCAL_CHAT_EXECUTOR_PROFILE", "coding")
+    profiled = ExecutorConfig.from_environment()
+    defaults = _config(tmp_path)
+    assert {name: getattr(profiled, name) for name in ExecutorConfig.HARD_CEILINGS} == {name: getattr(defaults, name) for name in ExecutorConfig.HARD_CEILINGS}
+    assert set(profiled.sources.values()) == {"profile:coding"}

@@ -7,6 +7,8 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from shared.responses import ErrorResponse
+
 from .config import GatewayConfig
 
 ASGIApp = Callable[[dict[str, Any], Callable[..., Awaitable[dict]], Callable[..., Awaitable[None]]], Awaitable[None]]
@@ -109,9 +111,6 @@ def _host_name(value: str) -> str:
 
 
 async def _error(send: Callable, status: int, code: str, message: str) -> None:
-    body = json.dumps(
-        {"error": {"code": code, "message": message, "retryable": False, "details": {}}},
-        separators=(",", ":"),
-    ).encode()
+    body = json.dumps(ErrorResponse(code, message).to_dict(), separators=(",", ":")).encode()
     await send({"type": "http.response.start", "status": status, "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())]})
     await send({"type": "http.response.body", "body": body})

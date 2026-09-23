@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
+
+from shared.coercion import optional_int
 
 from .models import Message
 
@@ -61,8 +62,8 @@ def assemble_activities(
     activities: list[TranscriptActivity] = []
     for run_id in order:
         run = runs.get(run_id)
-        assistant_id = _optional_int(run.get("assistant_message_id")) if run else None
-        parent_id = _optional_int(run.get("parent_message_id")) if run else None
+        assistant_id = optional_int(run.get("assistant_message_id")) if run else None
+        parent_id = optional_int(run.get("parent_message_id")) if run else None
         activities.append(
             TranscriptActivity(
                 run_id=run_id,
@@ -324,7 +325,7 @@ def compact_activity_event(event: dict[str, object]) -> dict[str, object] | None
         compact_payload["file_name"] = file_name
     return {
         "run_id": str(event.get("run_id") or ""),
-        "event_id": _optional_int(event.get("event_id")) or 0,
+        "event_id": optional_int(event.get("event_id")) or 0,
         "type": event_type,
         "payload": compact_payload,
     }
@@ -349,37 +350,16 @@ def _file_name(tool: str, payload: dict[str, object]) -> str | None:
             candidate = value.get(key)
             if isinstance(candidate, str) and candidate.strip():
                 return _clean_file_name(candidate)
-        edits = value.get("edits")
-        if isinstance(edits, list):
+        operations = value.get("operations") if tool == "apply_patch" else None
+        if isinstance(operations, list):
             paths = [
-                str(edit.get("path") or "").strip()
-                for edit in edits
-                if isinstance(edit, dict) and str(edit.get("path") or "").strip()
+                str(item.get("path") or "").strip()
+                for item in operations
+                if isinstance(item, dict) and str(item.get("path") or "").strip()
             ]
             if paths:
                 first = _clean_file_name(paths[0])
                 return f"{first} (+{len(paths) - 1} more)" if len(paths) > 1 else first
-        patch = value.get("patch")
-        if isinstance(patch, str) and tool in {"apply_patch", "file_edit"}:
-            match = re.search(
-                r"\*\*\* (?:Update|Add|Delete) File:\s*([^\s]+)",
-                patch,
-            )
-            if match:
-                return _clean_file_name(match.group(1))
-        if tool in {"run_command", "file_run"}:
-            command_values = [value.get("command"), value.get("executable")]
-            command_values.extend(value.get("arguments") or [])
-            for command in command_values:
-                if not isinstance(command, str):
-                    continue
-                match = re.search(
-                    r"(?<![\w.-])([^\s\"']+\.(?:py|js|ts|tsx|jsx|qml|json|md|txt))(?![\w.-])",
-                    command,
-                    re.IGNORECASE,
-                )
-                if match:
-                    return _clean_file_name(match.group(1))
     return None
 
 
@@ -392,10 +372,3 @@ def _clean_file_name(value: str) -> str:
 def _payload(event: dict[str, object]) -> dict[str, object]:
     value = event.get("payload")
     return value if isinstance(value, dict) else {}
-
-
-def _optional_int(value: object) -> int | None:
-    try:
-        return int(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None

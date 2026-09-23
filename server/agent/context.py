@@ -1,16 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from typing import Any
-
-
-@dataclass(frozen=True, slots=True)
-class ContextCompaction:
-    before_tokens: int
-    after_tokens: int
-    compacted_messages: int
-    summary: str
 
 
 def estimate_message_tokens(messages: list[dict[str, Any]]) -> int:
@@ -21,15 +12,13 @@ def estimate_message_tokens(messages: list[dict[str, Any]]) -> int:
 
 def compact_agent_context(
     messages: list[dict[str, Any]], max_tokens: int, *, keep_recent: int = 4
-) -> tuple[list[dict[str, Any]], ContextCompaction | None]:
+) -> list[dict[str, Any]]:
     """Bound old tool output without breaking assistant/tool-call protocol pairs."""
-    before = estimate_message_tokens(messages)
-    if before <= max_tokens:
-        return [dict(item) for item in messages], None
+    if estimate_message_tokens(messages) <= max_tokens:
+        return [dict(item) for item in messages]
 
     compacted = [dict(item) for item in messages]
     protected_from = max(0, len(compacted) - keep_recent)
-    changed = 0
     summaries: list[str] = []
     for index, message in enumerate(compacted):
         calls = message.get("tool_calls")
@@ -54,7 +43,6 @@ def compact_agent_context(
             normalized_calls.append(call)
         if call_changed:
             compacted[index] = {**message, "tool_calls": normalized_calls}
-            changed += 1
     for index, message in enumerate(compacted):
         if index >= protected_from or message.get("role") != "tool":
             continue
@@ -63,7 +51,6 @@ def compact_agent_context(
             continue
         summary = _tool_summary(content)
         compacted[index] = {**message, "content": summary}
-        changed += 1
         summaries.append(summary[:240])
         if estimate_message_tokens(compacted) <= max_tokens:
             break
@@ -76,7 +63,6 @@ def compact_agent_context(
             if len(content) <= 8_000:
                 continue
             compacted[index] = {**message, "content": _tool_summary(content)}
-            changed += 1
             if estimate_message_tokens(compacted) <= max_tokens:
                 break
 
@@ -104,14 +90,12 @@ def compact_agent_context(
             summaries.append(_assistant_summary(message))
             del compacted[index:end]
             removed += end - index
-            changed += end - index
             protected_from = max(0, len(compacted) - keep_recent)
             continue
         if message.get("role") in {"user", "assistant"}:
             summaries.append(f"{message.get('role')}: {str(message.get('content') or '')[:240]}")
             del compacted[index]
             removed += 1
-            changed += 1
             protected_from = max(0, len(compacted) - keep_recent)
             continue
         index += 1
@@ -134,9 +118,7 @@ def compact_agent_context(
             **item,
             "content": "[Context excerpt] " + _bounded_excerpt(str(item.get("content") or ""), 600),
         }
-        changed += 1
-    after = estimate_message_tokens(compacted)
-    return compacted, ContextCompaction(before, after, changed, summary[:8000])
+    return compacted
 
 
 def _tool_summary(content: str) -> str:

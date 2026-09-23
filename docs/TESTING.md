@@ -16,22 +16,26 @@ The repository-owned validator is the canonical entry point. It uses the active 
 python scripts/validate.py preflight
 python scripts/validate.py fast
 python scripts/validate.py slow
-python scripts/validate.py qml
 python scripts/validate.py docker
+python scripts/validate.py ruff
+python scripts/validate.py compile
+python scripts/validate.py qml
 python scripts/validate.py all
 ```
 
-The default `pytest` command collects all tests; use the validator (or the explicit expressions below) for a selected tier. Tests are marked only when they genuinely need extra time or a container runtime; ordinary temporary-directory and subprocess tests are fast tests.
+A bare `pytest` has no marker filter: it collects every test, including the `slow` and `docker` ones. Use the validator (or the explicit expressions below) to run one tier. Tests are marked only when they genuinely need extra time or a container runtime; ordinary temporary-directory and subprocess tests are fast tests.
 
 ```text
-pytest                         # fast: not slow and not docker
-pytest -m "slow and not docker" # slow tests
-pytest -m docker               # container/configuration tests
-pytest -m "not docker"        # all non-container tests
-pytest --co                   # inspect collection
+pytest -m "not slow and not docker"  # fast tier (validate.py fast)
+pytest -m "slow and not docker"      # slow tier (validate.py slow)
+pytest -m docker                     # container/configuration tier (validate.py docker)
+pytest -m "not docker"               # all non-container tests
+pytest --co                          # inspect collection
 ```
 
-Every test must be discoverable through `testpaths`; CI must use marker expressions, never curated file lists or test-count allowlists. New tests should be placed by domain under `tests/` (unit, integration, security, ui, or docker) as the suite is reorganized.
+Qt Quick rendering tests (`tests/ui/test_transcript_qml.py`) are `slow`: they load QML through an offscreen `QQmlApplicationEngine` and skip when PySide6/Qt Quick cannot load (on Linux, install `libegl1`). Every test must be discoverable through `testpaths`; CI must use marker expressions, never curated file lists or test-count allowlists.
+
+New tests are placed by domain: `tests/unit/<domain>/` (`desktop`, `egress`, `executor`, `gateway`, `publication`), `tests/ui/` for Qt tests, `tests/docker/` for container tests, and `tests/structural/` for structural checks. The remaining flat `tests/*.py` files move into these folders as they are touched; `integration/` and `security/` folders are created when their first test moves.
 
 ## Async test policy
 
@@ -45,13 +49,16 @@ Every bug fix adds exactly one regression test named for the externally observab
 
 ## Required checks
 
+This is the one authoritative list of check commands; other documents link here. Install the locked toolchain first (`python scripts/bootstrap.py`, or `python -m pip install -r requirements-dev.lock` in a Python 3.12 virtual environment). `python scripts/validate.py all` runs every check below except the QML smoke test, and each of the first six lines is a named tier (`fast`, `slow`, `docker`, `ruff`, `compile`, `qml`):
+
 ```text
-pytest
+pytest -m "not slow and not docker"
 pytest -m "slow and not docker"
 pytest -m docker
 ruff check .
-python -m compileall -q app.py src server shared executor tests scripts
+python -m compileall -q app.py src server shared executor egress tests scripts
 pyside6-qmllint qml/Main.qml qml/Sidebar.qml qml/Transcript.qml qml/Composer.qml
+python scripts/qml_smoke.py
 ```
 
-The Docker tier additionally runs the Compose hardening, non-root, mount, resource, and blocked-egress checks in the container workflow.
+Run the checks that apply to a change. The Docker tier needs Linux with Docker and the fixtures from `scripts/docker-fixtures.sh`; in CI it additionally runs the Compose hardening, non-root, mount, resource, and blocked-egress checks. `python scripts/validate.py preflight` reports missing tools as unavailable rather than failed. On Windows (the release job), tests marked `posix` are skipped: they need the executor's Linux container, either its `/bin/bash`, POSIX permission bits (`chmod` only toggles read-only on Windows), or POSIX `st_ctime` (creation time on Windows). Mark any new test with the same dependency the same way.

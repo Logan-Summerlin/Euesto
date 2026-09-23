@@ -5,8 +5,22 @@ from pathlib import Path
 import pytest
 
 from executor.config import ExecutorConfig
-from executor.staging import advance_published_staging, seed_staging, sha256_file, snapshot_current_staging, workspace_changes
+from executor.staging import (
+    Snapshot,
+    advance_published_staging,
+    seed_staging,
+    sha256_file,
+    visible_files,
+    workspace_changes,
+)
 from shared.tools import PublishOperation
+
+
+def snapshot_current_staging(work_root: Path) -> Snapshot:
+    """A baseline covering the entire staged workspace (as if everything were published)."""
+    current = visible_files(work_root)
+    sizes = {path: value[1] for path, value in current.items()}
+    return Snapshot("full", {path: value[0] for path, value in current.items()}, sum(sizes.values()), sizes, {path: value[2] for path, value in current.items()})
 
 
 def make_config(source: Path, work: Path) -> ExecutorConfig:
@@ -39,7 +53,7 @@ def test_changes_after_publication_are_compared_against_published_state(tmp_path
     source = tmp_path / "source"
     work = tmp_path / "work"
     source.mkdir()
-    snapshot = seed_staging(make_config(source, work))
+    seed_staging(make_config(source, work))
 
     file_path = work / "blackjack.py"
     file_path.write_text("print('first')", encoding="utf-8")
@@ -56,7 +70,7 @@ def test_deleted_published_file_is_not_recreated_as_a_pending_change(tmp_path: P
     source = tmp_path / "source"
     work = tmp_path / "work"
     source.mkdir()
-    snapshot = seed_staging(make_config(source, work))
+    seed_staging(make_config(source, work))
 
     file_path = work / "blackjack.py"
     file_path.write_text("print('ok')", encoding="utf-8")

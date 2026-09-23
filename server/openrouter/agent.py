@@ -7,7 +7,9 @@ from typing import Any
 
 import httpx
 
-from .client import OPENROUTER_URL, normalize_usage
+from shared.tools import PLAN_TOOLS
+
+from .client import APP_TITLE, OPENROUTER_URL, normalize_usage, provider_routing
 from .errors import ProviderError
 
 
@@ -18,16 +20,18 @@ def _tool(name: str, description: str, properties: dict[str, Any], required: lis
     return {"type": "function", "function": {"name": name, "description": description, "parameters": params}}
 
 
-AGENT_TOOL_PROFILE = "pi-compatible"
+RETRYABLE_STATUS = frozenset({408, 409, 425, 429})
 LOCAL_TOOL_SCHEMAS = [
     _tool("read", "Read a UTF-8 text file.", {"path": {"type": "string"}, "start_line": {"type": "integer", "minimum": 1}, "end_line": {"type": "integer", "minimum": 1}, "max_bytes": {"type": "integer", "minimum": 1, "maximum": 8_000_000}}, ["path"]),
     _tool("write", "Create or replace a UTF-8 text file.", {"path": {"type": "string"}, "content": {"type": "string"}, "expected_sha256": {"type": ["string", "null"]}, "create_parents": {"type": "boolean"}}, ["path", "content"]),
-    _tool("edit", "Replace an exact string in a UTF-8 text file.", {"path": {"type": "string"}, "old_str": {"type": "string", "minLength": 1}, "new_str": {"type": "string"}, "expected_occurrences": {"type": "integer", "minimum": 1, "maximum": 1000}, "expected_sha256": {"type": ["string", "null"]}}, ["path", "old_str", "new_str"]),
+    _tool("edit", "Replace an exact string in a UTF-8 text file. If old_str matches nothing only because of LF/CRLF line endings, it is retried once in the file's convention; failures return bounded match diagnostics.", {"path": {"type": "string"}, "old_str": {"type": "string", "minLength": 1}, "new_str": {"type": "string"}, "expected_occurrences": {"type": "integer", "minimum": 1, "maximum": 1000}, "expected_sha256": {"type": ["string", "null"]}}, ["path", "old_str", "new_str"]),
+    _tool("apply_patch", "Apply ordered write/edit/delete operations across one or more UTF-8 text files as one atomic staged change: every operation succeeds or none is applied.", {"operations": {"type": "array", "minItems": 1, "maxItems": 500, "items": {"type": "object", "properties": {"operation": {"type": "string", "enum": ["write", "edit", "delete"]}, "path": {"type": "string"}, "content": {"type": "string"}, "old_str": {"type": "string", "minLength": 1}, "new_str": {"type": "string"}, "expected_occurrences": {"type": "integer", "minimum": 1, "maximum": 1000}, "expected_sha256": {"type": ["string", "null"]}, "create_parents": {"type": "boolean"}}, "required": ["operation", "path"], "additionalProperties": False}}}, ["operations"]),
     _tool("bash", "Run a non-interactive Bash command in the staged workspace.", {"command": {"type": "string"}, "working_directory": {"type": "string"}, "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 900}, "env": {"type": "object"}, "stdin": {"type": "string", "maxLength": 8_000_000}, "rollback_on_failure": {"type": "boolean", "default": True}}, ["command"]),
     _tool("grep", "Search file contents.", {"query": {"type": "string"}, "path": {"type": "string"}, "regex": {"type": "boolean"}, "case_sensitive": {"type": "boolean"}, "include_glob": {"type": "string"}, "exclude_glob": {"type": "string"}, "max_results": {"type": "integer", "minimum": 1, "maximum": 5000}, "context_lines": {"type": "integer", "minimum": 0, "maximum": 5}, "include_metadata": {"type": "boolean"}, "cursor": {"type": "string"}}, ["query"]),
     _tool("find", "Recursively find files and directories.", {"path": {"type": "string"}, "glob": {"type": "string"}, "max_depth": {"type": "integer", "minimum": 0, "maximum": 20}, "max_results": {"type": "integer", "minimum": 1, "maximum": 2000}, "details": {"type": "boolean"}}),
     _tool("ls", "List a directory's immediate contents.", {"path": {"type": "string"}, "max_results": {"type": "integer", "minimum": 1, "maximum": 2000}, "details": {"type": "boolean"}}),
-    _tool("investigate_repository", "Delegate a read-only repository investigation. Put the complete investigation request in `query`, including relevant symptoms, suspected components or files, error messages, hypotheses, and useful context. The investigation model independently decides which read-only files and searches to inspect; do not provide separate path hints.", {"query": {"type": "string", "minLength": 1}}, ["query"]),
+    _tool("status", "Summarize every staged change awaiting publication (created, modified, deleted, permission changes) against the publication baseline, with optional bounded diffs.", {"paths": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 50}, "include_diffs": {"type": "boolean"}, "max_results": {"type": "integer", "minimum": 1, "maximum": 500}, "cursor": {"type": "string"}}),
+    _tool("investigate_repository", "Delegate a read-only repository investigation. Put the complete investigation request in `query`, including relevant symptoms, suspected components or files, error messages, hypotheses, and useful context; the investigation model decides which read-only files and searches to inspect. Optionally list in `inspected_paths` the files or directories you have already read or listed yourself so the investigator does not re-read them. Returns a `summary` plus structured `findings` ({file, line, justification, observed}) you can verify with one read each.", {"query": {"type": "string", "minLength": 1}, "inspected_paths": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 512}, "maxItems": 50}}, ["query"]),
 ]
 
 
@@ -39,22 +43,39 @@ class AgentTurn:
     usage: dict[str, Any]
 
 
-async def agent_turn(model: str, messages: list[dict[str, Any]], api_key: str, mode: str, provider_preferences: dict[str, Any] | None = None, allowed_tools: set[str] | None = None) -> AgentTurn:
-    tools = [item for item in LOCAL_TOOL_SCHEMAS if item["function"]["name"] in (allowed_tools or {"read", "grep", "find", "ls"})] if mode == "plan" or allowed_tools is not None else LOCAL_TOOL_SCHEMAS
-    privacy = dict(provider_preferences or {})
-    payload = {"model": model, "messages": messages, "tools": tools, "tool_choice": "auto", "stream": False, "usage": {"include": True}, "provider": {"data_collection": "allow" if privacy.get("data_collection") == "allow" else "deny", "zdr": bool(privacy.get("zdr", False))}}
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "X-Title": "Local OpenRouter Chat"}
+def tool_schemas(mode: str, allowed_tools: set[str] | None = None) -> list[dict[str, Any]]:
+    """Schemas offered to the model: ``allowed_tools`` when given (even empty), else by mode."""
+    names = PLAN_TOOLS if allowed_tools is None and mode == "plan" else allowed_tools
+    if names is None:
+        return LOCAL_TOOL_SCHEMAS
+    return [item for item in LOCAL_TOOL_SCHEMAS if item["function"]["name"] in names]
+
+
+def agent_payload(model: str, messages: list[dict[str, Any]], mode: str, provider_preferences: dict[str, Any] | None = None, allowed_tools: set[str] | None = None) -> dict[str, Any]:
+    tools = tool_schemas(mode, allowed_tools)
+    # An empty allow-list forbids tool calls; the mode's definitions stay so providers can
+    # still validate earlier tool calls in the history.
+    return {"model": model, "messages": messages, "tools": tools or tool_schemas(mode), "tool_choice": "auto" if tools else "none", "stream": False, "usage": {"include": True}, "provider": provider_routing(provider_preferences or {})}
+
+
+async def agent_turn(model: str, messages: list[dict[str, Any]], api_key: str, mode: str, provider_preferences: dict[str, Any] | None = None, allowed_tools: set[str] | None = None, *, timeout: float = 90) -> AgentTurn:
+    payload = agent_payload(model, messages, mode, provider_preferences, allowed_tools)
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "X-Title": APP_TITLE}
     try:
-        async with httpx.AsyncClient(timeout=90, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=15.0), follow_redirects=False) as client:
             response = await client.post(OPENROUTER_URL, headers=headers, json=payload)
             if response.status_code >= 400:
-                raise ProviderError("provider.agent_error", f"OpenRouter agent request failed ({response.status_code}).", retryable=response.status_code >= 500)
+                detail = _error_detail(_json_or_empty(response))
+                raise ProviderError("provider.agent_error", f"OpenRouter agent request failed ({response.status_code}){detail}.", retryable=response.status_code in RETRYABLE_STATUS or response.status_code >= 500)
             data = response.json()
     except httpx.HTTPError as exc:
-        raise ProviderError("provider.connection", f"Agent request failed: {exc}", retryable=True) from exc
+        raise ProviderError("provider.connection", f"Agent request failed: {type(exc).__name__}: {exc}", retryable=True) from exc
+    except ValueError as exc:
+        raise ProviderError("provider.invalid_agent_response", "OpenRouter returned a non-JSON agent response.", retryable=True) from exc
     choices = data.get("choices") or []
     if not choices or not isinstance(choices[0].get("message"), dict):
-        raise ProviderError("provider.invalid_agent_response", "OpenRouter returned no agent message.")
+        # OpenRouter reports upstream failures after the 200 status line as an error body.
+        raise ProviderError("provider.invalid_agent_response", f"OpenRouter returned no agent message{_error_detail(data)}.", retryable=bool(data.get("error")))
     message = _normalize_message(choices[0]["message"])
     content = message.get("content")
     if isinstance(content, list):
@@ -63,8 +84,29 @@ async def agent_turn(model: str, messages: list[dict[str, Any]], api_key: str, m
     return AgentTurn(str(content or ""), calls, message, normalize_usage(data.get("usage") or {}))
 
 
+def _json_or_empty(response: httpx.Response) -> dict[str, Any]:
+    try:
+        data = response.json()
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _error_detail(data: dict[str, Any]) -> str:
+    error = data.get("error")
+    message = error.get("message") if isinstance(error, dict) else error
+    text = " ".join(str(message or "").split())[:300]
+    return f": {text}" if text else ""
+
+
 def _normalize_message(raw: dict[str, Any]) -> dict[str, Any]:
     normalized = {"role": "assistant", "content": raw.get("content")}
+    # Reasoning models (tool-calling with interleaved thinking) require their reasoning to be
+    # sent back unchanged with the tool calls it produced; dropping it breaks later turns.
+    if isinstance(raw.get("reasoning_details"), list) and raw["reasoning_details"]:
+        normalized["reasoning_details"] = raw["reasoning_details"]
+    if isinstance(raw.get("reasoning"), str) and raw["reasoning"]:
+        normalized["reasoning"] = raw["reasoning"]
     calls = []
     for item in raw.get("tool_calls") or ():
         if not isinstance(item, dict):

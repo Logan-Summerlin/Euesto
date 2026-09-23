@@ -1,3 +1,3 @@
-from .client import ExecutorClient, ExecutorUnavailable
+from .client import ExecutorClient
 
-__all__ = ["ExecutorClient", "ExecutorUnavailable"]
+__all__ = ["ExecutorClient"]

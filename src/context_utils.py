@@ -1,17 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Iterable, Sequence
 from typing import Any
-
-
-@dataclass(frozen=True, slots=True)
-class ContextInspection:
-    estimated_tokens: int
-    submitted_tokens: int
-    limit_tokens: int
-    compacted_messages: int = 0
-    summary: str = ""
 
 
 def estimate_tokens(text: str) -> int:
@@ -19,18 +9,24 @@ def estimate_tokens(text: str) -> int:
     return max(1, (len(text) + 3) // 4) if text else 0
 
 
+def context_source(system_prompt: str, messages: Iterable[Any]) -> list[dict[str, Any]]:
+    """The active branch as chat messages, tagged with their ids for compaction."""
+    source: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}] if system_prompt else []
+    source.extend({"role": item.role, "content": item.content, "_message_id": item.id} for item in messages)
+    return source
+
+
 def compact_messages(
     messages: Sequence[dict[str, Any]], max_tokens: int
-) -> tuple[list[dict[str, Any]], ContextInspection, list[int]]:
-    """Compact old visible turns into a separate, inspectable deterministic summary."""
+) -> tuple[list[dict[str, Any]], str, list[int]]:
+    """Compact old visible turns into a deterministic summary.
+
+    Returns the messages to submit, the summary text, and the ids of the covered messages.
+    """
     source = [dict(item) for item in messages]
     before = sum(estimate_tokens(str(item.get("content") or "")) for item in source)
     if before <= max_tokens:
-        return (
-            [{key: value for key, value in item.items() if key != "_message_id"} for item in source],
-            ContextInspection(before, before, max_tokens),
-            [],
-        )
+        return [{key: value for key, value in item.items() if key != "_message_id"} for item in source], "", []
     system = [source[0]] if source and source[0].get("role") == "system" else []
     body = source[len(system) :]
     recent: list[dict[str, Any]] = []
@@ -60,9 +56,4 @@ def compact_messages(
     compacted.extend(recent)
     for item in compacted:
         item.pop("_message_id", None)
-    after = sum(estimate_tokens(str(item.get("content") or "")) for item in compacted)
-    return (
-        compacted,
-        ContextInspection(before, after, max_tokens, len(covered), summary),
-        covered_ids,
-    )
+    return compacted, summary, covered_ids

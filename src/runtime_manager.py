@@ -16,15 +16,17 @@ from queue import Empty, Queue
 import httpx
 from PySide6.QtCore import QObject, QThread, Signal
 
+from .gateway_client import DEFAULT_GATEWAY_URL
 from .workspace_broker import canonical_workspace, workspace_id
 
 PROJECT_NAME = "local-openrouter-chat"
-GATEWAY_URL = "http://127.0.0.1:8765"
 DEFAULT_GATEWAY_IMAGE = "local-openrouter-chat-gateway:1.1.0"
 DEFAULT_EXECUTOR_IMAGE = "local-openrouter-chat-executor:1.1.0"
 SESSION_TOKEN_BYTES = 32
 READINESS_TIMEOUT_SECONDS = 180
 DOCKER_START_TIMEOUT_SECONDS = 120
+EGRESS_MODE_ENV = "LOCAL_CHAT_EXECUTOR_EGRESS"
+EGRESS_OVERLAY = "compose.egress.yaml"
 IMAGE_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9./_:@-]{0,511}$")
 IMAGE_DIGEST_PATTERN = re.compile(r"@sha256:[0-9a-f]{64}$")
 
@@ -84,8 +86,6 @@ class RuntimeTarget:
 class RuntimeResult:
     target: RuntimeTarget
     gateway_token: str
-    gateway_url: str = GATEWAY_URL
-    prebuilt: bool = False
 
 
 def bundle_root() -> Path:
@@ -133,14 +133,37 @@ def create_session_tokens(session_dir: Path) -> tuple[str, str]:
     return gateway_token, executor_token
 
 
-def compose_base_args(compose_file: Path, *, project_name: str = PROJECT_NAME) -> list[str]:
-    return [
+def compose_base_args(compose_file: Path, *, project_name: str = PROJECT_NAME, overlays: tuple[Path, ...] = ()) -> list[str]:
+    arguments = [
         "compose",
         "--project-name",
         project_name,
         "--file",
         str(compose_file),
     ]
+    for overlay in overlays:
+        arguments.extend(("--file", str(overlay)))
+    return arguments
+
+
+def egress_overlays(bundle: Path, *, prebuilt: bool, environ: dict[str, str] | None = None) -> tuple[Path, ...]:
+    """Compose overlays for the opt-in allowlisted-egress executor profile.
+
+    The default (``LOCAL_CHAT_EXECUTOR_EGRESS`` unset, ``none``, or ``off``) adds nothing, so the
+    executor keeps ``network_mode: none``. ``allowlisted`` adds ``docker/compose.egress.yaml``
+    (developer bundles only while the profile is a prototype); any other value fails closed.
+    """
+    mode = (os.environ if environ is None else environ).get(EGRESS_MODE_ENV, "").strip().casefold()
+    if mode in {"", "none", "off"}:
+        return ()
+    if mode != "allowlisted":
+        raise RuntimeErrorMessage(f"{EGRESS_MODE_ENV} must be 'allowlisted' or unset.")
+    if prebuilt:
+        raise RuntimeErrorMessage("Allowlisted executor egress is a developer prototype and is not available with release images.")
+    overlay = bundle / "docker" / EGRESS_OVERLAY
+    if not overlay.is_file():
+        raise RuntimeErrorMessage("The allowlisted egress Compose overlay is missing.")
+    return (overlay,)
 
 
 def _image_ref(value: object, name: str) -> str:
@@ -184,6 +207,7 @@ class RuntimeWorker(QThread):
         self.environment: dict[str, str] = {}
         self.secret_values: tuple[str, ...] = ()
         self.compose_file = bundle / "docker" / "compose.yaml"
+        self.overlays: tuple[Path, ...] = ()
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -192,6 +216,7 @@ class RuntimeWorker(QThread):
         try:
             if not self.compose_file.is_file():
                 raise RuntimeErrorMessage("The bundled Docker Compose file is missing.")
+            self.overlays = egress_overlays(self.bundle, prebuilt=self.images.prebuilt) if self.target.workspace else ()
             self.docker = locate_docker()
             if self.docker is None:
                 raise RuntimeErrorMessage(
@@ -228,7 +253,7 @@ class RuntimeWorker(QThread):
             self.progress.emit("checking", "Waiting for the selected workspace to be ready…")
             self._wait_for_readiness(gateway_token)
             self.succeeded.emit(
-                RuntimeResult(self.target, gateway_token, prebuilt=self.images.prebuilt)
+                RuntimeResult(self.target, gateway_token)
             )
         except RuntimeErrorMessage as exc:
             if not self.stop_event.is_set():
@@ -305,7 +330,7 @@ class RuntimeWorker(QThread):
         self, arguments: list[str], *, timeout: float, allow_failure: bool = False
     ) -> str:
         return self._run(
-            [*compose_base_args(self.compose_file), *arguments],
+            [*compose_base_args(self.compose_file, overlays=self.overlays), *arguments],
             timeout=timeout,
             allow_failure=allow_failure,
         )
@@ -403,10 +428,10 @@ class RuntimeWorker(QThread):
             self._check_stopped()
             try:
                 with httpx.Client(timeout=3, follow_redirects=False) as client:
-                    health = client.get(f"{GATEWAY_URL}/health")
+                    health = client.get(f"{DEFAULT_GATEWAY_URL}/health")
                     if health.status_code != 200:
                         raise RuntimeErrorMessage("Gateway health endpoint is not ready.")
-                    status_response = client.get(f"{GATEWAY_URL}/v1/status", headers=headers)
+                    status_response = client.get(f"{DEFAULT_GATEWAY_URL}/v1/status", headers=headers)
                     if status_response.status_code == 401:
                         raise RuntimeErrorMessage("Gateway credentials were rejected.")
                     status_response.raise_for_status()
@@ -464,10 +489,6 @@ class RuntimeManager(QObject):
         self.worker: RuntimeWorker | None = None
         self.target: RuntimeTarget | None = None
 
-    @property
-    def prebuilt(self) -> bool:
-        return bool(self.images and self.images.prebuilt)
-
     def ensure(self, workspace: Path | None) -> None:
         target = RuntimeTarget.from_workspace(workspace)
         self.stop_worker()
@@ -493,10 +514,6 @@ class RuntimeManager(QObject):
         self.worker = worker
         worker.start()
 
-    def retry(self) -> None:
-        target = self.target
-        self.ensure(target.workspace if target else None)
-
     def stop_worker(self) -> None:
         worker = self.worker
         if worker is None:
@@ -516,6 +533,10 @@ class RuntimeManager(QObject):
             return
         environment = os.environ.copy()
         environment["LOCAL_CHAT_SECRETS_DIR"] = str(self.data_dir / "gateway-session")
+        try:
+            overlays = egress_overlays(self.bundle, prebuilt=False) if target and target.workspace else ()
+        except RuntimeErrorMessage:
+            overlays = ()
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
             subprocess, "DETACHED_PROCESS", 0
         )
@@ -523,7 +544,7 @@ class RuntimeManager(QObject):
             subprocess.Popen(
                 [
                     str(docker),
-                    *compose_base_args(compose_file),
+                    *compose_base_args(compose_file, overlays=overlays),
                     *( ["--profile", "agent"] if target and target.workspace else [] ),
                     "down",
                     "--remove-orphans",

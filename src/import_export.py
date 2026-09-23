@@ -8,9 +8,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from shared.coercion import optional_float, optional_int, optional_string
+from shared.coercion import optional_string
 
-from .models import Message
+from .models import MESSAGE_METADATA_FIELDS, Message
 from .storage import Storage
 
 EXPORT_FORMAT = "local-openrouter-chat"
@@ -106,19 +106,7 @@ def import_json(storage: Storage, source: str) -> str:
                     old_to_new[str(old_parent)] if old_parent is not None else None
                 ),
                 activate=False,
-                model_id=optional_string(raw.get("model_id")),
-                provider_id=optional_string(raw.get("provider_id")),
-                finish_reason=optional_string(raw.get("finish_reason")),
-                input_tokens=optional_int(raw.get("input_tokens")),
-                output_tokens=optional_int(raw.get("output_tokens")),
-                cached_tokens=optional_int(raw.get("cached_tokens")),
-                reasoning_tokens=optional_int(raw.get("reasoning_tokens")),
-                total_tokens=optional_int(raw.get("total_tokens")),
-                cost=optional_float(raw.get("cost")),
-                time_to_first_token=optional_float(raw.get("time_to_first_token")),
-                elapsed_seconds=optional_float(raw.get("elapsed_seconds")),
-                tokens_per_second=optional_float(raw.get("tokens_per_second")),
-                created_at=optional_string(raw.get("created_at")),
+                **_imported_metadata(raw),
             )
             if message.id is None:
                 raise ImportExportError("Could not import message.")
@@ -280,19 +268,7 @@ def import_markdown(storage: Storage, source: str, *, title: str = "Imported cha
             role_map[match.group("label")],
             match.group("content").strip(),
             parent_message_id=(id_map.get(str(old_parent)) if old_parent is not None else None),
-            model_id=optional_string(metadata.get("model_id")),
-            provider_id=optional_string(metadata.get("provider_id")),
-            finish_reason=optional_string(metadata.get("finish_reason")),
-            input_tokens=optional_int(metadata.get("input_tokens")),
-            output_tokens=optional_int(metadata.get("output_tokens")),
-            cached_tokens=optional_int(metadata.get("cached_tokens")),
-            reasoning_tokens=optional_int(metadata.get("reasoning_tokens")),
-            total_tokens=optional_int(metadata.get("total_tokens")),
-            cost=optional_float(metadata.get("cost")),
-            time_to_first_token=optional_float(metadata.get("time_to_first_token")),
-            elapsed_seconds=optional_float(metadata.get("elapsed_seconds")),
-            tokens_per_second=optional_float(metadata.get("tokens_per_second")),
-            created_at=optional_string(metadata.get("created_at")),
+            **_imported_metadata(metadata),
         )
         if message.id is not None:
             id_map[str(metadata.get("id"))] = message.id
@@ -349,3 +325,9 @@ def _validate_json_messages(messages: list[object]) -> None:
                 raise ImportExportError("Message tree contains a cycle.")
             seen.add(current)
             current = parents[current]
+
+
+def _imported_metadata(raw: dict[str, Any]) -> dict[str, Any]:
+    values = {key: coerce(raw.get(key)) for key, coerce in MESSAGE_METADATA_FIELDS.items()}
+    values["created_at"] = optional_string(raw.get("created_at"))
+    return values

@@ -1,12 +1,12 @@
 # Tools
 
-This is the authoritative human-readable reference for the eight model-facing tools. The source of truth for dispatch is `shared/tools.py`; the model-facing JSON schemas live in `server/openrouter/agent.py`; executor limits and ceilings live in `executor/config.py`. Changes to one must be checked against the others.
+This is the authoritative human-readable reference for the ten model-facing tools. The source of truth for dispatch is `shared/tools.py`; the model-facing JSON schemas live in `server/openrouter/agent.py`; executor limits and ceilings live in `executor/config.py`. Changes to one must be checked against the others.
 
 ## Common contract
 
-Every executor request contains `request_id`, `run_id`, `tool`, `mode`, and an object-valued `arguments` field. `mode` is `plan` or `agent`. Tool requests are rejected when the tool is unknown, when Plan requests a mutation, or when arguments exceed the 17,000,000-byte protocol cap (`MAX_TOOL_ARGUMENT_BYTES` in `shared/tools.py`). The cap is measured as unescaped UTF-8 JSON, so newline- or control-character-heavy payloads do not lose capacity to escaping, and it is derived from the largest argument-carrying hard ceiling plus a 1,000,000-byte envelope, so it is never the binding constraint below a documented per-tool limit (see `docs/LIMITS.md`).
+Every executor request contains `request_id`, `run_id`, `tool`, `mode`, and an object-valued `arguments` field. `mode` is `plan` or `agent`. Tool requests are rejected when the tool is unknown, when Plan requests a mutation, or when arguments exceed the 17,000,000-byte protocol cap (`MAX_TOOL_ARGUMENT_BYTES` in `shared/tools.py`). The cap is measured as unescaped UTF-8 JSON, so newline- or control-character-heavy payloads do not lose capacity to escaping, and it is derived from the largest argument-carrying hard ceiling (`edit` result and `apply_patch` content, 16,000,000 bytes) plus a 1,000,000-byte envelope, so it is never the binding constraint below a documented per-tool limit (see `docs/LIMITS.md`).
 
-Every result contains `request_id`, `ok`, `output`, `data`, `error_code`, `truncated`, `elapsed_seconds`, `returned`, `total_known`, `limit`, and `next_cursor`. Optional counts are non-negative integers. Errors are classified and returned rather than exposing arbitrary exception details to the model.
+Every result contains `request_id`, `ok`, `output`, `data`, `error_code`, `truncated`, `elapsed_seconds`, `returned`, `total_known`, `limit`, and `next_cursor`. Optional counts are non-negative integers. Errors are classified and returned rather than exposing arbitrary exception details to the model. A failed result may carry bounded, JSON-serializable diagnostics in `data` (for example why an exact edit did not match, or which `apply_patch` operation failed).
 
 All tools operate on relative POSIX paths that are normalized and contained beneath the workspace root. Absolute, drive, UNC, traversal (`..`), Windows-alias, reserved-DOS-name, non-canonical-Unicode, and secret-like paths are rejected, as are symlinks and hard-linked files. Only UTF-8 text is readable and writable; binary content is refused.
 
@@ -32,9 +32,10 @@ Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `ve
 - **Permission:** mutation; checkpointed and staged.
 - **Default:** 1,000,000-byte file content limit in `coding`.
 - **Hard maximum:** 8,000,000 bytes.
-- **Hash:** `expected_sha256` is optional. When supplied it is an optimistic concurrency check; it is not a mandatory compatibility requirement.
-- **Shrink guard:** replacing an existing file (≥200 bytes and ≥20 lines) with less than half its bytes *and* lines is rejected so a whole-file clobber cannot pass silently; retry deliberately after reviewing.
+- **Hash:** `expected_sha256` is optional. When supplied it is an optimistic concurrency check; it is not a mandatory compatibility requirement. A mismatch fails with `staging.conflict` and reports the expected and actual hashes in `data`.
+- **Shrink guard:** replacing an existing file (≥200 bytes and ≥20 lines) with less than half its bytes *and* lines is rejected (`staging.shrink_warning`) unless the write is confirmed by a matching `expected_sha256`, which proves the current content was reviewed. A confirmed large shrink is applied and reported with `shrink_warning: true` and `shrink_details`.
 - **Source/staging:** writes target the writable staging tree, never the read-only source mount. Parent directories are created only with `create_parents`.
+- **File mode:** replacing a file keeps its permission mode; a new file gets the default mode (`0666` minus the executor's umask). A write therefore never reports or publishes a permission change by itself.
 - **Failure:** checkpoint restoration occurs before an unsuccessful mutation is returned.
 
 ## `edit`
@@ -46,9 +47,23 @@ Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `ve
 - **Defaults:** 2,000,000-byte target and result limits in `coding`.
 - **Hard maximums:** 16,000,000 bytes for target and result.
 - **Hash:** optional optimistic concurrency check.
-- **Semantics:** replacement streams through a temporary file and is swapped in atomically; the actual occurrence count must equal `expected_occurrences` (default 1) or the edit fails. The same shrink guard as `write` applies to large proportional reductions.
+- **Semantics:** replacement streams through a temporary file and is swapped in atomically, keeping the file's permission mode; the actual occurrence count must equal `expected_occurrences` (default 1) or the edit fails. Because an exact match with a verified count already proves the change deliberate, a large proportional reduction is applied and reported as `shrink_warning: true` with `shrink_details` instead of being rejected.
+- **Newline policy:** `old_str` is first matched byte-for-byte. Only if it matches nothing and contains a line break is it retried once with its line breaks translated to the other convention (LF ↔ CRLF); `new_str` is translated the same way so the file keeps its own convention, and the result reports `line_ending_adjustment` (`lf_to_crlf`, `crlf_to_lf`, or null). The occurrence count must still match exactly; nothing fuzzy is ever applied.
+- **Diagnostics:** failures are typed: `edit.no_match` (zero matches), `edit.too_many_matches`, `edit.too_few_matches`, `staging.conflict` (hash mismatch), and `edit.malformed_context` (empty/NUL `old_str`, invalid `expected_occurrences`). For targets up to 1,000,000 bytes, `data` includes the file's and `old_str`'s line-ending styles, up to 10 matching line numbers, and for zero matches the closest line with a ≤240-character escaped `context_preview` and hints (for example "matches only if whitespace is ignored").
 - **Localized edits:** exact replacement avoids rewriting unrelated files; target/result limits make larger files incrementally inspectable and locally editable.
 - **Failure:** checkpoint restoration occurs on failed mutation.
+
+## `apply_patch`
+
+- **Purpose:** apply one logical change across several UTF-8 text files atomically.
+- **Arguments:** `operations` (required, 1–`max_patch_operations`): an ordered list of objects with `operation` and `path` plus the fields of that operation — `write` (`content`, optional `expected_sha256`, `create_parents`), `edit` (`old_str`, `new_str`, optional `expected_occurrences`, `expected_sha256`), or `delete` (optional `expected_sha256`).
+- **Modes:** Agent only.
+- **Permission:** mutation; checkpointed and staged. A path-scoped approval rule matches an `apply_patch` request only when every operation path is inside its scope; "allow for this run"/saved rules scope to the deepest directory the paths share.
+- **Defaults:** 100 operations and 2,000,000 bytes of combined `content`/`old_str`/`new_str` in `coding`; each operation also obeys the `write`/`edit` limits.
+- **Hard maximums:** 500 operations and 16,000,000 combined bytes.
+- **Semantics:** one checkpoint is taken, then operations run in order against the state left by the previous one (so several edits to one file compose). `write` and `edit` behave exactly as the standalone tools, including hash checks, the shrink guard, the newline policy, and diagnostics; `delete` removes one regular, non-hard-linked file. It is additive: `write` and `edit` remain the tools for single-file changes.
+- **Atomicity:** if any operation fails, raises, or is interrupted, the checkpoint is restored and no operation remains applied. The failure's `data` names `failed_operation`, its `path`, `applied_before_failure`, `rolled_back: true`, and the underlying `cause_code`/`cause` diagnostics.
+- **Result:** `operations` (per-operation path, kind, hashes, bounded diff, occurrences, and any shrink warning), `paths`, `operation_counts`, `shrink_warnings`, and the post-mutation workspace status. Per-operation diffs share a 64,000-byte budget.
 
 ## `bash`
 
@@ -58,10 +73,10 @@ Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `ve
 - **Permission:** mutation-capable; checkpointed and staged.
 - **Defaults:** 300 seconds, 1,000,000 bytes of command text, stdin, and output in `coding`.
 - **Hard maximums:** 900 seconds; 1,000,000 command bytes; 8,000,000 stdin/output bytes.
-- **Execution:** `/bin/bash -lc`, non-interactive, no network, restricted environment, process-group cleanup.
+- **Execution:** `/bin/bash -lc`, non-interactive (a new session with no controlling terminal; stdin is `/dev/null` unless `stdin` is supplied), no network, restricted environment, process-group cleanup. Under the opt-in allowlisted-egress profile (`docs/EGRESS.md`) the base environment also carries `HTTPS_PROXY`/`HTTP_PROXY` for the allowlisted registry proxy; nothing else becomes reachable.
 - **Environment:** a fixed base environment (`PATH`, `HOME`, locale, UTF-8 Python flags) is always applied. User-supplied `env` is limited to 64 variables with POSIX-identifier names and ≤16,384-byte values; `PATH`, `HOME`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, and `BASH_ENV*` are refused.
 - **Output:** stdout/stderr is bounded; oversized output is retained as a bounded head/tail preview with a truncation marker. Command event cursors are exposed separately through the executor event endpoint.
-- **Failure:** timed-out and cancelled commands always roll staged filesystem changes back to their checkpoint. Non-zero-exit commands roll back by default; set `rollback_on_failure: false` when retaining partial progress is intentional. Results separate the process `exit_code` from checkpoint outcome with `rolled_back` and `rollback_reason` (`nonzero_exit` or `none`).
+- **Failure:** timed-out and cancelled commands always roll staged filesystem changes back to their checkpoint. Non-zero-exit commands roll back by default; set `rollback_on_failure: false` when retaining partial progress is intentional. Results separate the process `exit_code` from checkpoint outcome with `rolled_back` and `rollback_reason` (`cancelled`, `nonzero_exit`, or `none`); `rollback_on_failure: false` never retains the changes of a cancelled command.
 
 ## `grep`
 
@@ -98,18 +113,62 @@ Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `ve
 - **Truncation:** a result-count cutoff reports `truncation_reason: "result_limit"` and a `next_cursor`.
 - **Semantics:** immediate listing only; it does not recursively enumerate the whole tree.
 
+## `status`
+
+- **Purpose:** review everything staged for publication, independent of Git (`.git` is never staged).
+- **Arguments:** optional `paths` (1–50 relative files or directories to restrict the report to), `include_diffs` (default false), `max_results` (1–500, default 100), and `cursor`.
+- **Modes:** Agent only.
+- **Permission:** read-only; never prompts.
+- **Semantics:** compares the staged workspace against the publication baseline (the snapshot the next manifest is validated against), so it shows exactly what would be published: created, modified, deleted, and permission-changed files with base/staged hashes, sizes, and modes. Available for empty and non-empty staging. Secret-like paths, dependency/cache directories, and executor `.local-chat-*` metadata (snapshot and checkpoints) are never reported or diffed.
+- **Publication metadata:** `publication_batches` is how many sequential, separately approved publication batches the pending changes need (`null` if a single file exceeds one batch), with `publication_batch_limits`.
+- **Diffs:** with `include_diffs`, unified diffs against the baseline content (resolved by hash from the checkpoint object store or the read-only source) are returned for the current page, bounded to 64,000 bytes and 800 lines in aggregate; files over 1,000,000 bytes, binary files, mode-only changes, and unavailable baselines are reported by kind without text.
+- **Truncation/cursors:** `returned`, `total_known`, `truncated`, and `next_cursor` page through large change sets.
+
 ## `investigate_repository`
 
 - **Purpose:** delegate a bounded repository investigation to a cheaper model.
-- **Arguments:** `query` required; there are no separate path or hint arguments. Put the complete investigation request in `query`.
-- **Request guidance:** include relevant symptoms, error messages, suspected components or files, hypotheses, desired scope, and any other context that can help the investigator focus its search. Do not encode path hints separately; describe them naturally in the request. The investigation model decides whether to use `read`, `grep`, `find`, or `ls` and how to scope those tools.
+- **Arguments:** `query` required; optional `inspected_paths` (up to 50 relative files or directories). Unknown arguments are rejected.
+- **Request guidance:** put the complete investigation request in `query`: relevant symptoms, error messages, suspected components or files, hypotheses, desired scope, and any other context that can help the investigator focus its search. The investigation model decides whether to use `read`, `grep`, `find`, or `ls` and how to scope those tools.
+- **Inspected paths:** list in `inspected_paths` the files you have already read and directories you have already listed, so the investigator does not re-walk them. The harness enforces this in code: a nested `read` of a listed file or `ls` of a listed directory is refused without reaching the executor (`investigation.already_inspected`, journaled with `skipped: true`), and the refused paths are reported in `skipped_paths`. `grep`/`find` over those paths and reads of other files beneath a listed directory still run. Paths must be relative and are normalized (`./src/` and `src` are the same entry); absolute, drive, and traversal paths fail the call.
 - **Modes:** Agent only.
 - **Permission:** read-only; it cannot mutate, execute commands, checkpoint, or publish, and it never requires an approval prompt.
-- **Model:** uses the investigation model configured in Settings (default `xiaomi/mimo-v2.5`); the primary model cannot select or override it.
+- **Model:** uses the investigation model saved in Settings → Connection (default `xiaomi/mimo-v2.5`). Any catalog model or typed OpenRouter model ID can be saved; the primary model cannot select or override it.
 - **Budget:** each call receives at most 50% of the parent run's remaining cost (calls fail closed below a $0.01 floor) and inherits bounded iteration, tool-call (36/36 caps), and wall-time limits from the parent's remaining budgets. Wall time is the parent's remaining wall time clamped to 10–300 seconds, so one investigation can never consume most of a long parent run. Up to four calls are accepted per turn (the allowance resets at the start of every parent model turn), and a failed call still counts toward that turn's cap.
 - **Tools:** the nested investigation loop is restricted to `read`, `grep`, `find`, and `ls` through the parent's executor session, so it observes current staged state. Non-Plan tool calls inside the loop are rejected in code.
-- **Synthesis:** the harness reserves the final iteration and tool-call slot to force a summary instead of further exploration.
-- **Result:** returns `summary`, `files_examined`, and `truncated`; nested `subagent.*` events remain in the journal for replay/audit. On failure the parent is told to fall back to direct tool use.
+- **Synthesis:** exploration stops while one iteration, one tool-call slot, and a wall-time reserve (60 seconds, or a third of a shorter nested budget) remain, or when the call's own 512,000-byte result ledger is nearly spent; the harness then runs one tool-free synthesis turn (`tool_choice: "none"`). Tool calls the model issued past the stopping point are answered with `investigation.budget_reserved` rather than executed, so every call has a result. An empty final answer also triggers the synthesis turn, and if synthesis still returns no text the harness writes a summary naming the files examined, so the parent always gets a summary. `stop_reason` (`budget`, `evidence_limit`, `empty_answer`, or `provider_error`) records why exploration stopped.
+- **Context:** the nested loop keeps its own context and result ledger (it neither consumes nor is starved by the parent's), bounds each result to 40,000 characters, and compacts older results to stay within about 64,000 tokens so smaller-context investigation models still work. Reasoning returned by the model is sent back with its tool calls.
+- **Provider errors:** retryable failures (timeouts, connection errors, 408/409/425/429, 5xx, and error bodies returned with a 200 status) are retried up to three attempts while wall time remains. A failure after evidence was gathered still runs synthesis and reports `provider_error`; a failure before any evidence ends the call with `investigation.failed`.
+- **Result:** returns `summary`, `findings`, `structured`, `files_examined`, `skipped_paths`, and `truncated`; nested `subagent.*` events remain in the journal for replay/audit. On failure the parent is told to fall back to direct tool use.
+- **Findings:** the investigator is asked to end with a JSON report; its `findings` become a list of up to 50 `{file, line, justification, observed}` entries (`line` is a positive integer or null, `justification` at most 1,000 characters, entries with invalid paths are dropped). `observed` is set by the harness, not the model: it is true only when the investigator itself successfully read the file or matched it with `grep` during the call, so the parent can trust observed claims or verify any finding with one `read`. When the final message is not a structured report, `structured` is false, `findings` is empty, and the whole message is the `summary`.
+
+## Error codes
+
+A failed result's `error_code` is chosen where the failure is detected (`ExecutorToolError` codes named in `executor/errors.py`), never inferred from message wording, so rewording a message cannot change it. `classify_error` only maps exceptions the executor did not raise itself, by type and `errno`: permission, timeout, decoding, missing-path, wrong-type, capacity, and other I/O failures, plus standard-library argument errors. Codes are stable; messages are human-readable, sanitized of absolute paths, and may change.
+
+| Code | Meaning |
+|---|---|
+| `request.invalid_arguments` | Unknown, missing, or malformed arguments (including bad cursors and ranges). |
+| `path.missing` | The path does not exist, or is hidden from tools (dependency, VCS, and executor metadata directories). |
+| `path.invalid_type` | The path is not the kind the tool needs (a directory for `read`, a file for `ls`/`find`, a hard-linked or special file). |
+| `path.invalid` | A `status` scope path failed validation. |
+| `path.unsafe` | Workspace containment rejected the path: absolute, traversal, links, reparse points, secret-like, reserved, or colliding names. |
+| `limit.exceeded` | A configured size, count, or capacity limit (including a full staging volume). |
+| `file.invalid_utf8` | The file or content is binary or not valid UTF-8 text. |
+| `working_directory.invalid` | `bash` `working_directory` is not a string naming an existing directory. |
+| `command.invalid_arguments` | Malformed `bash` command, timeout, rollback flag, or environment. |
+| `staging.conflict` | `expected_sha256` or the staging baseline no longer matches (retryable after re-reading). |
+| `staging.shrink_warning` | A replacement would shrink an unconfirmed file drastically; confirm with `expected_sha256`. |
+| `edit.no_match` | `old_str` matched nothing. |
+| `edit.too_many_matches` | `old_str` matched more often than `expected_occurrences`. |
+| `edit.too_few_matches` | `old_str` matched less often than `expected_occurrences`. |
+| `edit.malformed_context` | Empty `old_str`, NUL characters, or an invalid `expected_occurrences`. |
+| `apply_patch.malformed` | An `apply_patch` operation list or operation is malformed. |
+| `checkpoint.corrupt` | Checkpoint content or manifest failed verification. |
+| `checkpoint.not_found` | The referenced checkpoint does not exist. |
+| `permission.denied` | The mode or capability forbids the operation (for example a Plan-mode mutation). |
+| `tool.timeout` | The operation exceeded its approved timeout; staged changes were rolled back. |
+| `io.internal` | An operating-system failure the executor could not attribute (retryable). |
+| `tool.internal` | An unexpected executor failure. |
 
 ## Modes and permissions
 
@@ -118,15 +177,29 @@ Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `ve
 | `read` | yes | yes | no |
 | `write` | no | yes | yes |
 | `edit` | no | yes | yes |
+| `apply_patch` | no | yes | yes |
 | `bash` | no | yes | potentially |
 | `grep` | yes | yes | no |
 | `find` | yes | yes | no |
 | `ls` | yes | yes | no |
+| `status` | no | yes | no |
 | `investigate_repository` | no | yes | no |
 
-Read-only tools run without approval prompts in both prompt and Auto sessions; mutation and command tools require approval under the `prompt` policy and are auto-allowed under `auto`. Plan-mode mutation denial is enforced twice: once in `shared/tools.py` request validation and again by `executor/permissions.py`.
+Read-only tools never prompt. Agent runs choose one of three approval policies (`APPROVAL_POLICIES` in `shared/permissions.py`, applied by `apply_approval_policy` after rule resolution):
 
-The public eight-tool model-facing API includes the scoped read-only `investigate_repository` tool. Check `shared/tools.py` and `server/openrouter/agent.py` when modifying schemas or dispatch.
+| Policy | `write` / `edit` / `apply_patch` | `bash` | Publication |
+|---|---|---|---|
+| `prompt` (default) | ask | ask | approve each batch |
+| `accept_edits` | allowed | ask | approve each batch |
+| `auto` | allowed | allowed | automatic |
+
+The middle tier matches friction to risk: staged file edits are checkpointed, reversible, and still gated by publication approval, while Bash has broader, harder-to-preview effects. Saved and per-run rules apply first; an explicit deny rule wins under every policy, and Plan-mode mutations are always denied. Session tiers are enabled from the desktop with a confirmation, advertised by the gateway as the `agent_accept_edits` and `agent_auto` capabilities, and reset to `prompt` on resume, mode or workspace change, and app restart. Plan-mode mutation denial is enforced twice: once in `shared/tools.py` request validation and again by `executor/permissions.py`.
+
+The public ten-tool model-facing API includes the scoped read-only `investigate_repository` tool. Check `shared/tools.py` and `server/openrouter/agent.py` when modifying schemas or dispatch.
+
+## Concurrency within a turn
+
+When one model turn issues several calls, consecutive independent read-only calls (`read`, `grep`, `find`, `ls`, `status`) run concurrently (at most 8 at a time) and the executor serves them off its event loop. Mutations (`write`, `edit`, `apply_patch`, `bash`) and `investigate_repository` run one at a time in their original order, so each keeps its own checkpoint and a read issued after a write observes it. Results are always returned to the model in the original call order.
 
 
 ## Permission matching

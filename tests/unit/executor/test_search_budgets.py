@@ -13,7 +13,7 @@ from shared.tools import ToolRequest
 
 # executor.tools re-exports the tool functions under their module names, so reach the
 # modules through importlib to patch their clocks.
-search_text_module = importlib.import_module("executor.tools.search_text")
+grep_module = importlib.import_module("executor.tools.grep")
 find_module = importlib.import_module("executor.tools.find")
 ls_module = importlib.import_module("executor.tools.ls")
 
@@ -50,7 +50,7 @@ def _run(service: ExecutorService, tool: str, arguments: dict):
 def test_grep_dispatch_honors_configured_search_seconds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _tree(tmp_path / "source")
     service = _service(tmp_path, max_search_seconds=5)
-    monkeypatch.setattr(search_text_module, "time", SteppingClock())
+    monkeypatch.setattr(grep_module, "time", SteppingClock())
 
     result = _run(service, "grep", {"query": "needle"})
 
@@ -70,7 +70,7 @@ def test_search_seconds_override_from_environment_reaches_grep(tmp_path: Path, m
     config = ExecutorConfig.from_environment()
     assert config.max_search_seconds == 1
     service = ExecutorService(config)
-    monkeypatch.setattr(search_text_module, "time", SteppingClock())
+    monkeypatch.setattr(grep_module, "time", SteppingClock())
 
     result = _run(service, "grep", {"query": "needle"})
 

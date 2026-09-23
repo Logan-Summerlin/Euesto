@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import difflib
-import hashlib
 from pathlib import Path
 
-from .checkpoints import create_checkpoint, restore_checkpoint
-from .errors import ExecutorToolError
+from .errors import (
+    INVALID_ARGUMENTS,
+    STAGING_CONFLICT,
+    STAGING_SHRINK_WARNING,
+    ExecutorToolError,
+)
 
 MAX_DIFF_LINES = 200
 MAX_DIFF_BYTES = 24_000
@@ -13,23 +16,24 @@ SHRINK_RATIO = 0.5
 LINE_COUNT_CHUNK_BYTES = 64 * 1024
 
 
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(128 * 1024), b""): digest.update(chunk)
-    return digest.hexdigest()
+def check_expected_sha256(relative: str, expected: object, actual: str | None) -> None:
+    """Refuse a mutation whose caller-supplied ``expected_sha256`` no longer matches."""
+    if expected is None:
+        return
+    if not isinstance(expected, str):
+        raise ExecutorToolError(INVALID_ARGUMENTS, "expected_sha256 must be a string when supplied")
+    if expected != actual:
+        raise ExecutorToolError(STAGING_CONFLICT, f"Staging hash conflict: {relative}", details={"failure": "hash_conflict", "path": relative, "expected_sha256": expected, "actual_sha256": actual})
 
 
-def create_mutation_checkpoint(root: Path, *, max_files: int, max_total_bytes: int) -> str:
-    return create_checkpoint(root, max_files=max_files, max_total_bytes=max_total_bytes, max_storage_bytes=max_total_bytes)
+def guard_shrink(relative: str, path: Path, content: str | None, *, replacement_old: str | None = None, replacement_new: str | None = None, replacement_occurrences: int | None = None, advisory: bool = False) -> dict[str, object] | None:
+    """Detect a whole-file mutation that would drop most of an existing file.
 
-
-def rollback_mutation(root: Path, checkpoint_id: str) -> None:
-    restore_checkpoint(root, checkpoint_id)
-
-
-def guard_shrink(relative: str, path: Path, content: str | None, *, replacement_old: str | None = None, replacement_new: str | None = None, replacement_occurrences: int | None = None) -> None:
-    if not path.exists() or not path.is_file(): return
+    An unconfirmed replacement is rejected. When ``advisory`` is true the caller has already
+    proven the change deliberate (an exact edit whose occurrence count matched, or a write
+    whose ``expected_sha256`` matched), so the finding is returned as a warning instead.
+    """
+    if not path.exists() or not path.is_file(): return None
     old_bytes = path.stat().st_size
     if content is not None:
         new_bytes = len(content.encode("utf-8")); new_lines = content.count("\n") + 1
@@ -37,10 +41,14 @@ def guard_shrink(relative: str, path: Path, content: str | None, *, replacement_
         old_match_bytes = len(replacement_old.encode("utf-8")); new_match_bytes = len(replacement_new.encode("utf-8")); occurrences = max(0, int(replacement_occurrences or 0))
         new_bytes = old_bytes + occurrences * (new_match_bytes - old_match_bytes); old_lines = _count_lines(path)
         new_lines = max(1, old_lines + occurrences * (replacement_new.count("\n") - replacement_old.count("\n")))
-    else: return
+    else: return None
     old_lines = _count_lines(path)
-    if old_bytes >= 200 and old_lines >= 20 and new_bytes < old_bytes * SHRINK_RATIO and new_lines < old_lines * SHRINK_RATIO:
-        raise ExecutorToolError("staging.shrink_warning", f"Whole-file edit for {relative} would shrink the file from {old_bytes} to {new_bytes} bytes and from {old_lines} to {new_lines} lines; review the full replacement before retrying.")
+    if not (old_bytes >= 200 and old_lines >= 20 and new_bytes < old_bytes * SHRINK_RATIO and new_lines < old_lines * SHRINK_RATIO):
+        return None
+    message = f"Whole-file edit for {relative} would shrink the file from {old_bytes} to {new_bytes} bytes and from {old_lines} to {new_lines} lines"
+    if not advisory:
+        raise ExecutorToolError(STAGING_SHRINK_WARNING, f"{message}; review the full replacement before retrying, or pass the current expected_sha256 to confirm a deliberate rewrite.", details={"failure": "shrink_guard", "path": relative, "old_bytes": old_bytes, "new_bytes": new_bytes, "old_lines": old_lines, "new_lines": new_lines})
+    return {"path": relative, "old_bytes": old_bytes, "new_bytes": new_bytes, "old_lines": old_lines, "new_lines": new_lines, "message": f"{message}; applied because the change was confirmed."}
 
 
 def _count_lines(path: Path) -> int:

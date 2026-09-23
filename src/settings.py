@@ -44,13 +44,6 @@ def save_api_key(api_key: str) -> None:
     keyring.set_password(KEYRING_SERVICE, KEYRING_USERNAME, api_key)
 
 
-def delete_api_key() -> None:
-    try:
-        keyring.delete_password(KEYRING_SERVICE, KEYRING_USERNAME)
-    except (KeyringError, keyring.errors.PasswordDeleteError):
-        pass
-
-
 def get_gateway_token() -> str | None:
     try:
         value = keyring.get_password(KEYRING_SERVICE, GATEWAY_KEYRING_USERNAME)
@@ -76,9 +69,3 @@ def save_gateway_token(token: str) -> None:
         raise ValueError("Gateway token must contain at least 256 bits")
     keyring.set_password(KEYRING_SERVICE, GATEWAY_KEYRING_USERNAME, value)
 
-
-def delete_gateway_token() -> None:
-    try:
-        keyring.delete_password(KEYRING_SERVICE, GATEWAY_KEYRING_USERNAME)
-    except (KeyringError, keyring.errors.PasswordDeleteError):
-        pass

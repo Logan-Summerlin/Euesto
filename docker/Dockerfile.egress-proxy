@@ -1,0 +1,9 @@
+FROM python:3.12.13-slim-bookworm@sha256:ac212230555ffb7ec17c214fb4cf036ced11b30b5b460994376b0725c7f6c151
+
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONUTF8=1
+WORKDIR /app
+RUN groupadd --gid 10003 egress && useradd --uid 10003 --gid 10003 --no-create-home egress
+# Standard library only: the proxy image carries no third-party packages.
+COPY egress /app/egress
+USER 10003:10003
+ENTRYPOINT ["python", "-m", "egress"]

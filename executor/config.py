@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import ClassVar
+
+from .errors import INVALID_ARGUMENTS, ExecutorToolError
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +27,8 @@ class ExecutorConfig:
     max_write_bytes: int = 1_000_000
     max_edit_target_bytes: int = 2_000_000
     max_edit_result_bytes: int = 2_000_000
+    max_patch_operations: int = 100
+    max_patch_bytes: int = 2_000_000
     max_bash_output_bytes: int = 1_000_000
     max_bash_stdin_bytes: int = 1_000_000
     max_command_bytes: int = 1_000_000
@@ -46,6 +50,8 @@ class ExecutorConfig:
         "max_write_bytes": 8_000_000,
         "max_edit_target_bytes": 16_000_000,
         "max_edit_result_bytes": 16_000_000,
+        "max_patch_operations": 500,
+        "max_patch_bytes": 16_000_000,
         "max_bash_output_bytes": 8_000_000,
         "max_bash_stdin_bytes": 8_000_000,
         "max_command_bytes": 1_000_000,
@@ -129,28 +135,10 @@ class ExecutorConfig:
             **values,
         )
 
-    @staticmethod
-    def _profiles() -> dict[str, dict[str, int]]:
-        base = {
-            "max_read_bytes": 1_000_000,
-            "max_write_bytes": 1_000_000,
-            "max_edit_target_bytes": 2_000_000,
-            "max_edit_result_bytes": 2_000_000,
-            "max_bash_output_bytes": 1_000_000,
-            "max_bash_stdin_bytes": 1_000_000,
-            "max_command_bytes": 1_000_000,
-            "max_checkpoint_bytes": 2_500_000_000,
-            "max_staging_bytes": 2_500_000_000,
-            "max_staged_files": 300_000,
-            "max_command_seconds": 300,
-            "max_search_results": 500,
-            "max_find_results": 500,
-            "max_ls_results": 500,
-            "max_grep_scan_bytes": 64_000_000,
-            "max_grep_output_bytes": 1_000_000,
-            "max_search_seconds": 30,
-            "work_capacity_bytes": 8_000_000_000,
-        }
+    @classmethod
+    def _profiles(cls) -> dict[str, dict[str, int]]:
+        # The "coding" profile is the field defaults above; the others override a subset.
+        base = {item.name: item.default for item in fields(cls) if item.name in cls._LIMIT_FIELDS}
         return {
             "small": {
                 **base,
@@ -158,6 +146,8 @@ class ExecutorConfig:
                 "max_write_bytes": 256_000,
                 "max_edit_target_bytes": 512_000,
                 "max_edit_result_bytes": 512_000,
+                "max_patch_operations": 50,
+                "max_patch_bytes": 512_000,
                 "max_bash_output_bytes": 256_000,
                 "max_bash_stdin_bytes": 256_000,
                 "max_command_bytes": 256_000,
@@ -176,6 +166,8 @@ class ExecutorConfig:
                 "max_write_bytes": 2_000_000,
                 "max_edit_target_bytes": 4_000_000,
                 "max_edit_result_bytes": 4_000_000,
+                "max_patch_operations": 200,
+                "max_patch_bytes": 4_000_000,
                 "max_bash_output_bytes": 2_000_000,
                 "max_bash_stdin_bytes": 2_000_000,
                 "max_staging_bytes": 3_000_000_000,
@@ -196,7 +188,7 @@ class ExecutorConfig:
         if requested is None:
             return configured
         if not isinstance(requested, int) or isinstance(requested, bool) or requested < 1:
-            raise ValueError(f"{name} requested limit must be a positive integer")
+            raise ExecutorToolError(INVALID_ARGUMENTS, f"{name} requested limit must be a positive integer")
         return min(requested, configured, self.HARD_CEILINGS[name])
 
     def limit_status(self, name: str, requested: int | None = None) -> dict[str, object]:

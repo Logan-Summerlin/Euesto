@@ -22,7 +22,7 @@ A portable ZIP is also supported. Docker Desktop is the required external runtim
 - **Agent** can inspect and modify an ephemeral staging copy, then request publication through the trusted desktop broker.
 - Local SQLite stores conversation/settings data; credentials use the Windows credential store where supported.
 - The gateway is loopback-authenticated and can reach OpenRouter but has no workspace mount.
-- The executor is network-disabled, non-root, and has a read-only source mount plus bounded writable staging.
+- The executor is network-disabled, non-root, and has a read-only source mount plus bounded writable staging. An opt-in developer profile can route package installs through an allowlisted egress proxy ([docs/EGRESS.md](docs/EGRESS.md)); the default stays network-free.
 
 ## Modes and permissions
 
@@ -30,11 +30,11 @@ A portable ZIP is also supported. Docker Desktop is the required external runtim
 |---|---|---|---|
 | Chat | none | none | none |
 | Plan | `read`, `grep`, `find`, `ls` | no | no |
-| Agent | all eight | staging only | desktop broker, after approval/validation |
+| Agent | all ten | staging only | desktop broker, after approval/validation |
 
-The eight-tool public API is `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`, and `investigate_repository`. Mode restrictions are enforced in code, not only in prompts. Agent Auto mode can reduce repeated prompts but does not grant network, host-path, shell, or publication authority to the executor.
+The ten-tool public API is `read`, `write`, `edit`, `apply_patch`, `bash`, `grep`, `find`, `ls`, `status`, and `investigate_repository`. `apply_patch` applies a multi-file change atomically and `status` reviews everything staged (with bounded diffs) before publication. Mode restrictions are enforced in code, not only in prompts. Agent mode offers three approval tiers — prompt for every change, accept staged edits (`write`/`edit`/`apply_patch` run without prompts while Bash still asks), or Auto — none of which grants network, host-path, shell, or publication authority to the executor.
 
-`investigate_repository` delegates a bounded, read-only repository investigation to a separately configured cheaper model. The nested loop can use only the Plan tools through the same executor session, debits the parent run's budget, and is capped at two calls per turn.
+`investigate_repository` delegates a bounded, read-only repository investigation to a separately configured cheaper model. The nested loop can use only the Plan tools through the same executor session, debits the parent run's budget, and is capped at four calls per turn.
 
 ## Example: editing a file
 
@@ -81,17 +81,10 @@ git clone https://github.com/Logan-Summerlin/Euesto.git
 cd Euesto
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements-dev.txt
+python -m pip install -r requirements-dev.lock
 ```
 
-Run the applicable checks:
-
-```powershell
-pytest
-ruff check .
-python -m compileall -q app.py src server shared executor tests scripts
-pyside6-qmllint qml/Main.qml qml/Sidebar.qml qml/Transcript.qml qml/Composer.qml
-```
+Run the applicable checks with `python scripts/validate.py` (`preflight`, `fast`, `slow`, `docker`, `ruff`, `compile`, `qml`, or `all`). The individual commands are listed once, in [docs/TESTING.md](docs/TESTING.md#required-checks).
 
 Unit tests do not require provider credentials. Container/security checks are part of the CI workflow when container-related changes apply.
 
@@ -101,19 +94,18 @@ Unit tests do not require provider credentials. Container/security checks are pa
 app.py              Desktop entry point
 src/                Desktop/runtime/publication code
 server/             Gateway and agent runtime
-executor/           Eight-tool executor, staging, checkpoints, limits
+executor/           Executor tool implementations, staging, checkpoints, limits
 shared/             Framework-neutral tool/protocol structures
 qml/                Qt Quick UI
 docker/             Container images, compose, security checks
 tests/              Unit, integration, security, and contract tests
-docs/               Authoritative architecture/operator/contributor docs
-scripts/            Developer helpers (dev up/down, install, protocol check)
+docs/               Authoritative references, roadmap, and living plans
+scripts/            Developer helpers (bootstrap, validation, dev up/down, QML smoke, Docker fixtures)
 installer/          Windows installer definition
 build/              Packaging spec and version metadata
-assets/             Icon and screenshot
+assets/             Application icon
 .github/            CI workflows (container checks, release)
 archived-doc/       Superseded/implemented historical documents (not normative)
-PROJECT_PLAN.md     Status-oriented roadmap
 AGENTS.md           Durable agent invariants and repository map
 CHANGELOG.md        Release/change summary
 ```
@@ -121,12 +113,14 @@ CHANGELOG.md        Release/change summary
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md) — current components, boundaries, and data flow.
-- [Tools](docs/TOOLS.md) — authoritative eight-tool reference.
+- [Tools](docs/TOOLS.md) — authoritative ten-tool reference.
+- [Egress](docs/EGRESS.md) — opt-in allowlisted package-install profile.
 - [Limits](docs/LIMITS.md) — effective defaults, hard ceilings, and precedence.
 - [Publication](docs/PUBLICATION.md) — staging, approval, publication, conflicts, and recovery.
 - [Contributing](docs/CONTRIBUTING.md) — development and safe tool changes.
 - [Troubleshooting](docs/TROUBLESHOOTING.md) — runtime, workspace, staging, and publication failures.
-- [Project roadmap](PROJECT_PLAN.md) — completed, active, planned, deferred, and non-goal status.
+- [Project roadmap](docs/ROADMAP.md) — completed, active, planned, deferred, and non-goal status.
+- [Documentation index](docs/README.md) — reading order, ownership map, and the living plans.
 - [Container guidance](docker/README.container.md) — container setup and verification.
 
 ## Non-goals

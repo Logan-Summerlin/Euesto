@@ -90,7 +90,7 @@ Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: Math.min(110, Math.max(48, contentHeight + 18))
             placeholderText: backend.generating
-                ? "Queue message · Ctrl+Shift+Enter steers"
+                ? "Queue message · Ctrl+Enter steers"
                 : "Message…  Enter to send · Shift+Enter for newline"
             color: root.textColor
             wrapMode: TextEdit.Wrap

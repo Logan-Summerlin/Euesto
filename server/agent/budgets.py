@@ -100,7 +100,7 @@ class RunBudget:
         self.started = time.monotonic()
 
     @classmethod
-    def from_profile(cls, name: str) -> "RunBudget":
+    def from_profile(cls, name: str) -> RunBudget:
         profile = resolve_budget_profile(name)
         return cls(
             profile.max_iterations,
@@ -114,12 +114,12 @@ class RunBudget:
         self.iterations += 1
         self.check()
 
-    def add_cost(self, value: float) -> None:
-        self.cost += max(0, value)
-        self.check()
+    def add_usage(self, usage: dict[str, object], *, check: bool = True) -> None:
+        """Add one provider call to the cumulative agent-turn usage.
 
-    def add_usage(self, usage: dict[str, object]) -> None:
-        """Add one provider call to the cumulative agent-turn usage."""
+        ``check=False`` records a response that was already paid for without discarding it;
+        the caller then enforces the limits before its next step.
+        """
         prompt = max(
             0,
             optional_int(usage.get("prompt_tokens", usage.get("input_tokens"))) or 0,
@@ -143,7 +143,8 @@ class RunBudget:
         self.reasoning_tokens += reasoning
         self.total_tokens += total
         self.cost += cost
-        self.check()
+        if check:
+            self.check()
 
     def usage(self) -> dict[str, int | float]:
         return {

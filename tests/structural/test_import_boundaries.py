@@ -1,7 +1,6 @@
 import ast
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -23,3 +22,10 @@ def test_framework_neutral_and_executor_layers_do_not_import_application_layers(
             assert not any(name == "src" or name.startswith("src.") for name in imports), path
             if package == "shared":
                 assert not any(name == "server" or name.startswith("server.") for name in imports), path
+
+
+def test_egress_proxy_is_standalone_standard_library_code() -> None:
+    internal = ("src", "server", "shared", "executor")
+    for path in (ROOT / "egress").rglob("*.py"):
+        imports = _imports(path)
+        assert not any(name == package or name.startswith(package + ".") for name in imports for package in internal), path

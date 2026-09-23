@@ -1,20 +1,19 @@
 from __future__ import annotations
 
-import json
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
 from shared.coercion import optional_float, optional_int, optional_string
 
-from .context_utils import compact_messages, estimate_tokens
+from .context_utils import compact_messages, context_source, estimate_tokens
 from .models import (
     DEFAULT_MODELS,
     DEFAULT_SYSTEM_PROMPT,
+    MESSAGE_METADATA_FIELDS,
     Conversation,
     Message,
     ModelOption,
-    RequestOptions,
     model_context_length,
 )
 from .storage import Storage
@@ -55,7 +54,7 @@ class GenerationState:
 
 
 class ConversationController:
-    """Unit-testable conversation mutations used by the desktop view."""
+    """Conversation mutations (create, rename, fork, branch navigation) over ``Storage``."""
 
     def __init__(self, storage: Storage):
         self.storage = storage
@@ -101,18 +100,7 @@ class ConversationController:
                 message.role,
                 message.content,
                 parent_message_id=parent,
-                model_id=message.model_id,
-                provider_id=message.provider_id,
-                finish_reason=message.finish_reason,
-                input_tokens=message.input_tokens,
-                output_tokens=message.output_tokens,
-                cached_tokens=message.cached_tokens,
-                reasoning_tokens=message.reasoning_tokens,
-                total_tokens=message.total_tokens,
-                cost=message.cost,
-                time_to_first_token=message.time_to_first_token,
-                elapsed_seconds=message.elapsed_seconds,
-                tokens_per_second=message.tokens_per_second,
+                **{key: getattr(message, key) for key in MESSAGE_METADATA_FIELDS},
             )
             parent = copied.id
         return fork
@@ -130,17 +118,6 @@ class ConversationController:
             return None
         self.storage.activate_branch_from(int(ids[index]))
         return message.conversation_id
-
-    def branch_view(
-        self, conversation_id: str
-    ) -> tuple[list[Message], dict[int, tuple[int, int]]]:
-        messages = self.storage.list_messages(conversation_id)
-        positions = {
-            message.id: self.storage.branch_position(message.id)
-            for message in messages
-            if message.id is not None
-        }
-        return messages, positions
 
     def _require(self, conversation_id: str) -> Conversation:
         conversation = self.storage.get_conversation(conversation_id)
@@ -163,15 +140,8 @@ class GenerationController:
         model: str,
         catalog: list[ModelOption],
     ) -> PreparedGeneration:
-        raw: list[dict[str, Any]] = []
-        if conversation.system_prompt:
-            raw.append({"role": "system", "content": conversation.system_prompt})
-        raw.extend(
-            {"role": item.role, "content": item.content, "_message_id": item.id}
-            for item in context_messages
-        )
         context_limit = int(model_context_length(model, catalog) * 0.8)
-        messages, inspection, covered = compact_messages(raw, context_limit)
+        messages, summary, covered = compact_messages(context_source(conversation.system_prompt, context_messages), context_limit)
         if covered:
             existing = self.storage.list_compactions(conversation.id)
             if not existing or existing[-1].get("covered_message_ids") != covered:
@@ -179,7 +149,7 @@ class GenerationController:
                     conversation.id,
                     conversation.active_leaf_id,
                     covered,
-                    inspection.summary,
+                    summary,
                     model,
                 )
         model_metadata = next((item for item in catalog if item.id == model), None)
@@ -187,7 +157,7 @@ class GenerationController:
             messages=messages,
             context_limit=context_limit,
             estimated_tokens=sum(estimate_tokens(item["content"]) for item in messages),
-            removed_messages=inspection.compacted_messages,
+            removed_messages=len(covered),
             supported_parameters=(
                 model_metadata.supported_parameters if model_metadata else frozenset()
             ),
@@ -283,25 +253,6 @@ class GenerationController:
     @property
     def pending_count(self) -> int:
         return len(self.state.pending_inputs)
-
-    @staticmethod
-    def request_options(storage: Storage, model_id: str) -> RequestOptions:
-        raw = storage.get_setting(f"model_options:{model_id}")
-        if not raw:
-            return RequestOptions()
-        try:
-            data = json.loads(raw)
-            return RequestOptions(
-                max_tokens=optional_int(data.get("max_tokens")),
-                reasoning_effort=optional_string(data.get("reasoning_effort")),
-                temperature=optional_float(data.get("temperature")),
-                top_p=optional_float(data.get("top_p")),
-                stop=[str(item) for item in data.get("stop", [])],
-                data_collection=("allow" if data.get("data_collection") == "allow" else "deny"),
-                zero_data_retention=bool(data.get("zero_data_retention", False)),
-            )
-        except (json.JSONDecodeError, TypeError, AttributeError):
-            return RequestOptions()
 
     @staticmethod
     def format_usage(usage: dict[str, object], cancelled: bool) -> str:

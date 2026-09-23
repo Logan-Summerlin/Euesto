@@ -6,7 +6,9 @@ from typing import Any
 import httpx
 
 from server.journal import JournalStore
+from shared.coercion import optional_float
 
+from .client import APP_TITLE
 from .errors import ProviderError
 
 MODELS_URL = "https://openrouter.ai/api/v1/models"
@@ -43,7 +45,7 @@ class GatewayCatalog:
             return float("inf")
 
     async def _fetch(self, api_key: str | None) -> tuple[list[dict[str, Any]], str]:
-        headers = {"X-Title": "Local OpenRouter Chat"}
+        headers = {"X-Title": APP_TITLE}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         try:
@@ -79,21 +81,14 @@ def normalize_model(raw: dict[str, Any], fetched_at: str, rank: int) -> dict[str
         "input_modalities": [str(item) for item in architecture.get("input_modalities") or ["text"]],
         "output_modalities": [str(item) for item in architecture.get("output_modalities") or ["text"]],
         "supported_parameters": [str(item) for item in raw.get("supported_parameters") or []],
-        "prompt_price": _float(pricing.get("prompt")),
-        "completion_price": _float(pricing.get("completion")),
-        "cached_prompt_price": _float(pricing.get("input_cache_read")),
+        "prompt_price": optional_float(pricing.get("prompt")),
+        "completion_price": optional_float(pricing.get("completion")),
+        "cached_prompt_price": optional_float(pricing.get("input_cache_read")),
         "created": _positive_int(raw.get("created")),
-        "artificial_analysis_score": _float(raw.get("artificial_analysis_intelligence_index") or evaluations.get("artificial_analysis_intelligence_index")),
+        "artificial_analysis_score": optional_float(raw.get("artificial_analysis_intelligence_index") or evaluations.get("artificial_analysis_intelligence_index")),
         "artificial_analysis_rank": rank,
         "fetched_at": fetched_at,
     }
-
-
-def _float(value: object) -> float | None:
-    try:
-        return float(value) if value not in (None, "") else None
-    except (TypeError, ValueError):
-        return None
 
 
 def _positive_int(value: object) -> int | None:

@@ -127,6 +127,18 @@ ApplicationWindow {
                         ToolTip.text: "Automatically authorize valid tools and publish successful staged changes"
                     }
 
+                    Switch {
+                        text: "Accept edits"
+                        visible: backend.currentMode === "agent"
+                        checked: backend.acceptEditsEnabled || backend.autoModeEnabled
+                        enabled: backend.acceptEditsAvailable && backend.workspaceReady
+                            && !backend.autoModeEnabled
+                            && !backend.generating && !backend.stagingBusy
+                        onClicked: backend.requestAcceptEdits(checked)
+                        ToolTip.visible: hovered
+                        ToolTip.text: "Apply write, edit, and apply_patch to staging without prompts; Bash and publication still ask"
+                    }
+
                     Button {
                         text: backend.workspacePath.length
                             ? backend.workspacePath.split(/[\\/]/).pop()
@@ -404,6 +416,7 @@ ApplicationWindow {
 
     Dialog {
         id: settingsDialog
+        objectName: "settingsDialog"
         title: "Settings"
         modal: true
         anchors.centerIn: parent
@@ -413,12 +426,26 @@ ApplicationWindow {
         function optionalText(value) {
             return value === null || value === undefined ? "" : String(value)
         }
+        function activeSkillNames() {
+            return backend.skills.filter(skill => skill.active).map(skill => skill.name).join(", ")
+        }
+        function saveModelOptions() {
+            backend.saveModelOptions({
+                max_tokens: maxTokens.text,
+                temperature: temperature.text,
+                top_p: topP.text,
+                reasoning_effort: backend.reasoningEffort,
+                stop: stopSequences.text.split("\n").filter(value => value.length > 0),
+                data_collection: privacyDeny.checked ? "deny" : "allow",
+                zero_data_retention: zdr.checked
+            })
+        }
         function openAndLoad() {
             gatewayUrl.text = backend.gatewaySettings.url
             gatewayToken.clear()
             apiKey.clear()
             systemPrompt.text = backend.systemPrompt
-            investigationModel.currentIndex = Math.max(0, investigationModel.model.indexOf(backend.investigationModel))
+            investigationModel.select(backend.investigationModel)
             let options = backend.modelOptions
             maxTokens.text = optionalText(options.max_tokens)
             temperature.text = optionalText(options.temperature)
@@ -430,10 +457,7 @@ ApplicationWindow {
             workspaceInstructions.text = config.instructions || ""
             customTools.text = JSON.stringify(config.custom_tools || [], null, 2)
             backend.refreshSkills()
-            let names = []
-            for (let i = 0; i < backend.skills.length; ++i)
-                if (backend.skills[i].active) names.push(backend.skills[i].name)
-            activeSkills.text = names.join(", ")
+            activeSkills.text = activeSkillNames()
             backend.loadPermissionRules()
             open()
         }
@@ -470,9 +494,39 @@ ApplicationWindow {
                         Label { text: "OpenRouter API key"; font.pixelSize: 18; font.weight: Font.DemiBold }
                         TextField { id: apiKey; Layout.fillWidth: true; echoMode: TextInput.Password; placeholderText: backend.gatewaySettings.hasApiKey ? "Key already stored" : "sk-or-v1-…" }
                         Button { text: "Store API key"; onClicked: backend.saveApiKey(apiKey.text) }
-                        Label { text: "Investigation model (required for repository investigation)"; font.pixelSize: 18; font.weight: Font.DemiBold }
-                        ComboBox { id: investigationModel; Layout.fillWidth: true; model: backend.models.map(item => item.id); currentIndex: Math.max(0, model.indexOf(backend.investigationModel)) }
-                        Button { text: "Save investigation model"; onClicked: backend.saveInvestigationModel(currentText) }
+                        Label { text: "Investigation model (used by repository investigation)"; font.pixelSize: 18; font.weight: Font.DemiBold }
+                        Label {
+                            Layout.fillWidth: true
+                            text: "Pick a model or type any OpenRouter model ID, then save."
+                            color: window.mutedColor
+                            wrapMode: Text.Wrap
+                        }
+                        ComboBox {
+                            id: investigationModel
+                            objectName: "investigationModelCombo"
+                            Layout.fillWidth: true
+                            editable: true
+                            model: backend.models.map(item => item.id)
+                            // The chosen ID lives here, not in currentIndex: a model-list reload
+                            // (catalog refresh, favorites, conversation switch) resets the index.
+                            property string selectedId: backend.investigationModel
+                            function select(id) {
+                                selectedId = id
+                                currentIndex = model.indexOf(id)
+                                editText = id
+                            }
+                            onActivated: selectedId = currentText
+                            onAccepted: selectedId = editText.trim()
+                            onModelChanged: select(selectedId)
+                        }
+                        Button {
+                            objectName: "saveInvestigationModelButton"
+                            text: "Save investigation model"
+                            onClicked: {
+                                investigationModel.select(investigationModel.editText.trim())
+                                backend.saveInvestigationModel(investigationModel.selectedId)
+                            }
+                        }
                         Label { text: "Provider privacy"; font.pixelSize: 18; font.weight: Font.DemiBold }
                         CheckBox {
                             id: privacyDeny
@@ -487,15 +541,7 @@ ApplicationWindow {
                         }
                         Button {
                             text: "Save privacy controls"
-                            onClicked: backend.saveModelOptions({
-                                max_tokens: maxTokens.text,
-                                temperature: temperature.text,
-                                top_p: topP.text,
-                                reasoning_effort: backend.reasoningEffort,
-                                stop: stopSequences.text.split("\n").filter(value => value.length > 0),
-                                data_collection: privacyDeny.checked ? "deny" : "allow",
-                                zero_data_retention: zdr.checked
-                            })
+                            onClicked: settingsDialog.saveModelOptions()
                         }
                         Item { Layout.fillHeight: true }
                     }
@@ -550,15 +596,7 @@ ApplicationWindow {
                         }
                         Button {
                             text: "Save model controls"
-                            onClicked: backend.saveModelOptions({
-                                max_tokens: maxTokens.text,
-                                temperature: temperature.text,
-                                top_p: topP.text,
-                                reasoning_effort: backend.reasoningEffort,
-                                stop: stopSequences.text.split("\n").filter(value => value.length > 0),
-                                data_collection: privacyDeny.checked ? "deny" : "allow",
-                                zero_data_retention: zdr.checked
-                            })
+                            onClicked: settingsDialog.saveModelOptions()
                         }
                         RowLayout {
                             Button { text: backend.theme === "dark" ? "Use light theme" : "Use dark theme"; onClicked: backend.setTheme(backend.theme === "dark" ? "light" : "dark") }
@@ -641,12 +679,7 @@ ApplicationWindow {
                             id: activeSkills
                             Layout.fillWidth: true
                             placeholderText: "Comma-separated active skill names"
-                            Component.onCompleted: {
-                                let names = []
-                                for (let i = 0; i < backend.skills.length; ++i)
-                                    if (backend.skills[i].active) names.push(backend.skills[i].name)
-                                text = names.join(", ")
-                            }
+                            Component.onCompleted: text = settingsDialog.activeSkillNames()
                         }
                         Button { text: "Save active skills"; onClicked: backend.saveActiveSkills(activeSkills.text) }
                         Repeater {
@@ -794,6 +827,11 @@ ApplicationWindow {
         anchors.centerIn: parent
         width: Math.min(650, window.width - 50)
         standardButtons: Dialog.Ok
+        function show(heading, message) {
+            title = heading
+            noticeText.text = message
+            open()
+        }
         contentItem: ScrollView {
             implicitHeight: Math.min(400, noticeText.contentHeight + 30)
             TextArea {
@@ -822,14 +860,10 @@ ApplicationWindow {
     Connections {
         target: backend
         function onInfoRequested(title, message) {
-            noticeDialog.title = title
-            noticeText.text = message
-            noticeDialog.open()
+            noticeDialog.show(title, message)
         }
         function onErrorRequested(title, message) {
-            noticeDialog.title = title
-            noticeText.text = message
-            noticeDialog.open()
+            noticeDialog.show(title, message)
         }
         function onConfirmRequested(token, title, message) {
             confirmationDialog.token = token
@@ -846,14 +880,10 @@ ApplicationWindow {
             approvalDialog.open()
         }
         function onFileExported(name) {
-            noticeDialog.title = "Export complete"
-            noticeText.text = "Exported " + name
-            noticeDialog.open()
+            noticeDialog.show("Export complete", "Exported " + name)
         }
         function onFileImported(name) {
-            noticeDialog.title = "Import complete"
-            noticeText.text = "Imported " + name
-            noticeDialog.open()
+            noticeDialog.show("Import complete", "Imported " + name)
         }
         function onRuntimeSetupStarted() {
             runtimeDialog.open()

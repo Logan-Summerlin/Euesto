@@ -5,13 +5,14 @@ from pathlib import Path
 
 import pytest
 
+from executor.errors import ExecutorToolError
+from executor.mutations import guard_shrink
 from executor.tools.edit import edit
 from executor.tools.find import find
 from executor.tools.grep import grep
 from executor.tools.ls import ls
 from executor.tools.read import read
 from executor.tools.write import write
-from executor.errors import ExecutorToolError
 
 
 def test_read_preserves_hash_and_line_ranges(tmp_path: Path) -> None:
@@ -21,38 +22,38 @@ def test_read_preserves_hash_and_line_ranges(tmp_path: Path) -> None:
 
 
 def test_write_can_create_parents_without_hash(tmp_path: Path) -> None:
-    output, data = write(tmp_path, {"path": "src/new.py", "content": "print('ok')\n", "create_parents": True}, max_bytes=64_000)
+    output, data = write(tmp_path, {"path": "src/new.py", "content": "print('ok')\n", "create_parents": True}, max_bytes=64_000, max_checkpoint_bytes=100_000_000)
     assert output == "Created src/new.py. Changed 1 line."; assert (tmp_path / "src/new.py").read_text(encoding="utf-8") == "print('ok')\n"; assert data["old_sha256"] is None; assert data["new_sha256"] == hashlib.sha256(b"print('ok')\n").hexdigest()
 
 
 def test_write_rejects_wrong_hash(tmp_path: Path) -> None:
     (tmp_path / "x.py").write_text("old", encoding="utf-8")
-    with pytest.raises(ValueError, match="Staging hash conflict"): write(tmp_path, {"path": "x.py", "content": "new", "expected_sha256": "wrong"}, max_bytes=64_000)
+    with pytest.raises(ValueError, match="Staging hash conflict"): write(tmp_path, {"path": "x.py", "content": "new", "expected_sha256": "wrong"}, max_bytes=64_000, max_checkpoint_bytes=100_000_000)
     assert (tmp_path / "x.py").read_text(encoding="utf-8") == "old"
 
 
 def test_edit_defaults_to_one_occurrence_and_reports_actual_count(tmp_path: Path) -> None:
     path = tmp_path / "x.py"; path.write_text("value\nvalue\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="expected 1, found 2"): edit(tmp_path, {"path": "x.py", "old_str": "value", "new_str": "changed"}, max_target_bytes=64_000, max_result_bytes=64_000)
+    with pytest.raises(ValueError, match="expected 1, found 2"): edit(tmp_path, {"path": "x.py", "old_str": "value", "new_str": "changed"}, max_target_bytes=64_000, max_result_bytes=64_000, max_checkpoint_bytes=100_000_000)
     assert path.read_text(encoding="utf-8") == "value\nvalue\n"
 
 
 def test_edit_succeeds_without_hash(tmp_path: Path) -> None:
     path = tmp_path / "x.py"; path.write_text("before", encoding="utf-8")
-    _, data = edit(tmp_path, {"path": "x.py", "old_str": "before", "new_str": "after"}, max_target_bytes=64_000, max_result_bytes=64_000)
+    _, data = edit(tmp_path, {"path": "x.py", "old_str": "before", "new_str": "after"}, max_target_bytes=64_000, max_result_bytes=64_000, max_checkpoint_bytes=100_000_000)
     assert path.read_text(encoding="utf-8") == "after"; assert data["actual_occurrences"] == 1; assert data["old_sha256"] != data["new_sha256"]
 
 
 def test_edit_has_independent_target_and_result_limits(tmp_path: Path) -> None:
     path = tmp_path / "x.py"; path.write_text("small", encoding="utf-8")
-    with pytest.raises(ValueError, match="Edited content exceeds"): edit(tmp_path, {"path": "x.py", "old_str": "small", "new_str": "this result is too large"}, max_target_bytes=100, max_result_bytes=10)
+    with pytest.raises(ValueError, match="Edited content exceeds"): edit(tmp_path, {"path": "x.py", "old_str": "small", "new_str": "this result is too large"}, max_target_bytes=100, max_result_bytes=10, max_checkpoint_bytes=100_000_000)
     assert path.read_text(encoding="utf-8") == "small"
 
 
 def test_ls_is_not_recursive_and_find_is_recursive(tmp_path: Path) -> None:
     (tmp_path / "top.py").write_text("top", encoding="utf-8"); (tmp_path / "src").mkdir(); (tmp_path / "src" / "nested.py").write_text("nested", encoding="utf-8")
     ls_output, ls_data = ls(tmp_path, {"path": ".", "details": False}); find_output, find_data = find(tmp_path, {"path": ".", "glob": "*.py", "max_depth": 10, "max_results": 500, "details": False})
-    assert "top.py" in ls_output and "nested.py" not in ls_output; assert "top.py" in find_output and "src/nested.py" in find_output; assert ls_data["recursive"] is False and find_data["recursive"] is True
+    assert ls_output.splitlines() == ["src/", "top.py"]; assert "top.py" in find_output and "src/nested.py" in find_output; assert ls_data["recursive"] is False and find_data["recursive"] is True
 
 
 def test_result_limits_are_authoritative(tmp_path: Path) -> None:
@@ -64,6 +65,21 @@ def test_result_limits_are_authoritative(tmp_path: Path) -> None:
 def test_grep_preserves_literal_matching_and_case_sensitivity(tmp_path: Path) -> None:
     (tmp_path / "x.py").write_text("ExecutorService\nexecutorservice\n", encoding="utf-8"); output, data = grep(tmp_path, {"path": ".", "query": "ExecutorService", "case_sensitive": True, "max_results": 10}, max_scan_bytes=64_000, max_output_bytes=64_000)
     assert output.startswith("x.py:1:ExecutorService"); assert data["matches_returned"] == 1
+
+
+def test_read_rejects_out_of_range_lines_instead_of_empty_result(tmp_path: Path) -> None:
+    (tmp_path / "sample.txt").write_text("one\ntwo\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="line range is outside file"): read(tmp_path, {"path": "sample.txt", "start_line": 4, "end_line": 4}, max_bytes=64_000)
+
+
+def test_read_reports_exact_missing_path(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match=r"file not found: nested/missing.txt"): read(tmp_path, {"path": "nested/missing.txt"}, max_bytes=64_000)
+
+
+def test_grep_include_glob_limits_files_considered_and_searched(tmp_path: Path) -> None:
+    (tmp_path / "match.txt").write_text("needle\n", encoding="utf-8"); (tmp_path / "other.py").write_text("needle\n", encoding="utf-8")
+    output, data = grep(tmp_path, {"query": "needle", "include_glob": "*.txt"}, max_scan_bytes=64_000, max_output_bytes=64_000)
+    assert "match.txt:1:needle" in output and "other.py" not in output; assert data["files_considered"] == 1 and data["files_searched"] == 1
 
 
 def test_read_line_range_from_oversized_file(tmp_path: Path) -> None:
@@ -79,7 +95,7 @@ def test_read_line_range_is_bounded_with_continuation(tmp_path: Path) -> None:
 
 
 def test_read_byte_offsets_and_utf8_boundaries(tmp_path: Path) -> None:
-    path = tmp_path / "utf8.txt"; path.write_text("alpha café omega", encoding="utf-8"); offset = len("alpha ".encode("utf-8")); output, data = read(tmp_path, {"path": "utf8.txt", "offset": offset, "max_bytes": 32}, max_bytes=32)
+    path = tmp_path / "utf8.txt"; path.write_text("alpha café omega", encoding="utf-8"); offset = len(b"alpha "); output, data = read(tmp_path, {"path": "utf8.txt", "offset": offset, "max_bytes": 32}, max_bytes=32)
     assert output == "café omega"; assert data["byte_offset"] == offset
     with pytest.raises(ValueError, match="UTF-8 character boundary"): read(tmp_path, {"path": "utf8.txt", "offset": offset + 4}, max_bytes=32)
 
@@ -98,27 +114,33 @@ def test_read_limits_are_strict_and_additive_metadata_is_preserved(tmp_path: Pat
 
 def test_edit_can_replace_in_large_target_with_bounded_memory(tmp_path: Path) -> None:
     path = tmp_path / "large.txt"; path.write_text(("x" * 100 + "\n") * 20_000 + "TARGET\n", encoding="utf-8"); old_hash = hashlib.sha256(path.read_bytes()).hexdigest()
-    _, data = edit(tmp_path, {"path": "large.txt", "old_str": "TARGET", "new_str": "done", "expected_sha256": old_hash}, max_target_bytes=3_000_000, max_result_bytes=3_000_000)
+    _, data = edit(tmp_path, {"path": "large.txt", "old_str": "TARGET", "new_str": "done", "expected_sha256": old_hash}, max_target_bytes=3_000_000, max_result_bytes=3_000_000, max_checkpoint_bytes=100_000_000)
     assert path.read_text(encoding="utf-8").endswith("done\n"); assert data["actual_occurrences"] == 1; assert data["old_sha256"] == old_hash; assert data["new_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest(); assert data["diff"]["truncated"] is True
 
 
 def test_edit_result_limit_is_enforced_before_replacement(tmp_path: Path) -> None:
     path = tmp_path / "large.txt"; path.write_text("a" * 1_100_000, encoding="utf-8")
-    with pytest.raises(ValueError, match="Edited content exceeds"): edit(tmp_path, {"path": "large.txt", "old_str": "a", "new_str": "aa", "expected_occurrences": 1}, max_target_bytes=2_000_000, max_result_bytes=1_100_000)
+    with pytest.raises(ValueError, match="Edited content exceeds"): edit(tmp_path, {"path": "large.txt", "old_str": "a", "new_str": "aa", "expected_occurrences": 1}, max_target_bytes=2_000_000, max_result_bytes=1_100_000, max_checkpoint_bytes=100_000_000)
     assert path.stat().st_size == 1_100_000
 
 
 def test_edit_occurrence_and_hash_conflicts_remain_safe_for_large_files(tmp_path: Path) -> None:
     path = tmp_path / "large.txt"; path.write_text(("needle\n" * 2) + ("x" * 100 + "\n") * 20_000, encoding="utf-8")
-    with pytest.raises(ValueError, match="expected 1, found 2"): edit(tmp_path, {"path": "large.txt", "old_str": "needle", "new_str": "changed"}, max_target_bytes=3_000_000, max_result_bytes=3_000_000)
-    with pytest.raises(ValueError, match="Staging hash conflict"): edit(tmp_path, {"path": "large.txt", "old_str": "needle", "new_str": "changed", "expected_sha256": "wrong"}, max_target_bytes=3_000_000, max_result_bytes=3_000_000)
+    with pytest.raises(ValueError, match="expected 1, found 2"): edit(tmp_path, {"path": "large.txt", "old_str": "needle", "new_str": "changed"}, max_target_bytes=3_000_000, max_result_bytes=3_000_000, max_checkpoint_bytes=100_000_000)
+    with pytest.raises(ValueError, match="Staging hash conflict"): edit(tmp_path, {"path": "large.txt", "old_str": "needle", "new_str": "changed", "expected_sha256": "wrong"}, max_target_bytes=3_000_000, max_result_bytes=3_000_000, max_checkpoint_bytes=100_000_000)
     assert path.read_text(encoding="utf-8").startswith("needle\nneedle\n")
 
 
-def test_edit_preserves_shrink_detection_for_large_targets(tmp_path: Path) -> None:
+def test_edit_reports_confirmed_shrink_on_large_targets_as_a_warning(tmp_path: Path) -> None:
+    # The exact old_str matched exactly expected_occurrences times, so the large deletion is
+    # deliberate: it is applied and flagged rather than rejected.
     path = tmp_path / "large.txt"; old = "line\n" * 50_000; path.write_text(old + ("x" * 100 + "\n") * 500, encoding="utf-8")
-    with pytest.raises(ExecutorToolError, match="shrink"): edit(tmp_path, {"path": "large.txt", "old_str": old, "new_str": "small\n"}, max_target_bytes=3_000_000, max_result_bytes=3_000_000)
-    assert path.read_text(encoding="utf-8").startswith("line\nline\n")
+    output, data = edit(tmp_path, {"path": "large.txt", "old_str": old, "new_str": "small\n"}, max_target_bytes=3_000_000, max_result_bytes=3_000_000, max_checkpoint_bytes=100_000_000)
+    assert path.read_text(encoding="utf-8").startswith("small\n" + "x" * 100)
+    assert data["shrink_warning"] is True and data["shrink_details"]["old_lines"] == 50_500
+    assert "shrink" in output
+    with pytest.raises(ExecutorToolError, match="shrink"):
+        guard_shrink("large.txt", path, "tiny\n")
 
 
 def test_search_reports_oversized_files_without_claiming_complete_scan(tmp_path: Path) -> None:
@@ -140,6 +162,6 @@ def test_ls_paginates_results(tmp_path: Path) -> None:
 
 
 def test_write_reports_requested_limit_and_staging_capacity_separately(tmp_path: Path) -> None:
-    _, data = write(tmp_path, {"path": "x.txt", "content": "hello"}, max_bytes=10, max_staging_bytes=20)
+    _, data = write(tmp_path, {"path": "x.txt", "content": "hello"}, max_bytes=10, max_staging_bytes=20, max_checkpoint_bytes=100_000_000)
     assert data["requested_write_bytes"] == 5; assert data["max_write_bytes"] == 10; assert data["staging_capacity_bytes"] == 20
-    with pytest.raises(ValueError, match="staging capacity"): write(tmp_path, {"path": "y.txt", "content": "hello"}, max_bytes=10, max_staging_bytes=4)
+    with pytest.raises(ValueError, match="staging capacity"): write(tmp_path, {"path": "y.txt", "content": "hello"}, max_bytes=10, max_staging_bytes=4, max_checkpoint_bytes=100_000_000)
