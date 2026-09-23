@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import asdict
 from typing import Any
 
-from PySide6.QtCore import Property, QObject, Signal, Slot
+from PySide6.QtCore import Property, QObject, QTimer, Signal, Slot
 from PySide6.QtGui import QGuiApplication, QWindow
 
 from .desktop import (
@@ -14,7 +14,7 @@ from .desktop import (
     SettingsService,
     StagingPublicationService,
 )
-from .models import Conversation
+from .model_catalog import filter_model_entries
 from .settings import database_path
 from .storage import Storage
 from .window_services import GlobalQuickChatHotkey, TrayService
@@ -63,7 +63,7 @@ class DesktopBridge(QObject):
         self.history = ConversationService(self, self.storage)
         self.generation = GenerationService(self, self.storage)
         self.staging = StagingPublicationService(self)
-        self._reload_models()
+        self.reload_models()
         self.settings.reload_commands()
         self.settings.reload_presets()
         self.history.load()
@@ -80,14 +80,8 @@ class DesktopBridge(QObject):
         self.confirmRequested.emit(token, title, body)
 
     def reload_models(self) -> None:
-        self._reload_models()
-
-    def _reload_models(self) -> None:
         self._models = self.settings.model_entries()
         self.modelsChanged.emit()
-
-    def current_conversation(self) -> Conversation | None:
-        return self.history.current()
 
     # -- lists -------------------------------------------------------------------------
 
@@ -307,7 +301,8 @@ class DesktopBridge(QObject):
 
     @Slot()
     def loadPermissionRules(self) -> None:
-        self.settings.load_permission_rules()
+        # Deferred so a rule change reloads after the gateway call that triggered it returns.
+        QTimer.singleShot(0, self.settings.load_permission_rules)
 
     @Slot(str, bool)
     def setPermissionEnabled(self, rule_id: str, enabled: bool) -> None:
@@ -323,7 +318,7 @@ class DesktopBridge(QObject):
 
     @Slot(str, bool, float, int, int, result="QVariantList")
     def filteredModels(self, query: str, text_only: bool, max_price: float, max_rank: int, year: int) -> list[dict[str, Any]]:
-        return self.settings.filter_models(self._models, query, text_only, max_price, max_rank, year)
+        return filter_model_entries(self._models, query, text_only, max_price, max_rank, year)
 
     @Slot(str)
     def toggleFavoriteModel(self, model_id: str) -> None:
@@ -421,33 +416,9 @@ class DesktopBridge(QObject):
     def sendMessage(self, text: str, steer: bool = False) -> None:
         self.generation.send_message(text, steer)
 
-    @Slot(str)
-    def onRunStarted(self, run_id: str) -> None:
-        self.generation.on_run_started(run_id)
-
-    @Slot(object)
-    def onAgentEvent(self, event: object) -> None:
-        self.generation.on_agent_event(event)
-
     @Slot(str, str)
     def resolveApproval(self, key: str, decision: str) -> None:
         self.generation.resolve_approval(key, decision)
-
-    @Slot(str)
-    def onStreamChunk(self, text: str) -> None:
-        self.generation.on_stream_chunk(text)
-
-    @Slot(dict, bool)
-    def onStreamComplete(self, usage: dict[str, Any], cancelled: bool) -> None:
-        self.generation.on_stream_complete(usage, cancelled)
-
-    @Slot(str)
-    def onStreamError(self, message: str) -> None:
-        self.generation.on_stream_error(message)
-
-    @Slot()
-    def onWorkerFinished(self) -> None:
-        self.generation.on_worker_finished()
 
     @Slot()
     def stopGeneration(self) -> None:

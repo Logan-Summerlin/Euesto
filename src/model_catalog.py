@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from .models import DEFAULT_MODELS, ModelOption
 from .storage import Storage
@@ -16,9 +17,6 @@ class ModelCatalog:
         cached = self.storage.list_catalog_models()
         return cached or list(DEFAULT_MODELS)
 
-    def get(self, model_id: str) -> ModelOption | None:
-        return next((model for model in self.models() if model.id == model_id), None)
-
     def is_stale(self, ttl: timedelta = DEFAULT_CACHE_TTL) -> bool:
         fetched_at = self.storage.catalog_fetched_at()
         if not fetched_at:
@@ -33,27 +31,23 @@ class ModelCatalog:
         self.storage.replace_model_catalog(models, fetched_at)
 
 
-def matches_model_filters(
-    model: ModelOption,
-    *,
-    query: str = "",
-    text_only: bool = True,
-    max_price_per_million: float | None = None,
-    max_artificial_analysis_rank: int | None = None,
-    release_year: int | None = None,
-) -> bool:
-    """Return whether a catalog model passes the model-browser filters."""
-    if text_only and not model.text_compatible:
-        return False
-    haystack = f"{model.id} {model.label} {model.description}".casefold()
-    if query.strip().casefold() not in haystack:
-        return False
-    if max_price_per_million is not None:
-        price = model.average_price_per_million
-        if price is None or price > max_price_per_million:
-            return False
-    if max_artificial_analysis_rank is not None:
-        rank = model.artificial_analysis_rank
-        if rank is None or rank > max_artificial_analysis_rank:
-            return False
-    return release_year is None or model.release_year == release_year
+def filter_model_entries(
+    entries: list[dict[str, Any]], query: str, text_only: bool, max_price: float, max_rank: int, year: int
+) -> list[dict[str, Any]]:
+    """Apply the model-browser filters. A negative price, or a non-positive rank or year, disables that filter."""
+    query = query.strip().casefold()
+    results = []
+    for item in entries:
+        if text_only and not item.get("textCompatible", False):
+            continue
+        if query not in " ".join(str(item.get(key) or "") for key in ("id", "label", "description")).casefold():
+            continue
+        price, rank = item.get("price"), item.get("rank")
+        if max_price >= 0 and (price is None or float(price) > max_price):
+            continue
+        if max_rank > 0 and (rank is None or int(rank) > max_rank):
+            continue
+        if year > 0 and item.get("year") != year:
+            continue
+        results.append(item)
+    return results

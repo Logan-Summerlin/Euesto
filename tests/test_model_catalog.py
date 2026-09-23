@@ -1,23 +1,17 @@
-from src.model_catalog import matches_model_filters
-from src.models import ModelOption
+from src.model_catalog import filter_model_entries
+
+ENTRY = {"id": "vendor/model", "label": "Model", "description": "", "price": 0.4, "rank": 8, "year": 2025, "textCompatible": True}
+SAVED = {"id": "saved/model", "label": "saved/model", "description": "", "price": None, "rank": None, "year": None, "textCompatible": True}
 
 
-def test_price_capability_and_release_year_filters_compose() -> None:
-    model = ModelOption(
-        "vendor/model",
-        "Model",
-        prompt_price=0.0000001,
-        completion_price=0.0000003,
-        created=1735689600,
-        artificial_analysis_rank=8,
-    )
+def test_price_rank_and_release_year_filters_compose() -> None:
+    assert filter_model_entries([ENTRY], "", True, 0.5, 10, 2025) == [ENTRY]
+    assert filter_model_entries([ENTRY], "", True, 0.1, 0, 0) == []
+    assert filter_model_entries([ENTRY], "", True, -1, 5, 0) == []
+    assert filter_model_entries([ENTRY], "", True, -1, 0, 2024) == []
 
-    assert matches_model_filters(
-        model,
-        max_price_per_million=0.5,
-        max_artificial_analysis_rank=10,
-        release_year=2025,
-    )
-    assert not matches_model_filters(model, max_price_per_million=0.1)
-    assert not matches_model_filters(model, max_artificial_analysis_rank=5)
-    assert not matches_model_filters(model, release_year=2024)
+
+def test_disabled_filters_keep_entries_without_catalog_metadata() -> None:
+    assert filter_model_entries([ENTRY, SAVED], " SAVED ", True, -1, 0, 0) == [SAVED]
+    assert filter_model_entries([ENTRY, {**SAVED, "textCompatible": False}], "", True, -1, 0, 0) == [ENTRY]
+    assert filter_model_entries([SAVED], "", True, 1.0, 0, 0) == []

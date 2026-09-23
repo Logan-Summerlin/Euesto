@@ -8,11 +8,12 @@ from typing import Any
 from PySide6.QtCore import QObject, Slot
 
 from shared.coercion import optional_float, optional_int
+from shared.requests import DEFAULT_INVESTIGATION_MODEL
 
 from ..controllers import GenerationController
 from ..extensions import available_skills
 from ..gateway_client import DEFAULT_GATEWAY_URL, GatewayClient, GatewayError
-from ..model_catalog import ModelCatalog, matches_model_filters
+from ..model_catalog import ModelCatalog
 from ..models import RequestOptions
 from ..settings import app_data_dir, get_api_key, save_api_key
 from ..storage import Storage
@@ -32,6 +33,32 @@ BUILTIN_COMMANDS = (
     ("pause", "Pause the agent at a safe boundary"),
 )
 SYNCED_WORKSPACE_KEYS = ("instructions", "active_skills", "default_mode", "context_policy", "custom_tools")
+LEGACY_INVESTIGATION_DEFAULT = "deepseek/deepseek-chat-v3-0324"
+INVESTIGATION_MODEL_ENTRY = {
+    "id": DEFAULT_INVESTIGATION_MODEL,
+    "label": "MiMo-V2.5",
+    "description": "Xiaomi MiMo-V2.5",
+    "contextLength": 1_000_000,
+    "price": 0.21,
+    "rank": None,
+    "year": 2026,
+    "favorite": False,
+    "recent": False,
+    "reasoning": True,
+    "textCompatible": True,
+}
+
+
+def _saved_investigation_entry(model_id: str) -> dict[str, Any]:
+    return {
+        **INVESTIGATION_MODEL_ENTRY,
+        "id": model_id,
+        "label": model_id,
+        "description": "Saved repository investigation model",
+        "contextLength": 128_000,
+        "price": None,
+        "year": None,
+    }
 
 
 class SettingsService(QObject):
@@ -72,9 +99,23 @@ class SettingsService(QObject):
     def investigation_model(self) -> str:
         return self.storage.get_setting("investigation_model_id", "") or ""
 
+    def ensure_investigation_model(self) -> str:
+        """Return the saved investigation model, defaulting (and migrating the legacy default) to MiMo."""
+        value = self.investigation_model.strip()
+        if value in {"", LEGACY_INVESTIGATION_DEFAULT}:
+            value = DEFAULT_INVESTIGATION_MODEL
+            self.storage.set_setting("investigation_model_id", value)
+        return value
+
     def save_investigation_model(self, model_id: str) -> None:
-        self.storage.set_setting("investigation_model_id", str(model_id or "").strip())
+        model_id = str(model_id or "").strip()
+        if not model_id:
+            self.host.errorRequested.emit("Invalid investigation model", "Choose a model before saving the repository-investigation setting.")
+            return
+        self.storage.set_setting("investigation_model_id", model_id)
+        self.host.reload_models()
         self.host.settingsChanged.emit()
+        self.host.set_status(f"Investigation model saved: {model_id}")
 
     def gateway_settings(self) -> dict[str, Any]:
         return {
@@ -131,6 +172,7 @@ class SettingsService(QObject):
     # -- model catalog -----------------------------------------------------------------
 
     def model_entries(self) -> list[dict[str, Any]]:
+        selected = self.ensure_investigation_model()
         favorites = set(self.storage.favorite_model_ids())
         recents = set(self.storage.recent_model_ids())
         alias_by_model = {model: alias for alias, model in self.storage.model_aliases().items()}
@@ -151,23 +193,13 @@ class SettingsService(QObject):
             for model in self.catalog.models()
         ]
         values.sort(key=lambda item: (not item["favorite"], not item["recent"], str(item["label"]).casefold()))
+        # The investigation models stay selectable even when the catalog does not list them.
+        ids = {item["id"] for item in values}
+        if DEFAULT_INVESTIGATION_MODEL not in ids:
+            values.append(dict(INVESTIGATION_MODEL_ENTRY))
+        if selected not in ids | {DEFAULT_INVESTIGATION_MODEL}:
+            values.append(_saved_investigation_entry(selected))
         return values
-
-    def filter_models(self, entries: list[dict[str, Any]], query: str, text_only: bool, max_price: float, max_rank: int, year: int) -> list[dict[str, Any]]:
-        by_id = {model.id: model for model in self.catalog.models()}
-        return [
-            item
-            for item in entries
-            if item["id"] in by_id
-            and matches_model_filters(
-                by_id[item["id"]],
-                query=query,
-                text_only=text_only,
-                max_price_per_million=(max_price if max_price >= 0 else None),
-                max_artificial_analysis_rank=(max_rank if max_rank > 0 else None),
-                release_year=year if year > 0 else None,
-            )
-        ]
 
     def toggle_favorite_model(self, model_id: str) -> None:
         self.storage.set_model_favorite(model_id, model_id not in self.storage.favorite_model_ids())

@@ -161,8 +161,8 @@ def test_v1_uses_qml_as_the_only_main_window_and_packages_assets() -> None:
     spec_source = (ROOT / "build" / "chatbot.spec").read_text(encoding="utf-8")
 
     assert "QQmlApplicationEngine" in app_source
-    assert 'QQuickStyle.setStyle("Basic")' in app_source
-    assert app_source.index('QQuickStyle.setStyle("Basic")') < app_source.index(
+    assert app_source.count("QQuickStyle.setStyle(") == 1
+    assert app_source.index('QQuickStyle.setStyle("Fusion")') < app_source.index(
         "QApplication(sys.argv)"
     )
     assert "src.main_window" not in app_source

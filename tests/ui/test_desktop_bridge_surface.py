@@ -100,12 +100,6 @@ SLOTS = {
     'loadPermissionRules()': 'void',
     'navigateBranch(int,int)': 'void',
     'newConversation()': 'void',
-    'onAgentEvent(PyObject)': 'void',
-    'onRunStarted(QString)': 'void',
-    'onStreamChunk(QString)': 'void',
-    'onStreamComplete(QVariantMap,bool)': 'void',
-    'onStreamError(QString)': 'void',
-    'onWorkerFinished()': 'void',
     'pauseAgent()': 'void',
     'refreshCatalog()': 'void',
     'refreshSkills()': 'void',
@@ -199,8 +193,8 @@ def test_every_backend_member_used_by_qml_exists() -> None:
     assert used and used <= available, sorted(used - available)
 
 
-def test_application_bridge_subclass_keeps_the_same_surface() -> None:
-    assert _surface(AppDesktopBridge)[0] == PROPERTIES
+def test_application_uses_the_bridge_directly() -> None:
+    assert AppDesktopBridge is DesktopBridge
 
 
 def test_bridge_is_a_thin_adapter() -> None:
