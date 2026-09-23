@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
@@ -11,10 +10,10 @@ from .context_utils import compact_messages, context_source, estimate_tokens
 from .models import (
     DEFAULT_MODELS,
     DEFAULT_SYSTEM_PROMPT,
+    MESSAGE_METADATA_FIELDS,
     Conversation,
     Message,
     ModelOption,
-    RequestOptions,
     model_context_length,
 )
 from .storage import Storage
@@ -101,18 +100,7 @@ class ConversationController:
                 message.role,
                 message.content,
                 parent_message_id=parent,
-                model_id=message.model_id,
-                provider_id=message.provider_id,
-                finish_reason=message.finish_reason,
-                input_tokens=message.input_tokens,
-                output_tokens=message.output_tokens,
-                cached_tokens=message.cached_tokens,
-                reasoning_tokens=message.reasoning_tokens,
-                total_tokens=message.total_tokens,
-                cost=message.cost,
-                time_to_first_token=message.time_to_first_token,
-                elapsed_seconds=message.elapsed_seconds,
-                tokens_per_second=message.tokens_per_second,
+                **{key: getattr(message, key) for key in MESSAGE_METADATA_FIELDS},
             )
             parent = copied.id
         return fork
@@ -265,25 +253,6 @@ class GenerationController:
     @property
     def pending_count(self) -> int:
         return len(self.state.pending_inputs)
-
-    @staticmethod
-    def request_options(storage: Storage, model_id: str) -> RequestOptions:
-        raw = storage.get_setting(f"model_options:{model_id}")
-        if not raw:
-            return RequestOptions()
-        try:
-            data = json.loads(raw)
-            return RequestOptions(
-                max_tokens=optional_int(data.get("max_tokens")),
-                reasoning_effort=optional_string(data.get("reasoning_effort")),
-                temperature=optional_float(data.get("temperature")),
-                top_p=optional_float(data.get("top_p")),
-                stop=[str(item) for item in data.get("stop", [])],
-                data_collection=("allow" if data.get("data_collection") == "allow" else "deny"),
-                zero_data_retention=bool(data.get("zero_data_retention", False)),
-            )
-        except (json.JSONDecodeError, TypeError, AttributeError):
-            return RequestOptions()
 
     @staticmethod
     def format_usage(usage: dict[str, object], cancelled: bool) -> str:

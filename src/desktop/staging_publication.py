@@ -10,7 +10,7 @@ from shared.tools import PublishManifest
 
 from ..gateway_client import GatewayClient
 from ..settings import app_data_dir
-from ..workers import PublicationWorker, StagingDiscardWorker, StagingInspectWorker
+from ..workers import PublicationWorker, StagingWorker
 from ..workspace_broker import BrokerError
 from .host import BridgeHost
 
@@ -28,8 +28,8 @@ class StagingPublicationService(QObject):
         self.host = host
         self._recovery_root = recovery_root or (lambda: app_data_dir() / "recovery")
         self.publication_worker: PublicationWorker | None = None
-        self.discard_worker: StagingDiscardWorker | None = None
-        self.inspect_worker: StagingInspectWorker | None = None
+        self.discard_worker: StagingWorker | None = None
+        self.inspect_worker: StagingWorker | None = None
         # Multi-batch publication: the batch in flight and the next batch awaiting its turn.
         self.active_publication: tuple[PublishManifest, bool] | None = None
         self.next_publication: tuple[PublishManifest, bool, GatewayClient | None] | None = None
@@ -68,10 +68,12 @@ class StagingPublicationService(QObject):
                 raise BrokerError("Select the workspace that produced this manifest first")
             if self.publication_worker:
                 raise BrokerError("Another publication is already running")
-            connection = self.host.runtime.connection() if auto or client is None and manifest.batch_count > 1 else None
-            if auto and connection is None and client is None:
+            if client is None:
+                connection = self.host.runtime.connection()
+                client = GatewayClient(connection) if connection else None
+            if auto and client is None:
                 raise BrokerError("Auto publication requires the local gateway")
-            worker = PublicationWorker(manifest, Path(workspace), self._recovery_root(), reseed_client=client or (GatewayClient(connection) if connection else None))
+            worker = PublicationWorker(manifest, Path(workspace), self._recovery_root(), reseed_client=client)
             self.publication_worker = worker
             self.active_publication = (manifest, auto)
             worker.complete.connect(self._on_publication_complete)
@@ -197,7 +199,7 @@ class StagingPublicationService(QObject):
         if not connection or not self.host.runtime.workspace_path:
             self.host.errorRequested.emit("Workspace runtime required", "Select a ready workspace first.")
             return
-        worker = StagingDiscardWorker(GatewayClient(connection), self.host.runtime.identity())
+        worker = StagingWorker(GatewayClient(connection), self.host.runtime.identity(), "discard")
         self.discard_worker = worker
         worker.complete.connect(self._on_discarded)
         worker.failed.connect(self._on_discard_failed)
@@ -227,7 +229,7 @@ class StagingPublicationService(QObject):
         if not connection:
             self.host.errorRequested.emit("Workspace runtime required", "Select a ready workspace first.")
             return
-        worker = StagingInspectWorker(GatewayClient(connection), self.host.runtime.identity())
+        worker = StagingWorker(GatewayClient(connection), self.host.runtime.identity(), "inspect")
         self.inspect_worker = worker
         worker.complete.connect(self._on_inspected)
         worker.failed.connect(self._on_inspect_failed)

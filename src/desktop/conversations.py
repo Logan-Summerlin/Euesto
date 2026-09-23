@@ -290,7 +290,7 @@ class ConversationService(QObject):
             self.transcript = values
             summary = self.storage.usage_summary(conversation.id)
             if not generation.running and (summary["input_tokens"] or summary["output_tokens"] or summary["cost"]):
-                self.host.status_text = usage_text(summary)
+                self.host.set_status(usage_text(summary))
         self.transcript_model.replace(self.transcript, reset=force_reset)
         self.host.transcriptChanged.emit()
         self.host.stateChanged.emit()

@@ -7,10 +7,9 @@ from typing import Any
 
 from PySide6.QtCore import QObject, Slot
 
-from shared.coercion import optional_float, optional_int
+from shared.coercion import optional_float, optional_int, optional_string
 from shared.requests import DEFAULT_INVESTIGATION_MODEL
 
-from ..controllers import GenerationController
 from ..extensions import available_skills
 from ..gateway_client import DEFAULT_GATEWAY_URL, GatewayClient, GatewayError
 from ..model_catalog import ModelCatalog
@@ -144,7 +143,22 @@ class SettingsService(QObject):
     # -- per-model request options -----------------------------------------------------
 
     def request_options(self, model: str) -> RequestOptions:
-        return GenerationController.request_options(self.storage, model)
+        raw = self.storage.get_setting(f"model_options:{model}")
+        if not raw:
+            return RequestOptions()
+        try:
+            data = json.loads(raw)
+            return RequestOptions(
+                max_tokens=optional_int(data.get("max_tokens")),
+                reasoning_effort=optional_string(data.get("reasoning_effort")),
+                temperature=optional_float(data.get("temperature")),
+                top_p=optional_float(data.get("top_p")),
+                stop=[str(item) for item in data.get("stop", [])],
+                data_collection=("allow" if data.get("data_collection") == "allow" else "deny"),
+                zero_data_retention=bool(data.get("zero_data_retention", False)),
+            )
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            return RequestOptions()
 
     def set_reasoning_effort(self, model: str, effort: str) -> None:
         options = self.request_options(model)

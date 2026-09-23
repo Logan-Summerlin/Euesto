@@ -41,7 +41,6 @@ class BridgeHost(Protocol):
     fileExported: SignalLike
     fileImported: SignalLike
 
-    status_text: str
     runtime: RuntimeService
     settings: SettingsService
     history: ConversationService

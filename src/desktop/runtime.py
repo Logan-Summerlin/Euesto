@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QTimer, QUrl, Slot
+from PySide6.QtCore import QObject, QTimer, Slot
 
 from ..connection import GatewayHealthWorker, HealthResult, HealthState
 from ..gateway_client import DEFAULT_GATEWAY_URL, GatewayConnection
@@ -16,6 +16,7 @@ from ..settings import (
 )
 from ..storage import Storage
 from ..workspace_broker import BrokerError, canonical_workspace, workspace_id
+from .conversations import local_path
 from .host import BridgeHost
 
 BUSY_RUNTIME_STATES = frozenset({"starting", "stopping", "pulling", "building", "checking"})
@@ -134,11 +135,11 @@ class RuntimeService(QObject):
     # -- workspace and gateway configuration --------------------------------------------
 
     def select_workspace(self, value: str) -> None:
-        local = QUrl(value).toLocalFile() if value.startswith("file:") else value
-        if not local:
+        local = local_path(value)
+        if local is None:
             return
         try:
-            path = canonical_workspace(Path(local))
+            path = canonical_workspace(local)
         except BrokerError as exc:
             self.host.errorRequested.emit("Unsafe workspace", str(exc))
             return
@@ -154,10 +155,7 @@ class RuntimeService(QObject):
         self.host.stateChanged.emit()
         self.host.set_status("Preparing workspace…" if self.automatic else "Workspace selected; checking developer runtime…")
         if self.automatic:
-            try:
-                self.manager.ensure(path)
-            except (OSError, RuntimeError, ValueError) as exc:
-                self._runtime_failed(str(exc))
+            self._ensure_runtime(path)
         else:
             self.request_check()
 
@@ -168,14 +166,12 @@ class RuntimeService(QObject):
                 "Run .\\scripts\\dev-up.ps1 for the selected workspace, then check the gateway again.",
             )
             return
-        workspace = Path(self.workspace_path) if self.workspace_path else None
         try:
-            if workspace is not None:
-                workspace = canonical_workspace(workspace)
-            self.target_identity = workspace_id(workspace) if workspace else None
-            self.manager.ensure(workspace)
-        except (BrokerError, OSError, RuntimeError, ValueError) as exc:
+            workspace = canonical_workspace(Path(self.workspace_path)) if self.workspace_path else None
+        except BrokerError as exc:
             self._runtime_failed(str(exc))
+            return
+        self._ensure_runtime(workspace)
 
     def save_gateway(self, url: str, token: str) -> bool:
         try:
@@ -264,19 +260,25 @@ class RuntimeService(QObject):
             else:
                 self.workspace_path = str(workspace)
                 self.storage.set_setting("workspace_path", self.workspace_path)
+        self._ensure_runtime(workspace)
+
+    def _ensure_runtime(self, workspace: Path | None) -> None:
         self.target_identity = workspace_id(workspace) if workspace else None
         try:
             self.manager.ensure(workspace)
         except (OSError, RuntimeError, ValueError) as exc:
             self._runtime_failed(str(exc))
 
+    def _set_runtime_state(self, state: str, detail: str, gateway_text: str) -> None:
+        self.state = state
+        self.detail = detail
+        self.gateway_text = gateway_text
+        self.gateway_detail = detail
+        self.last_status = None
+
     @Slot(str, str)
     def _runtime_progress(self, state: str, message: str) -> None:
-        self.state = state
-        self.detail = message
-        self.gateway_text = RUNTIME_LABELS.get(state, "Runtime: working")
-        self.gateway_detail = message
-        self.last_status = None
+        self._set_runtime_state(state, message, RUNTIME_LABELS.get(state, "Runtime: working"))
         self.host.stateChanged.emit()
 
     @Slot(object)
@@ -287,11 +289,7 @@ class RuntimeService(QObject):
         if result.target.workspace_identity != self.target_identity:
             return
         self.gateway_token = result.gateway_token
-        self.state = "ready"
-        self.detail = "Local runtime started; checking gateway and executor health…"
-        self.gateway_text = "Gateway: checking"
-        self.gateway_detail = self.detail
-        self.last_status = None
+        self._set_runtime_state("ready", "Local runtime started; checking gateway and executor health…", "Gateway: checking")
         self.host.settingsChanged.emit()
         self.host.stateChanged.emit()
         if self.health_worker:
@@ -301,11 +299,7 @@ class RuntimeService(QObject):
 
     @Slot(str)
     def _runtime_failed(self, message: str) -> None:
-        self.state = "failed"
-        self.detail = message or "Local runtime setup failed."
-        self.gateway_text = "Runtime: setup failed"
-        self.gateway_detail = self.detail
-        self.last_status = None
+        self._set_runtime_state("failed", message or "Local runtime setup failed.", "Runtime: setup failed")
         self.host.stateChanged.emit()
         self.host.errorRequested.emit("Local runtime setup failed", self.detail)
 

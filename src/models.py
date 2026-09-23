@@ -4,9 +4,24 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from shared.coercion import optional_float, optional_int
+from shared.coercion import optional_float, optional_int, optional_string
 
 Role = Literal["system", "user", "assistant"]
+# Per-message provider/usage metadata carried by forks and imports, with its coercion.
+MESSAGE_METADATA_FIELDS = {
+    "model_id": optional_string,
+    "provider_id": optional_string,
+    "finish_reason": optional_string,
+    "input_tokens": optional_int,
+    "output_tokens": optional_int,
+    "cached_tokens": optional_int,
+    "reasoning_tokens": optional_int,
+    "total_tokens": optional_int,
+    "cost": optional_float,
+    "time_to_first_token": optional_float,
+    "elapsed_seconds": optional_float,
+    "tokens_per_second": optional_float,
+}
 
 
 def utc_now() -> str:

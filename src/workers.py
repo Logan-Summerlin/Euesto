@@ -14,8 +14,6 @@ from .gateway_client import GatewayClient, GatewayError
 from .models import ModelOption, RequestOptions, ServerToolOptions
 from .workspace_broker import BrokerError, PublicationLedger, WorkspaceBroker, describe_progress
 
-_last_gateway_client: GatewayClient | None = None
-
 
 class CatalogWorker(QThread):
     complete = Signal(object)
@@ -41,28 +39,52 @@ class ChatWorker(QThread):
     failed = Signal(str)
 
     def __init__(self, client: GatewayClient, api_key: str, model: str, messages: list[dict[str, str]], options: RequestOptions, server_tools: ServerToolOptions, supported_parameters: frozenset[str]):
-        super().__init__(); self.client = client; self.api_key = api_key; self.model = model; self.messages = messages; self.options = options; self.server_tools = server_tools; self.supported_parameters = supported_parameters; self.stop_event = threading.Event()
-    def stop(self) -> None: self.stop_event.set(); self.client.cancel()
+        super().__init__()
+        self.client = client
+        self.api_key = api_key
+        self.model = model
+        self.messages = messages
+        self.options = options
+        self.server_tools = server_tools
+        self.supported_parameters = supported_parameters
+        self.stop_event = threading.Event()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        self.client.cancel()
+
     def run(self) -> None:
-        result: dict[str, Any] = {}; chunks: list[str] = []; started_run_id: str | None = None
+        result: dict[str, Any] = {}
+        chunks: list[str] = []
+        started_run_id: str | None = None
         try:
             for event in self.client.stream_chat(api_key=self.api_key, model=self.model, messages=self.messages, stop_event=self.stop_event, options=self.options, server_tools=self.server_tools, supported_parameters=self.supported_parameters):
-                run_id = getattr(event, "run_id", None)
-                if run_id and run_id != started_run_id: started_run_id = str(run_id); self.runStarted.emit(started_run_id)
-                if event.text: chunks.append(event.text)
-                if event.usage: result.update(event.usage)
-                if event.model_id: result["actual_model"] = event.model_id
-                if event.provider_id: result["provider"] = event.provider_id
-                if event.finish_reason: result["finish_reason"] = event.finish_reason
-            if started_run_id: result["run_id"] = started_run_id
-            if chunks: self.chunk.emit("".join(chunks))
-            self.complete.emit(result, self.stop_event.is_set())
-        except GatewayError as exc:
-            if chunks: self.chunk.emit("".join(chunks))
-            self.failed.emit(str(exc))
+                if event.run_id and event.run_id != started_run_id:
+                    started_run_id = str(event.run_id)
+                    self.runStarted.emit(started_run_id)
+                if event.text:
+                    chunks.append(event.text)
+                if event.usage:
+                    result.update(event.usage)
+                if event.model_id:
+                    result["actual_model"] = event.model_id
+                if event.provider_id:
+                    result["provider"] = event.provider_id
+                if event.finish_reason:
+                    result["finish_reason"] = event.finish_reason
+            if started_run_id:
+                result["run_id"] = started_run_id
         except Exception as exc:
-            if chunks: self.chunk.emit("".join(chunks))
-            self.failed.emit(f"Unexpected error: {exc}")
+            message = str(exc) if isinstance(exc, GatewayError) else f"Unexpected error: {exc}"
+            self._flush(chunks)
+            self.failed.emit(message)
+            return
+        self._flush(chunks)
+        self.complete.emit(result, self.stop_event.is_set())
+
+    def _flush(self, chunks: list[str]) -> None:
+        if chunks:
+            self.chunk.emit("".join(chunks))
 
 
 AgentStream = Callable[[threading.Event], Iterator[EventEnvelope]]
@@ -74,55 +96,83 @@ class AgentWorker(QThread):
     eventReceived = Signal(object)
     complete = Signal(dict, bool)
     failed = Signal(str)
+
     def __init__(self, client: GatewayClient, stream: AgentStream, *, failure_context: str = "Agent", auto_approve: bool = False):
-        super().__init__(); global _last_gateway_client; _last_gateway_client = client; self.client = client; self._stream = stream; self.failure_context = failure_context; self.auto_approve = auto_approve; self.stop_event = threading.Event(); self.last_usage: dict[str, Any] = {}
+        super().__init__()
+        self.client = client
+        self._stream = stream
+        self.failure_context = failure_context
+        self.auto_approve = auto_approve
+        self.stop_event = threading.Event()
+        self.last_usage: dict[str, Any] = {}
+
     @classmethod
     def for_run(cls, client: GatewayClient, *, api_key: str, model: str, messages: Sequence[dict[str, Any]], mode: str, workspace_id: str, approval_policy: str, session_id: str, context_limit_tokens: int, skills: Sequence[dict[str, Any]], workspace_config: dict[str, Any], provider_preferences: dict[str, Any] | None = None, investigation_model_id: str | None = None) -> AgentWorker:
         return cls(client, lambda stop_event: client.stream_agent(api_key=api_key, model=model, messages=messages, mode=mode, workspace_id=workspace_id, approval_policy=approval_policy, stop_event=stop_event, session_id=session_id, context_limit_tokens=context_limit_tokens, skills=skills, workspace_config=workspace_config, provider_preferences=provider_preferences, investigation_model_id=investigation_model_id), auto_approve=approval_policy == "auto")
+
     @classmethod
     def for_resume(cls, client: GatewayClient, run_id: str, api_key: str) -> AgentWorker:
         return cls(client, lambda stop_event: client.resume_agent(run_id, api_key=api_key, stop_event=stop_event), failure_context="Agent resume")
-    def stop(self) -> None: self.stop_event.set(); self.client.cancel()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        self.client.cancel()
+
     def run(self) -> None:
-        usage: dict[str, Any] = {}; chunks: list[str] = []; started_run_id: str | None = None
+        usage: dict[str, Any] = {}
+        chunks: list[str] = []
+        started_run_id: str | None = None
         try:
             for event in self._stream(self.stop_event):
-                if event.run_id and event.run_id != started_run_id: started_run_id = event.run_id; self.runStarted.emit(event.run_id)
-                if event.type == "model.delta" and event.payload.get("text"): chunks.append(str(event.payload["text"])); continue
-                if event.type in {"usage.updated", "run.completed"}: usage.update(event.payload); continue
-                if event.type in {"tool.output", "tool.completed"}: continue
-                self.eventReceived.emit(event)
-                if event.type == "run.failed": raise GatewayError(str(event.payload.get("message") or "Agent run failed."))
-            if started_run_id: usage["run_id"] = started_run_id
+                if event.run_id and event.run_id != started_run_id:
+                    started_run_id = event.run_id
+                    self.runStarted.emit(event.run_id)
+                if event.type == "model.delta" and event.payload.get("text"):
+                    chunks.append(str(event.payload["text"]))
+                elif event.type in {"usage.updated", "run.completed"}:
+                    usage.update(event.payload)
+                elif event.type not in {"tool.output", "tool.completed"}:
+                    self.eventReceived.emit(event)
+                    if event.type == "run.failed":
+                        raise GatewayError(str(event.payload.get("message") or "Agent run failed."))
+            if started_run_id:
+                usage["run_id"] = started_run_id
+        except Exception as exc:
+            message = str(exc) if isinstance(exc, GatewayError) else f"{self.failure_context} failed safely: {exc}"
             self.last_usage = dict(usage)
-            if chunks: self.chunk.emit("".join(chunks))
-            self.complete.emit(usage, self.stop_event.is_set())
-        except GatewayError as exc:
-            self.last_usage = dict(usage)
-            if chunks: self.chunk.emit("".join(chunks))
+            self._flush(chunks)
+            self.failed.emit(message)
+            return
+        self.last_usage = dict(usage)
+        self._flush(chunks)
+        self.complete.emit(usage, self.stop_event.is_set())
+
+    def _flush(self, chunks: list[str]) -> None:
+        if chunks:
+            self.chunk.emit("".join(chunks))
+
+
+class StagingWorker(QThread):
+    """Run one staging request (``discard`` or ``inspect``) against the gateway off the UI thread."""
+
+    complete = Signal(dict)
+    failed = Signal(str)
+
+    def __init__(self, client: GatewayClient, workspace_id: str, action: str):
+        super().__init__()
+        self.client = client
+        self.workspace_id = workspace_id
+        self.action = action
+
+    def run(self) -> None:
+        request = self.client.discard_staging if self.action == "discard" else self.client.inspect_staging
+        try:
+            self.complete.emit(request(self.workspace_id))
+        except (GatewayError, KeyError, TypeError, ValueError) as exc:
             self.failed.emit(str(exc))
         except Exception as exc:
-            self.last_usage = dict(usage)
-            if chunks: self.chunk.emit("".join(chunks))
-            self.failed.emit(f"{self.failure_context} failed safely: {exc}")
-
-
-class StagingDiscardWorker(QThread):
-    complete = Signal(dict); failed = Signal(str)
-    def __init__(self, client: GatewayClient, workspace_id: str): super().__init__(); self.client = client; self.workspace_id = workspace_id
-    def run(self) -> None:
-        try: self.complete.emit(self.client.discard_staging(self.workspace_id))
-        except (GatewayError, KeyError, TypeError, ValueError) as exc: self.failed.emit(str(exc))
-        except Exception as exc: self.failed.emit(f"Unexpected staging discard error: {exc}")
-
-
-class StagingInspectWorker(QThread):
-    complete = Signal(dict); failed = Signal(str)
-    def __init__(self, client: GatewayClient, workspace_id: str): super().__init__(); self.client = client; self.workspace_id = workspace_id
-    def run(self) -> None:
-        try: self.complete.emit(self.client.inspect_staging(self.workspace_id))
-        except (GatewayError, KeyError, TypeError, ValueError) as exc: self.failed.emit(str(exc))
-        except Exception as exc: self.failed.emit(f"Unexpected staging inspection error: {exc}")
+            description = "discard" if self.action == "discard" else "inspection"
+            self.failed.emit(f"Unexpected staging {description} error: {exc}")
 
 
 class PublicationWorker(QThread):
@@ -132,22 +182,30 @@ class PublicationWorker(QThread):
     remain, the next manifest is returned as ``next_manifest`` for its own approval; nothing
     beyond the approved batch is ever written by this worker.
     """
-    complete = Signal(dict); failed = Signal(str)
+
+    complete = Signal(dict)
+    failed = Signal(str)
+
     def __init__(self, manifest: PublishManifest, workspace_root: Path, recovery_root: Path, *, reseed_client: GatewayClient | None = None):
-        super().__init__(); self.manifest = manifest; self.workspace_root = workspace_root; self.recovery_root = recovery_root; self.reseed_client = reseed_client
+        super().__init__()
+        self.manifest = manifest
+        self.workspace_root = workspace_root
+        self.recovery_root = recovery_root
+        self.reseed_client = reseed_client
         self.continuation_client: GatewayClient | None = None
+
     def run(self) -> None:
-        global _last_gateway_client
         multi_batch = int(getattr(self.manifest, "batch_count", 1) or 1) > 1
         try:
             broker = WorkspaceBroker(self.workspace_root, self.recovery_root)
             published = broker.publish(self.manifest, {item.path for item in self.manifest.operations})
-        except (BrokerError, OSError, TypeError, ValueError) as exc:
-            self._record("failed", error=str(exc)); self.failed.emit(self._with_progress(str(exc))); return
         except Exception as exc:
-            self._record("failed", error=str(exc)); self.failed.emit(self._with_progress(f"Unexpected publication error: {exc}")); return
+            known = isinstance(exc, BrokerError | OSError | TypeError | ValueError)
+            self._record("failed", error=str(exc))
+            self.failed.emit(self._with_progress(str(exc) if known else f"Unexpected publication error: {exc}"))
+            return
         result: dict[str, Any] = {"completed_paths": list(published.completed_paths), "checkpoint_id": published.checkpoint_id}
-        reseed_client = self.reseed_client or _last_gateway_client
+        reseed_client = self.reseed_client
         try:
             if reseed_client:
                 reseed_client.mark_staging_published(self.manifest)
@@ -161,8 +219,6 @@ class PublicationWorker(QThread):
         except Exception as exc:
             result["reseeded"] = False
             result["reseed_error"] = f"Unexpected staging baseline error: {exc}"
-        finally:
-            _last_gateway_client = None
         if multi_batch:
             record = self._record("published" if result["reseeded"] else "baseline_failed", checkpoint_id=published.checkpoint_id, error=result.get("reseed_error"))
             result.update({"publication_id": self.manifest.publication_id, "batch_index": self.manifest.batch_index, "batch_count": self.manifest.batch_count, "progress": describe_progress(record)})

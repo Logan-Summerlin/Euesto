@@ -291,8 +291,7 @@ class GenerationService(QObject):
             worker.eventReceived.connect(self.on_agent_event)
         self._attach(worker)
         suffix = f" · compacted {prepared.removed_messages}" if prepared.removed_messages else ""
-        self.host.status_text = f"≈{prepared.estimated_tokens:,} input tokens{suffix}"
-        self.host.stateChanged.emit()
+        self.host.set_status(f"≈{prepared.estimated_tokens:,} input tokens{suffix}")
         self.host.history.refresh_transcript()
         worker.start()
 
@@ -403,7 +402,7 @@ class GenerationService(QObject):
             self.controller.finish_without_message("cancelled" if cancelled else "completed")
         self.controller.state.clear_stream()
         self.live_events = []
-        self.host.status_text = GenerationController.format_usage(usage, cancelled)
+        self.host.set_status(GenerationController.format_usage(usage, cancelled))
         self.host.history.refresh_transcript()
         self.host.stateChanged.emit()
         self.host.settingsChanged.emit()
@@ -418,7 +417,7 @@ class GenerationService(QObject):
             self.controller.finish_without_message("failed", message)
         self.controller.state.clear_stream()
         self.live_events = []
-        self.host.status_text = "Request failed"
+        self.host.set_status("Request failed")
         self.host.history.refresh_transcript()
         self.host.stateChanged.emit()
         self.host.errorRequested.emit("Gateway request failed", message)
@@ -436,14 +435,14 @@ class GenerationService(QObject):
     def continue_queued_input(self) -> None:
         queued = self.controller.next_input()
         if queued:
-            self.host.status_text = "Applying steering…" if queued.steered else "Sending queued message…"
+            self.host.set_status("Applying steering…" if queued.steered else "Sending queued message…")
             QTimer.singleShot(0, lambda value=queued.text: self.start_user_turn(value))
 
     # -- control -----------------------------------------------------------------------
 
     def stop(self) -> None:
         if self.worker:
-            self.host.status_text = "Stopping…"
+            self.host.set_status("Stopping…")
             self.controller.request_cancel()
             self.worker.stop()
             self.host.stateChanged.emit()

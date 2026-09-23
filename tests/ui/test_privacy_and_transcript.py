@@ -263,7 +263,6 @@ def test_transcript_never_loads_tool_outputs_into_qml_activity(tmp_path: Path) -
 def test_responses_are_buffered_and_optional_qml_values_are_guarded() -> None:
     generation_source = (ROOT / "src" / "desktop" / "generation.py").read_text(encoding="utf-8")
     conversation_source = (ROOT / "src" / "desktop" / "conversations.py").read_text(encoding="utf-8")
-    worker_source = (ROOT / "src" / "workers.py").read_text(encoding="utf-8")
     transcript_source = (ROOT / "qml" / "Transcript.qml").read_text(encoding="utf-8")
     main_source = (ROOT / "qml" / "Main.qml").read_text(encoding="utf-8")
     chunk_handler = generation_source[generation_source.index("def on_stream_chunk") : generation_source.index("def on_stream_complete")]
@@ -271,8 +270,6 @@ def test_responses_are_buffered_and_optional_qml_values_are_guarded() -> None:
     assert "refresh_transcript" not in chunk_handler
     assert 'live_text=""' in conversation_source
     assert 'if event_type not in {"model.delta", "tool.output", "tool.completed"}' in generation_source
-    assert 'self.chunk.emit("".join(chunks))' in worker_source
-    assert 'if event.type in {"tool.output", "tool.completed"}' in worker_source
     assert "card.value.streaming === true" in transcript_source
     assert 'String(card.value.metadata || "").length' in transcript_source
     assert "policy: ScrollBar.AlwaysOn" in transcript_source
@@ -301,6 +298,20 @@ def test_agent_worker_delivers_one_answer_and_drops_large_transport_events() -> 
     assert chunks == ["hello"]
     assert [event.type for event in desktop_events] == ["tool.requested"]
     assert completions == [({"tokens": 9, "run_id": "run-1"}, False)]
+
+
+def test_agent_worker_flushes_partial_output_before_reporting_failure() -> None:
+    events = (
+        EventEnvelope(1, "run-1", "model.delta", "2026-08-09T00:00:00Z", {"text": "partial"}),
+        EventEnvelope(2, "run-1", "run.failed", "2026-08-09T00:00:01Z", {"message": "boom"}),
+    )
+    worker = AgentWorker(SimpleNamespace(cancel=lambda: None), lambda _stop: iter(events))
+    chunks: list[str] = []
+    failures: list[str] = []
+    worker.chunk.connect(chunks.append)
+    worker.failed.connect(failures.append)
+    worker.run()
+    assert (chunks, failures, worker.last_usage) == (["partial"], ["boom"], {})
 
 
 def test_gateway_token_is_used_from_memory_immediately_after_save() -> None:
