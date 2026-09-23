@@ -34,6 +34,7 @@ def _setup(tmp_path: Path, files: dict[str, bytes]) -> tuple[Path, ExecutorServi
     return workspace, ExecutorService(config)
 
 
+@pytest.mark.posix
 def test_bash_written_png_publishes_byte_identical_with_mode(tmp_path: Path) -> None:
     workspace, service = _setup(tmp_path, {"README.md": b"# app\n", "assets/old.bin": b"\x00\x01\x02"})
     png = _png()

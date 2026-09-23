@@ -53,6 +53,7 @@ def run_and_cancel_after_start(root: Path, arguments: dict, monkeypatch: pytest.
 # Shell semantics
 
 
+@pytest.mark.posix
 def test_bash_supports_shell_syntax(tmp_path: Path) -> None:
     output, data = asyncio.run(run_bash(tmp_path, {"command": "printf 'a\\nb\\n' | tail -1"}))
     assert output == "b\n"
@@ -60,6 +61,7 @@ def test_bash_supports_shell_syntax(tmp_path: Path) -> None:
     assert data["checkpoint_id"]
 
 
+@pytest.mark.posix
 def test_bash_supports_redirects_substitution_loops_and_multiline(tmp_path: Path) -> None:
     command = """set -e
 printf '%s\\n' one two > values.txt
@@ -71,12 +73,14 @@ for f in $(cat values.txt); do echo "$f"; done
     assert data["exit_code"] == 0
 
 
+@pytest.mark.posix
 def test_bash_supports_environment_and_stdin(tmp_path: Path) -> None:
     output, data = asyncio.run(run_bash(tmp_path, {"command": "read value; printf '%s:%s\\n' \"$DEBUG\" \"$value\"", "env": {"DEBUG": "1"}, "stdin": "input\n"}))
     assert output == "1:input\n"
     assert data["stdin_bytes"] == len(b"input\n")
 
 
+@pytest.mark.posix
 def test_bash_allows_subprocess_spawning_inside_sandbox(tmp_path: Path) -> None:
     output, data = asyncio.run(run_bash(tmp_path, {"command": "python3 -c 'import subprocess; subprocess.run([\"echo\", \"child\"], check=True)'"}))
     assert "child" in output
@@ -118,6 +122,7 @@ def test_bash_rejects_non_boolean_rollback_on_failure(tmp_path: Path) -> None:
 # Restricted environment and non-interactivity
 
 
+@pytest.mark.posix
 def test_bash_preserves_restricted_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SECRET", "host-value")
     # The shell starts from the fixed base environment only; a login profile may prepend or
@@ -143,6 +148,7 @@ def test_bash_refuses_malformed_or_oversized_environment(tmp_path: Path) -> None
             asyncio.run(run_bash(tmp_path, {"command": "true", "env": env}))
 
 
+@pytest.mark.posix
 def test_bash_rejects_interactive_tty_and_preserves_network_isolation_contract(tmp_path: Path) -> None:
     command = "for fd in 0 1 2; do test -t $fd && echo \"tty:$fd\"; done; (: < /dev/tty) 2>/dev/null && echo controlling-tty; echo done"
     output, data = asyncio.run(run_bash(tmp_path, {"command": command}))
@@ -151,6 +157,7 @@ def test_bash_rejects_interactive_tty_and_preserves_network_isolation_contract(t
     assert MAX_COMMAND_SECONDS == 900
 
 
+@pytest.mark.posix
 @pytest.mark.skipif(not hasattr(os, "openpty"), reason="requires POSIX pseudo-terminals")
 def test_bash_does_not_inherit_a_terminal_from_the_executor(tmp_path: Path) -> None:
     # Even when the executor process itself has a terminal on stdin, commands see none.
@@ -171,6 +178,7 @@ def test_bash_does_not_inherit_a_terminal_from_the_executor(tmp_path: Path) -> N
 # Output bounds
 
 
+@pytest.mark.posix
 def test_bash_large_stdout_retains_bounded_head_and_tail(tmp_path: Path) -> None:
     output, data = asyncio.run(run_bash(tmp_path, {"command": "python3 -c 'print(\"A\" * 1200000); print(\"TAIL-MARKER\")'"}, max_output=2_000_000))
     assert data["stdout_bytes"] > 1_000_000
@@ -181,6 +189,7 @@ def test_bash_large_stdout_retains_bounded_head_and_tail(tmp_path: Path) -> None
     assert data["truncated"] is True
 
 
+@pytest.mark.posix
 def test_bash_large_stderr_and_mixed_streams_are_accounted_separately(tmp_path: Path) -> None:
     command = "python3 -c 'import sys; print(\"OUT\" * 400000); print(\"ERR\" * 400000, file=sys.stderr)'"
     output, data = asyncio.run(run_bash(tmp_path, {"command": command}, max_output=100_000))
@@ -203,6 +212,7 @@ def test_output_buffer_keeps_head_and_tail_beyond_its_limit() -> None:
     assert b"output truncated" in buffer.bytes()
 
 
+@pytest.mark.posix
 def test_bash_small_output_is_not_truncated(tmp_path: Path) -> None:
     output, data = asyncio.run(run_bash(tmp_path, {"command": "echo out; echo err >&2"}))
     assert output == "out\n\nerr\n"
@@ -219,12 +229,14 @@ def test_cancelling_an_unknown_request_records_nothing() -> None:
 
 
 
+@pytest.mark.posix
 def test_bash_enforces_timeout_and_rolls_back(tmp_path: Path) -> None:
     with pytest.raises(TimeoutError, match="approved timeout"):
         asyncio.run(run_bash(tmp_path, {"command": "echo changed > timeout.txt; sleep 10", "timeout_seconds": 1}, max_seconds=2))
     assert not (tmp_path / "timeout.txt").exists()
 
 
+@pytest.mark.posix
 def test_bash_cancellation_terminates_process_group_and_rolls_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     data = run_and_cancel_after_start(tmp_path, {"command": "echo changed > cancel.txt; sleep 30"}, monkeypatch)
     assert data["cancelled"] is True
@@ -238,6 +250,7 @@ def test_cancel_unknown_request_is_safe() -> None:
     assert asyncio.run(cancel("missing-request")) is False
 
 
+@pytest.mark.posix
 def test_bash_success_keeps_changes_and_reports_no_rollback(tmp_path: Path) -> None:
     _, data = asyncio.run(run_bash(tmp_path, {"command": "echo kept > kept.txt"}))
     assert data["exit_code"] == 0
@@ -247,6 +260,7 @@ def test_bash_success_keeps_changes_and_reports_no_rollback(tmp_path: Path) -> N
     assert (tmp_path / "kept.txt").read_text(encoding="utf-8") == "kept\n"
 
 
+@pytest.mark.posix
 def test_bash_rolls_back_nonzero_exit(tmp_path: Path) -> None:
     (tmp_path / "earlier.txt").write_text("earlier staged work", encoding="utf-8")
     (tmp_path / "state").write_text("before", encoding="utf-8")
@@ -266,6 +280,7 @@ def test_bash_rolls_back_nonzero_exit(tmp_path: Path) -> None:
 # rollback_on_failure opt-out
 
 
+@pytest.mark.posix
 def test_bash_rollback_opt_out_retains_partial_progress_on_nonzero_exit(tmp_path: Path) -> None:
     (tmp_path / "existing.txt").write_text("before", encoding="utf-8")
     command = "printf generated > one.txt; printf updated > existing.txt; exit 3"
@@ -279,6 +294,7 @@ def test_bash_rollback_opt_out_retains_partial_progress_on_nonzero_exit(tmp_path
     assert (tmp_path / "existing.txt").read_text(encoding="utf-8") == "updated"
 
 
+@pytest.mark.posix
 def test_bash_rollback_opt_out_still_rolls_back_on_timeout(tmp_path: Path) -> None:
     (tmp_path / "existing.txt").write_text("before", encoding="utf-8")
     command = "printf partial > existing.txt; printf new > created.txt; sleep 10"
@@ -288,6 +304,7 @@ def test_bash_rollback_opt_out_still_rolls_back_on_timeout(tmp_path: Path) -> No
     assert not (tmp_path / "created.txt").exists()
 
 
+@pytest.mark.posix
 def test_bash_rollback_opt_out_still_rolls_back_on_cancellation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / "existing.txt").write_text("before", encoding="utf-8")
     command = "printf partial > existing.txt; printf new > created.txt; sleep 30"

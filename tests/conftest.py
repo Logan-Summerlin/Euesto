@@ -18,3 +18,12 @@ def pytest_configure(config) -> None:
         return
     if any(part.casefold() == "appdata" for part in Path(tempfile.gettempdir()).parts):
         config.option.basetemp = str(ROOT / ".pytest-tmp")
+
+
+def pytest_collection_modifyitems(config, items) -> None:
+    if sys.platform != "win32":
+        return
+    skip = pytest.mark.skip(reason="runs the executor's /bin/bash, which exists only in its Linux container")
+    for item in items:
+        if "posix" in item.keywords:
+            item.add_marker(skip)

@@ -26,6 +26,8 @@ from .staging import sha256_file, visible_files
 DEFAULT_MAX_CHECKPOINTS = 8
 DEFAULT_MAX_CHECKPOINT_BYTES = 2_500_000_000
 _CHECKPOINT_ID = re.compile(r"^[0-9a-f-]{20,64}$")
+# chmod without following links where the platform supports it (Windows Python 3.12 does not).
+_NO_FOLLOW = {"follow_symlinks": False} if os.chmod in os.supports_follow_symlinks else {}
 
 
 def create_checkpoint(
@@ -174,7 +176,7 @@ def restore_checkpoint(
         atomic_write_bytes(target, prepared[relative][0], prefix=".local-chat-")
         mode = prepared[relative][1]
         if mode is not None:
-            os.chmod(target, mode, follow_symlinks=False)
+            os.chmod(target, mode, **_NO_FOLLOW)
     return {
         "checkpoint_id": checkpoint_id,
         "restored_paths": changed,

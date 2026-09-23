@@ -148,6 +148,7 @@ def test_executor_dispatches_every_read_only_tool(tmp_path: Path) -> None:
             assert result.ok, (mode, request.tool, result.to_dict())
 
 
+@pytest.mark.posix
 def test_executor_dispatches_mutations_only_into_staging(tmp_path: Path) -> None:
     source = tmp_path / "source"
     work = tmp_path / "work"

@@ -4,6 +4,8 @@ import asyncio
 import stat
 from pathlib import Path
 
+import pytest
+
 from executor.app import ExecutorService
 from executor.config import ExecutorConfig
 from executor.mutations import bounded_diff
@@ -57,6 +59,7 @@ def test_status_reports_staged_changes_and_publication_review(tmp_path: Path) ->
     assert "host publication pending review" in status["summary"]
 
 
+@pytest.mark.posix
 def test_chmod_is_preserved_in_staging_and_publication(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"; workspace.mkdir(); script = workspace / "run.sh"; script.write_text("#!/bin/sh\necho ok\n", encoding="utf-8"); script.chmod(0o644)
     config = ExecutorConfig(workspace, tmp_path / "work", tmp_path / "executor.sock", "t" * 43, workspace_id(workspace))

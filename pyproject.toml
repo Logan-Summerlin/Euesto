@@ -5,6 +5,7 @@ pythonpath = ["."]
 markers = [
     "slow: tests that are unsuitable for the default fast feedback loop",
     "docker: tests that require a Docker/container runtime",
+    "posix: tests that run the executor's /bin/bash, which exists only in its Linux container (skipped on Windows)",
 ]
 
 [tool.ruff]
