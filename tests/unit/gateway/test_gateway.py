@@ -314,3 +314,18 @@ def test_v05_workspace_config_capabilities_and_permission_rule_management(tmp_pa
         await service.close()
 
     asyncio.run(scenario())
+
+
+def test_agent_payload_offers_tools_by_mode_and_honours_an_empty_allow_list() -> None:
+    from server.openrouter.agent import agent_payload
+
+    def names(payload):
+        return {item["function"]["name"] for item in payload["tools"]}
+
+    agent = agent_payload("m", [], "agent")
+    plan = agent_payload("m", [], "plan")
+    assert "write" in names(agent) and agent["tool_choice"] == "auto"
+    assert names(plan) == {"read", "grep", "find", "ls"}
+    assert names(agent_payload("m", [], "agent", allowed_tools={"read"})) == {"read"}
+    synthesis = agent_payload("m", [], "plan", allowed_tools=set())
+    assert synthesis["tool_choice"] == "none"

@@ -76,3 +76,9 @@ def test_validation_scripts_and_lock_are_repository_owned() -> None:
     assert (root / "scripts" / "qml_smoke.py").is_file()
     lock = (root / "requirements-dev.lock").read_text(encoding="utf-8")
     assert "PySide6==" in lock and "pytest==" in lock and "ruff==" in lock
+
+
+def test_validate_script_runs_as_a_command() -> None:
+    root = Path(validate.__file__).resolve().parents[1]
+    result = subprocess.run([validate.sys.executable, "scripts/validate.py", "preflight"], cwd=root, capture_output=True, text=True, timeout=60)
+    assert " python: " in result.stdout

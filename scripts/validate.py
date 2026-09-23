@@ -138,3 +138,7 @@ def main(argv: list[str] | None = None) -> int:
     for check in report["checks"]:
         print(f"{check['status']:11} {check['name']}: {check.get('detail', '')}")
     return code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -7,6 +7,8 @@ from typing import Any
 
 import httpx
 
+from shared.tools import PLAN_TOOLS
+
 from .client import OPENROUTER_URL, normalize_usage
 from .errors import ProviderError
 
@@ -41,10 +43,24 @@ class AgentTurn:
     usage: dict[str, Any]
 
 
-async def agent_turn(model: str, messages: list[dict[str, Any]], api_key: str, mode: str, provider_preferences: dict[str, Any] | None = None, allowed_tools: set[str] | None = None) -> AgentTurn:
-    tools = [item for item in LOCAL_TOOL_SCHEMAS if item["function"]["name"] in (allowed_tools or {"read", "grep", "find", "ls"})] if mode == "plan" or allowed_tools is not None else LOCAL_TOOL_SCHEMAS
+def tool_schemas(mode: str, allowed_tools: set[str] | None = None) -> list[dict[str, Any]]:
+    """Schemas offered to the model: ``allowed_tools`` when given (even empty), else by mode."""
+    names = PLAN_TOOLS if allowed_tools is None and mode == "plan" else allowed_tools
+    if names is None:
+        return LOCAL_TOOL_SCHEMAS
+    return [item for item in LOCAL_TOOL_SCHEMAS if item["function"]["name"] in names]
+
+
+def agent_payload(model: str, messages: list[dict[str, Any]], mode: str, provider_preferences: dict[str, Any] | None = None, allowed_tools: set[str] | None = None) -> dict[str, Any]:
+    tools = tool_schemas(mode, allowed_tools)
     privacy = dict(provider_preferences or {})
-    payload = {"model": model, "messages": messages, "tools": tools, "tool_choice": "auto", "stream": False, "usage": {"include": True}, "provider": {"data_collection": "allow" if privacy.get("data_collection") == "allow" else "deny", "zdr": bool(privacy.get("zdr", False))}}
+    # An empty allow-list forbids tool calls; the mode's definitions stay so providers can
+    # still validate earlier tool calls in the history.
+    return {"model": model, "messages": messages, "tools": tools or tool_schemas(mode), "tool_choice": "auto" if tools else "none", "stream": False, "usage": {"include": True}, "provider": {"data_collection": "allow" if privacy.get("data_collection") == "allow" else "deny", "zdr": bool(privacy.get("zdr", False))}}
+
+
+async def agent_turn(model: str, messages: list[dict[str, Any]], api_key: str, mode: str, provider_preferences: dict[str, Any] | None = None, allowed_tools: set[str] | None = None) -> AgentTurn:
+    payload = agent_payload(model, messages, mode, provider_preferences, allowed_tools)
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "X-Title": "Local OpenRouter Chat"}
     try:
         async with httpx.AsyncClient(timeout=90, follow_redirects=False) as client:

@@ -170,10 +170,7 @@ class SettingsService(QObject):
         ]
 
     def toggle_favorite_model(self, model_id: str) -> None:
-        if model_id in set(self.storage.favorite_model_ids()):
-            self.storage.remove_favorite_model(model_id)
-        else:
-            self.storage.add_favorite_model(model_id)
+        self.storage.set_model_favorite(model_id, model_id not in self.storage.favorite_model_ids())
         self.host.reload_models()
 
     def save_model_alias(self, alias: str, model_id: str) -> None:

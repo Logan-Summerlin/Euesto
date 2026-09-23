@@ -211,6 +211,15 @@ def test_settings_preferences_round_trip(host, storage) -> None:
     assert host.statuses[-1] == "Model and privacy controls saved"
 
 
+def test_settings_toggle_favorite_model_round_trips(host, storage) -> None:
+    settings = SettingsService(host, storage)
+    settings.toggle_favorite_model("vendor/model")
+    assert storage.favorite_model_ids() == ["vendor/model"]
+    settings.toggle_favorite_model("vendor/model")
+    assert storage.favorite_model_ids() == []
+    assert host.model_reloads == 2
+
+
 def test_settings_commands_include_builtins_and_invalid_input_is_reported(host, storage) -> None:
     settings = SettingsService(host, storage)
     settings.reload_commands()
