@@ -7,7 +7,13 @@ from typing import Any
 from PySide6.QtCore import Property, QObject, Signal, Slot
 from PySide6.QtGui import QGuiApplication, QWindow
 
-from .desktop import ConversationService, GenerationService, RuntimeService, SettingsService, StagingPublicationService
+from .desktop import (
+    ConversationService,
+    GenerationService,
+    RuntimeService,
+    SettingsService,
+    StagingPublicationService,
+)
 from .models import Conversation
 from .settings import database_path
 from .storage import Storage

@@ -63,9 +63,9 @@ def tool_argument_bytes(arguments: object) -> int:
         elif isinstance(value, dict):
             total += 2 + max(0, 2 * len(value) - 1)
             for key, item in value.items(): stack.append(str(key)); stack.append(item)
-        elif isinstance(value, (list, tuple)):
+        elif isinstance(value, list | tuple):
             total += 2 + max(0, len(value) - 1); stack.extend(value)
-        elif value is None or isinstance(value, (bool, int, float)): total += len(str(value))
+        elif value is None or isinstance(value, bool | int | float): total += len(str(value))
         else: total += len(repr(value).encode("utf-8"))
         if total > MAX_TOOL_ARGUMENT_BYTES: break
     return total
@@ -88,7 +88,7 @@ class ToolRequest:
     def to_dict(self) -> dict[str, Any]: return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ToolRequest":
+    def from_dict(cls, data: dict[str, Any]) -> ToolRequest:
         expected = {"request_id", "run_id", "tool", "mode", "arguments"}
         unknown = set(data) - expected
         if unknown: raise ValueError(f"Unknown tool request fields: {', '.join(sorted(unknown))}")
@@ -111,7 +111,7 @@ class ToolResult:
     next_cursor: str | None = None
     def to_dict(self) -> dict[str, Any]: return asdict(self)
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ToolResult":
+    def from_dict(cls, data: dict[str, Any]) -> ToolResult:
         expected = {"request_id", "ok", "output", "data", "error_code", "truncated", "elapsed_seconds", "returned", "total_known", "limit", "next_cursor"}
         if set(data) - expected: raise ValueError("Unknown tool result fields")
         return cls(str(data.get("request_id") or ""), bool(data.get("ok")), str(data.get("output") or ""), dict(data.get("data") or {}), str(data["error_code"]) if data.get("error_code") else None, bool(data.get("truncated")), float(data.get("elapsed_seconds") or 0), _optional_nonnegative_int(data.get("returned")), _optional_nonnegative_int(data.get("total_known")), _optional_nonnegative_int(data.get("limit")), str(data["next_cursor"]) if data.get("next_cursor") else None)
@@ -191,7 +191,7 @@ class PublishManifest:
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self); data["operations"] = [asdict(item) for item in self.operations]; return data
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "PublishManifest":
+    def from_dict(cls, data: dict[str, Any]) -> PublishManifest:
         expected = {"manifest_id", "run_id", "workspace_id", "source_snapshot_id", "approval_id", "operations", "publication_id", "batch_index", "batch_count"}
         if set(data) - expected: raise ValueError("Unknown publish manifest fields")
         raw = data.get("operations")
@@ -231,12 +231,12 @@ class PublicationReceipt:
         if len(self.operations) > PUBLISH_BATCH_MAX_OPERATIONS: raise ValueError("Publication receipt exceeds the batch operation limit")
         if not 1 <= self.batch_index <= self.batch_count <= MAX_PUBLISH_BATCHES: raise ValueError("Publication batch position is out of range")
     @classmethod
-    def from_manifest(cls, manifest: PublishManifest) -> "PublicationReceipt":
+    def from_manifest(cls, manifest: PublishManifest) -> PublicationReceipt:
         return cls(manifest.manifest_id, manifest.run_id, manifest.workspace_id, manifest.source_snapshot_id, manifest.publication_id, manifest.batch_index, manifest.batch_count, tuple(PublishedOperation(item.path, item.operation, item.staged_sha256, item.staged_mode) for item in manifest.operations))
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self); data["operations"] = [asdict(item) for item in self.operations]; return data
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "PublicationReceipt":
+    def from_dict(cls, data: dict[str, Any]) -> PublicationReceipt:
         expected = {"manifest_id", "run_id", "workspace_id", "source_snapshot_id", "publication_id", "batch_index", "batch_count", "operations"}
         if set(data) - expected: raise ValueError("Unknown publication receipt fields")
         raw = data.get("operations")

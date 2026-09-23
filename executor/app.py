@@ -14,13 +14,31 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from shared.tools import MUTATION_TOOLS, TOOL_NAMES, PublicationReceipt, PublishManifest, PublishOperation, ToolRequest, ToolResult
+from shared.tools import (
+    MUTATION_TOOLS,
+    TOOL_NAMES,
+    PublicationReceipt,
+    PublishManifest,
+    PublishOperation,
+    ToolRequest,
+    ToolResult,
+)
+
 from .checkpoints import checkpoint_files, discard_staging
 from .config import ExecutorConfig
 from .egress import egress_status
 from .errors import INVALID_ARGUMENTS, STAGING_CONFLICT, ExecutorToolError, classify_error
 from .permissions import enforce_capability
-from .staging import Snapshot, WorkspaceChange, advance_published_staging, load_snapshot, publication_batches, refresh_visible_files, seed_staging, workspace_changes
+from .staging import (
+    Snapshot,
+    WorkspaceChange,
+    advance_published_staging,
+    load_snapshot,
+    publication_batches,
+    refresh_visible_files,
+    seed_staging,
+    workspace_changes,
+)
 from .tools import apply_patch, bash, edit, find, grep, ls, read, status, write
 from .tools.apply_patch import apply_patch_paths
 from .tools.bash import cancel as cancel_bash

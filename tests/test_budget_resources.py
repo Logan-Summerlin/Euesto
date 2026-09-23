@@ -9,7 +9,14 @@ import pytest
 
 from executor.checkpoints import CheckpointError, create_checkpoint
 from executor.config import ExecutorConfig
-from server.agent.budgets import EXTENDED_CODING_PROFILE, LARGE_CODING_PROFILE, STANDARD_CODING_PROFILE, BudgetExceededError, RunBudget, requires_budget_approval
+from server.agent.budgets import (
+    EXTENDED_CODING_PROFILE,
+    LARGE_CODING_PROFILE,
+    STANDARD_CODING_PROFILE,
+    BudgetExceededError,
+    RunBudget,
+    requires_budget_approval,
+)
 from server.agent.runtime import AgentRuntime
 from shared.requests import AgentRunRequest
 from shared.tools import ToolResult

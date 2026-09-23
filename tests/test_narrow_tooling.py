@@ -5,8 +5,14 @@ import pytest
 from executor.tools.grep import grep
 from executor.tools.ls import ls
 from executor.tools.read import read
-from shared.tools import AGENT_TOOLS, INVESTIGATION_TOOLS, PLAN_TOOLS, TOOL_NAMES, TOOL_PROFILE, ToolRequest
-
+from shared.tools import (
+    AGENT_TOOLS,
+    INVESTIGATION_TOOLS,
+    PLAN_TOOLS,
+    TOOL_NAMES,
+    TOOL_PROFILE,
+    ToolRequest,
+)
 
 
 def test_read_rejects_out_of_range_lines_instead_of_empty_result(tmp_path: Path) -> None:

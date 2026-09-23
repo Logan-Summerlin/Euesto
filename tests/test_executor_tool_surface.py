@@ -8,9 +8,15 @@ import pytest
 
 from executor.app import ExecutorService
 from executor.config import ExecutorConfig
-from executor.tools import apply_patch, bash, edit, find, grep, ls, read, status, write
 from server.openrouter.agent import LOCAL_TOOL_SCHEMAS
-from shared.tools import AGENT_TOOLS, INVESTIGATION_TOOLS, PLAN_TOOLS, READ_TOOLS, TOOL_NAMES, ToolRequest
+from shared.tools import (
+    AGENT_TOOLS,
+    INVESTIGATION_TOOLS,
+    PLAN_TOOLS,
+    READ_TOOLS,
+    TOOL_NAMES,
+    ToolRequest,
+)
 
 CANONICAL_TOOLS = ("read", "write", "edit", "apply_patch", "bash", "grep", "find", "ls", "status")
 MODEL_TOOL_NAMES = CANONICAL_TOOLS + ("investigate_repository",)
@@ -46,10 +52,11 @@ def test_public_schema_and_shared_contract_have_one_vocabulary() -> None:
 
 
 def test_each_schema_has_a_matching_executor_callable() -> None:
-    implementations = {name: globals()[name] for name in CANONICAL_TOOLS}
+    from executor import tools
+
     for name in CANONICAL_TOOLS:
         schema = _schema_map()[name]
-        assert callable(implementations[name])
+        assert callable(getattr(tools, name))
         assert schema["parameters"]["additionalProperties"] is False
     investigation = _schema_map()["investigate_repository"]
     assert investigation["parameters"]["additionalProperties"] is False

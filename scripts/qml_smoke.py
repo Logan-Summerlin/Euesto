@@ -11,8 +11,8 @@ os.environ.setdefault("QT_QUICK_BACKEND", "software")
 
 try:
     from PySide6.QtCore import QUrl
-    from PySide6.QtQml import QQmlApplicationEngine
     from PySide6.QtGui import QGuiApplication
+    from PySide6.QtQml import QQmlApplicationEngine
 except ImportError as exc:
     print(f"unavailable: PySide6 ({exc})", file=sys.stderr)
     raise SystemExit(127) from exc

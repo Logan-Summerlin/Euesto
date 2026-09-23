@@ -5,8 +5,23 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..atomic_io import atomic_write_text
-from ..errors import INVALID_ARGUMENTS, INVALID_UTF8, LIMIT_EXCEEDED, PATH_INVALID_TYPE, PATH_MISSING, STAGING_CONFLICT, ExecutorToolError
-from ..mutations import bounded_diff, bounded_edit_diff, create_mutation_checkpoint, guard_shrink, rollback_mutation, sha256
+from ..errors import (
+    INVALID_ARGUMENTS,
+    INVALID_UTF8,
+    LIMIT_EXCEEDED,
+    PATH_INVALID_TYPE,
+    PATH_MISSING,
+    STAGING_CONFLICT,
+    ExecutorToolError,
+)
+from ..mutations import (
+    bounded_diff,
+    bounded_edit_diff,
+    create_mutation_checkpoint,
+    guard_shrink,
+    rollback_mutation,
+    sha256,
+)
 from ..paths import safe_path
 
 WRITE_DIFF_MEMORY_BYTES = 1_000_000

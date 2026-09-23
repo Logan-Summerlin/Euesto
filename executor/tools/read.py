@@ -4,7 +4,13 @@ import codecs
 import hashlib
 from pathlib import Path
 
-from ..errors import INVALID_ARGUMENTS, INVALID_UTF8, PATH_INVALID_TYPE, PATH_MISSING, ExecutorToolError
+from ..errors import (
+    INVALID_ARGUMENTS,
+    INVALID_UTF8,
+    PATH_INVALID_TYPE,
+    PATH_MISSING,
+    ExecutorToolError,
+)
 from ..paths import is_tool_excluded, normalize_relative, safe_path
 
 DEFAULT_READ_BYTES = 64_000

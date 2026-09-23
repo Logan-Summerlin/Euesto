@@ -15,7 +15,13 @@ from server.config import GatewayConfig
 from server.service import GatewayService
 from shared.tools import PUBLISH_BATCH_MAX_OPERATIONS, PublicationReceipt, PublishManifest
 from src.workers import PublicationWorker
-from src.workspace_broker import BrokerError, PublicationLedger, WorkspaceBroker, describe_progress, workspace_id
+from src.workspace_broker import (
+    BrokerError,
+    PublicationLedger,
+    WorkspaceBroker,
+    describe_progress,
+    workspace_id,
+)
 
 TOTAL = 1_200
 

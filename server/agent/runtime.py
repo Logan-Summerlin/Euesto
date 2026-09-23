@@ -12,12 +12,38 @@ from server.executor import ExecutorClient
 from server.extensions.skills import render_skill_context
 from server.openrouter.agent import agent_turn
 from server.openrouter.errors import ProviderError
-from shared.investigation import REPORT_FORMAT_INSTRUCTIONS, InvestigationResult, normalize_investigation_path, parse_inspected_paths, parse_investigation_report, reinspection_target
-from shared.permissions import PermissionDecision, PermissionRule, apply_approval_policy, resolve_permission, rule_scope
+from shared.investigation import (
+    REPORT_FORMAT_INSTRUCTIONS,
+    InvestigationResult,
+    normalize_investigation_path,
+    parse_inspected_paths,
+    parse_investigation_report,
+    reinspection_target,
+)
+from shared.permissions import (
+    PermissionDecision,
+    PermissionRule,
+    apply_approval_policy,
+    resolve_permission,
+    rule_scope,
+)
 from shared.requests import DEFAULT_INVESTIGATION_MODEL, AgentRunRequest
-from shared.tools import INVESTIGATION_TOOLS, MUTATION_TOOLS, PARALLEL_SAFE_TOOLS, PLAN_TOOLS, READ_TOOLS, ToolRequest, ToolResult
+from shared.tools import (
+    MUTATION_TOOLS,
+    PARALLEL_SAFE_TOOLS,
+    PLAN_TOOLS,
+    READ_TOOLS,
+    ToolRequest,
+    ToolResult,
+)
+
 from .approvals import ApprovalCoordinator, ApprovalTimeoutError
-from .budgets import BudgetExceededError, RunBudget, requires_budget_approval, resolve_budget_profile
+from .budgets import (
+    BudgetExceededError,
+    RunBudget,
+    requires_budget_approval,
+    resolve_budget_profile,
+)
 from .context import compact_agent_context, estimate_message_tokens
 
 Append = Callable[[str, str, dict[str, Any]], Awaitable[Any]]

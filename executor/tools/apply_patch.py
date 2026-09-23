@@ -4,7 +4,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..errors import INVALID_ARGUMENTS, LIMIT_EXCEEDED, APPLY_PATCH_MALFORMED, PATH_INVALID_TYPE, PATH_MISSING, STAGING_CONFLICT, ExecutorToolError, classify_error
+from ..errors import (
+    APPLY_PATCH_MALFORMED,
+    INVALID_ARGUMENTS,
+    LIMIT_EXCEEDED,
+    PATH_INVALID_TYPE,
+    PATH_MISSING,
+    STAGING_CONFLICT,
+    ExecutorToolError,
+    classify_error,
+)
 from ..mutations import create_mutation_checkpoint, rollback_mutation, sha256
 from ..paths import normalize_relative, safe_path
 from .edit import EDIT_ARGUMENTS, apply_edit, edit_result, prepare_edit

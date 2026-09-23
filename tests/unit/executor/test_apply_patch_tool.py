@@ -14,7 +14,12 @@ from executor.errors import ExecutorToolError
 from executor.tools import apply_patch as apply_patch_export
 from executor.tools import write
 from executor.tools.apply_patch import apply_patch
-from shared.permissions import PermissionDecision, PermissionRule, resolve_permission, rule_scope
+from shared.permissions import (
+    PermissionDecision,
+    PermissionRule,
+    resolve_permission,
+    rule_scope,
+)
 from shared.tools import MUTATION_TOOLS, ToolRequest
 
 LIMITS = {"max_operations": 20, "max_patch_bytes": 100_000, "max_write_bytes": 50_000, "max_edit_target_bytes": 50_000, "max_edit_result_bytes": 50_000}

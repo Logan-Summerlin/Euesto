@@ -1,8 +1,6 @@
-from pathlib import Path
 
 from server.openrouter.agent import LOCAL_TOOL_SCHEMAS
 from shared.tools import AGENT_TOOLS, INVESTIGATION_TOOLS, PLAN_TOOLS, TOOL_NAMES
-
 
 
 def test_public_tool_contract_includes_canonical_tools_and_investigation() -> None:

@@ -13,9 +13,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from shared.tools import PUBLISH_BATCH_MAX_BYTES, PUBLISH_BATCH_MAX_OPERATIONS, PublishOperation
-from .errors import LIMIT_EXCEEDED, ExecutorToolError
+
 from .config import ExecutorConfig
-from .paths import SECRET_PARTS, STAGING_EXCLUDED_PARTS, UnsafePath, assert_unique_paths, is_secret_path, is_staging_excluded
+from .errors import LIMIT_EXCEEDED, ExecutorToolError
+from .paths import (
+    SECRET_PARTS,
+    STAGING_EXCLUDED_PARTS,
+    UnsafePath,
+    assert_unique_paths,
+    is_secret_path,
+    is_staging_excluded,
+)
 
 
 @dataclass(frozen=True, slots=True)

@@ -143,7 +143,7 @@ TYPE_CLASSIFIED = {"TimeoutError", "PermissionError", "FileNotFoundError"}
 def _enclosing_functions(tree: ast.AST) -> dict[ast.AST, str]:
     owners: dict[ast.AST, str] = {}
     for function in ast.walk(tree):
-        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
             for node in ast.walk(function):
                 owners.setdefault(node, function.name)
     return owners

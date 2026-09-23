@@ -8,7 +8,6 @@ from typing import Any
 
 from shared.requests import DEFAULT_INVESTIGATION_MODEL
 
-
 LEGACY_INVESTIGATION_DEFAULT = "deepseek/deepseek-chat-v3-0324"
 INVESTIGATION_MODEL = {
     "id": DEFAULT_INVESTIGATION_MODEL,

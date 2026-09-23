@@ -5,14 +5,14 @@ from pathlib import Path
 
 import pytest
 
+from executor.errors import ExecutorToolError
+from executor.mutations import guard_shrink
 from executor.tools.edit import edit
 from executor.tools.find import find
 from executor.tools.grep import grep
 from executor.tools.ls import ls
 from executor.tools.read import read
 from executor.tools.write import write
-from executor.errors import ExecutorToolError
-from executor.mutations import guard_shrink
 
 
 def test_read_preserves_hash_and_line_ranges(tmp_path: Path) -> None:
@@ -80,7 +80,7 @@ def test_read_line_range_is_bounded_with_continuation(tmp_path: Path) -> None:
 
 
 def test_read_byte_offsets_and_utf8_boundaries(tmp_path: Path) -> None:
-    path = tmp_path / "utf8.txt"; path.write_text("alpha café omega", encoding="utf-8"); offset = len("alpha ".encode("utf-8")); output, data = read(tmp_path, {"path": "utf8.txt", "offset": offset, "max_bytes": 32}, max_bytes=32)
+    path = tmp_path / "utf8.txt"; path.write_text("alpha café omega", encoding="utf-8"); offset = len(b"alpha "); output, data = read(tmp_path, {"path": "utf8.txt", "offset": offset, "max_bytes": 32}, max_bytes=32)
     assert output == "café omega"; assert data["byte_offset"] == offset
     with pytest.raises(ValueError, match="UTF-8 character boundary"): read(tmp_path, {"path": "utf8.txt", "offset": offset + 4}, max_bytes=32)
 

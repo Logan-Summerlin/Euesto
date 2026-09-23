@@ -2,7 +2,6 @@ from pathlib import Path
 
 from shared.tools import TOOL_NAMES
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 

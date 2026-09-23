@@ -8,8 +8,13 @@ import time
 from collections import deque
 from pathlib import Path
 
-from ..errors import COMMAND_INVALID_ARGUMENTS, LIMIT_EXCEEDED, WORKING_DIRECTORY_INVALID, ExecutorToolError
 from ..egress import proxy_environment
+from ..errors import (
+    COMMAND_INVALID_ARGUMENTS,
+    LIMIT_EXCEEDED,
+    WORKING_DIRECTORY_INVALID,
+    ExecutorToolError,
+)
 from ..mutations import create_mutation_checkpoint, rollback_mutation
 from ..paths import safe_path
 

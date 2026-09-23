@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import shlex
 import re
+import shlex
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import PurePosixPath

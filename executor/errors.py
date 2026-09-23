@@ -85,12 +85,12 @@ def classify_error(exc: BaseException) -> ExecutorToolError:
         return ExecutorToolError(INVALID_UTF8, "The file is not valid UTF-8 text.")
     if isinstance(exc, FileNotFoundError):
         return ExecutorToolError(PATH_MISSING, "The path does not exist.")
-    if isinstance(exc, (IsADirectoryError, NotADirectoryError)):
+    if isinstance(exc, IsADirectoryError | NotADirectoryError):
         return ExecutorToolError(PATH_INVALID_TYPE, "The path is not the expected file or directory type.")
     if isinstance(exc, OSError):
         if exc.errno in _CAPACITY_ERRNOS:
             return ExecutorToolError(LIMIT_EXCEEDED, "The staging volume has no capacity left for this operation.")
         return ExecutorToolError(IO_INTERNAL, "The executor could not complete the operation.", retryable=True)
-    if isinstance(exc, (ValueError, TypeError)):
+    if isinstance(exc, ValueError | TypeError):
         return ExecutorToolError(INVALID_ARGUMENTS, safe_message(exc))
     return ExecutorToolError(TOOL_INTERNAL, "The executor failed unexpectedly.")

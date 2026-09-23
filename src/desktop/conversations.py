@@ -11,7 +11,12 @@ from ..import_export import ImportExportError, export_to_file, import_from_file
 from ..markdown_renderer import render_markdown
 from ..models import DEFAULT_MODELS, Conversation, model_context_length
 from ..storage import Storage
-from ..transcript import ACTIVITY_EVENT_TYPES, ACTIVITY_PAYLOAD_KEYS, assemble_activities, assemble_transcript
+from ..transcript import (
+    ACTIVITY_EVENT_TYPES,
+    ACTIVITY_PAYLOAD_KEYS,
+    assemble_activities,
+    assemble_transcript,
+)
 from ..transcript_model import TranscriptListModel
 from .host import BridgeHost
 

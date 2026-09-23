@@ -10,13 +10,13 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtWidgets import QApplication
 
+from shared.requests import DEFAULT_INVESTIGATION_MODEL
 from src.investigation_models import (
     INVESTIGATION_MODEL,
     ensure_investigation_model,
     saved_investigation_model_entry,
 )
 from src.qml_backend import DesktopBridge as BaseDesktopBridge
-from shared.requests import DEFAULT_INVESTIGATION_MODEL
 
 
 def resource_path(relative: str) -> Path:

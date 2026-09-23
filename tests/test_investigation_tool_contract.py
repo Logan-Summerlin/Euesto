@@ -7,7 +7,7 @@ import pytest
 
 from server.agent.budgets import RunBudget
 from server.agent.runtime import AgentRuntime
-from server.openrouter.agent import AgentTurn, LOCAL_TOOL_SCHEMAS
+from server.openrouter.agent import LOCAL_TOOL_SCHEMAS, AgentTurn
 from shared.investigation import (
     MAX_FINDINGS,
     MAX_INSPECTED_PATHS,

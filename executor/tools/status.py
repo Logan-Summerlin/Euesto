@@ -8,6 +8,7 @@ import hashlib
 from pathlib import Path
 
 from shared.tools import PUBLISH_BATCH_MAX_BYTES, PUBLISH_BATCH_MAX_OPERATIONS
+
 from ..errors import INVALID_ARGUMENTS, PATH_INVALID, PATH_MISSING, ExecutorToolError
 from ..paths import UnsafePath, is_tool_excluded, normalize_relative
 from ..staging import Snapshot, WorkspaceChange, publication_batches, workspace_changes

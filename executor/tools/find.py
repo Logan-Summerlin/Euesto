@@ -3,8 +3,8 @@ from __future__ import annotations
 import base64
 import fnmatch
 import time
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 from ..errors import INVALID_ARGUMENTS, PATH_INVALID_TYPE, ExecutorToolError
 from ..paths import is_tool_excluded, safe_path

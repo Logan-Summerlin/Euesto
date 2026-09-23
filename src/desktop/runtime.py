@@ -8,7 +8,12 @@ from PySide6.QtCore import QObject, QTimer, QUrl, Slot
 from ..connection import GatewayHealthWorker, HealthResult, HealthState
 from ..gateway_client import DEFAULT_GATEWAY_URL, GatewayConnection
 from ..runtime_manager import RuntimeManager, RuntimeResult
-from ..settings import app_data_dir, get_gateway_session_token, get_gateway_token, save_gateway_token
+from ..settings import (
+    app_data_dir,
+    get_gateway_session_token,
+    get_gateway_token,
+    save_gateway_token,
+)
 from ..storage import Storage
 from ..workspace_broker import BrokerError, canonical_workspace, workspace_id
 from .host import BridgeHost

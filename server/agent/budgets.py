@@ -100,7 +100,7 @@ class RunBudget:
         self.started = time.monotonic()
 
     @classmethod
-    def from_profile(cls, name: str) -> "RunBudget":
+    def from_profile(cls, name: str) -> RunBudget:
         profile = resolve_budget_profile(name)
         return cls(
             profile.max_iterations,

@@ -5,7 +5,6 @@ from typing import Any, Literal
 
 from .permissions import APPROVAL_POLICIES
 
-
 DEFAULT_INVESTIGATION_MODEL = "xiaomi/mimo-v2.5"
 
 

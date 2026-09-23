@@ -77,7 +77,7 @@ for f in $(cat values.txt); do echo "$f"; done
 def test_bash_supports_environment_and_stdin(tmp_path: Path) -> None:
     output, data = asyncio.run(run_bash(tmp_path, {"command": "read value; printf '%s:%s\\n' \"$DEBUG\" \"$value\"", "env": {"DEBUG": "1"}, "stdin": "input\n"}))
     assert output == "1:input\n"
-    assert data["stdin_bytes"] == len("input\n".encode())
+    assert data["stdin_bytes"] == len(b"input\n")
 
 
 def test_bash_allows_subprocess_spawning_inside_sandbox(tmp_path: Path) -> None:

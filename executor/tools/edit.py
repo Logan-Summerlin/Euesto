@@ -7,8 +7,26 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..errors import EDIT_MALFORMED_CONTEXT, EDIT_NO_MATCH, EDIT_TOO_FEW_MATCHES, EDIT_TOO_MANY_MATCHES, INVALID_ARGUMENTS, INVALID_UTF8, LIMIT_EXCEEDED, PATH_INVALID_TYPE, STAGING_CONFLICT, ExecutorToolError
-from ..mutations import bounded_diff, bounded_edit_diff, create_mutation_checkpoint, guard_shrink, rollback_mutation, sha256
+from ..errors import (
+    EDIT_MALFORMED_CONTEXT,
+    EDIT_NO_MATCH,
+    EDIT_TOO_FEW_MATCHES,
+    EDIT_TOO_MANY_MATCHES,
+    INVALID_ARGUMENTS,
+    INVALID_UTF8,
+    LIMIT_EXCEEDED,
+    PATH_INVALID_TYPE,
+    STAGING_CONFLICT,
+    ExecutorToolError,
+)
+from ..mutations import (
+    bounded_diff,
+    bounded_edit_diff,
+    create_mutation_checkpoint,
+    guard_shrink,
+    rollback_mutation,
+    sha256,
+)
 from ..paths import safe_path
 
 EDIT_CHUNK_BYTES = 64 * 1024

@@ -12,8 +12,9 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 QML_FILES = ("qml/Main.qml", "qml/Sidebar.qml", "qml/Transcript.qml", "qml/Composer.qml")

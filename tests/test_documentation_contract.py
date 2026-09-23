@@ -3,7 +3,6 @@ from pathlib import Path
 from executor.config import ExecutorConfig
 from shared.tools import TOOL_NAMES
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -123,7 +122,11 @@ def test_readme_search_and_list_default_matches_code() -> None:
 
 
 def test_investigation_hint_and_findings_bounds_are_documented() -> None:
-    from shared.investigation import MAX_FINDING_JUSTIFICATION_CHARS, MAX_FINDINGS, MAX_INSPECTED_PATHS
+    from shared.investigation import (
+        MAX_FINDING_JUSTIFICATION_CHARS,
+        MAX_FINDINGS,
+        MAX_INSPECTED_PATHS,
+    )
 
     tools_doc = (ROOT / "docs" / "TOOLS.md").read_text(encoding="utf-8")
     limits_doc = (ROOT / "docs" / "LIMITS.md").read_text(encoding="utf-8")

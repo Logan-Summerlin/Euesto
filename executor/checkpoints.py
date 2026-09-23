@@ -13,7 +13,14 @@ import uuid
 from pathlib import Path
 
 from .config import ExecutorConfig
-from .errors import CHECKPOINT_CORRUPT, CHECKPOINT_NOT_FOUND, INVALID_ARGUMENTS, LIMIT_EXCEEDED, PATH_UNSAFE, ExecutorToolError
+from .errors import (
+    CHECKPOINT_CORRUPT,
+    CHECKPOINT_NOT_FOUND,
+    INVALID_ARGUMENTS,
+    LIMIT_EXCEEDED,
+    PATH_UNSAFE,
+    ExecutorToolError,
+)
 from .paths import safe_path
 from .staging import visible_files
 

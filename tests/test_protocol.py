@@ -43,7 +43,11 @@ def test_protocol_rejects_unknown_fields_events_and_agent_mode() -> None:
 def test_tool_argument_cap_is_derived_from_argument_carrying_hard_ceilings() -> None:
     from executor.config import ExecutorConfig
     from executor.tools.bash import MAX_ENV_VALUE_BYTES, MAX_ENV_VARS
-    from shared.tools import MAX_TOOL_ARGUMENT_BYTES, MAX_TOOL_ARGUMENT_PAYLOAD_BYTES, TOOL_ARGUMENT_ENVELOPE_BYTES
+    from shared.tools import (
+        MAX_TOOL_ARGUMENT_BYTES,
+        MAX_TOOL_ARGUMENT_PAYLOAD_BYTES,
+        TOOL_ARGUMENT_ENVELOPE_BYTES,
+    )
 
     ceilings = ExecutorConfig.HARD_CEILINGS
     payloads = {
