@@ -1,6 +1,6 @@
 # Euesto Improvement Plan
 
-> **Archived — implemented or superseded; not normative.** Formerly the root file `Euesto QoL Plan.md`. It overlapped with the living harness plans in `docs/`, so it was reconciled item by item and archived rather than kept as a second copy. Current behavior is described in `docs/`; the only open item continues in `docs/HARNESS_FIX_PLAN.md`.
+> **Archived — implemented or superseded; not normative.** Formerly the root file `Euesto QoL Plan.md`. It overlapped with the living harness plans in `docs/`, so it was reconciled item by item and archived rather than kept as a second copy. Current behavior is described in `docs/`; the only open item continues in `archived-doc/harness-fix-plan.md`.
 >
 > | Item | Disposition |
 > |---|---|
@@ -9,13 +9,13 @@
 > | 4. Virtualized `ListView` transcript | Evaluated and deliberately reverted to the exact-height `Repeater` layout; rendering, scrolling, and row-update behavior is covered by `tests/ui/test_transcript_qml.py`. |
 > | 5. Reduce rich-text/font pressure | Implemented: no per-message stylesheet (`src/markdown_renderer.py`). |
 > | 6. Atomic file mutations | Implemented: shared `executor/atomic_io.py`. |
-> | 7. Search scan/time budgets | Implemented; see `docs/HARNESS_FIX_PLAN.md` P0-4 and P0-6. |
-> | 8. Consistent staging exclusions | Implemented; see `docs/HARNESS_FIX_PLAN.md` P0-7 and P0-8. |
-> | 9. Large (batched) publication | Implemented; see `docs/HARNESS_FIX_PLAN.md` P1-3 and `docs/PUBLICATION.md`. |
+> | 7. Search scan/time budgets | Implemented; see `archived-doc/harness-fix-plan.md` P0-4 and P0-6. |
+> | 8. Consistent staging exclusions | Implemented; see `archived-doc/harness-fix-plan.md` P0-7 and P0-8. |
+> | 9. Large (batched) publication | Implemented; see `archived-doc/harness-fix-plan.md` P1-3 and `docs/PUBLICATION.md`. |
 > | 10. Hard-link limitations | Documented in `docs/TROUBLESHOOTING.md` (Hard-linked files) and `docs/TOOLS.md`. |
 > | 11–12. Normalized permission paths; deterministic rule precedence | Implemented in `shared/permissions.py` (`tests/test_qol_phases.py`). |
 > | 13. Bounded approval waits | Implemented: `approval.timeout` (`server/agent/approvals.py`, `server/agent/runtime.py`). |
-> | 14. Structured error classification | Partially implemented; the remainder is tracked as `docs/HARNESS_FIX_PLAN.md` P2-7. |
+> | 14. Structured error classification | Partially implemented; the remainder is tracked as `archived-doc/harness-fix-plan.md` P2-7. |
 > | 15. Link destination visibility | Implemented: confirmation dialog showing the destination (`qml/Transcript.qml`). |
 > | 16. Visible rollback events | Implemented: "Changes discarded (rollback)" activity (`src/transcript.py`). |
 > | 17. Path-redaction tests | Implemented (`tests/test_qol_phases.py`). |

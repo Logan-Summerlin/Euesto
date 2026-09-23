@@ -29,26 +29,18 @@ Every living plan and the roadmap live in this directory, one authoritative copy
 
 | Document | Scope |
 |---|---|
-| [ROADMAP.md](ROADMAP.md) | Completed, active, planned, deferred, and non-goal status for the product. |
-| [HARNESS_FIX_PLAN.md](HARNESS_FIX_PLAN.md) | Verified coding-harness fixes by tier (P0 correctness through P3 roadmap-scope), with acceptance criteria. |
-| [HARNESS_QOL_PLAN.md](HARNESS_QOL_PLAN.md) | Coding-harness quality-of-life improvements (edits, patches, status, investigation budget, validation). |
-| [HARNESS_VALIDATION_PLAN.md](HARNESS_VALIDATION_PLAN.md) | Making every documented validation check runnable locally and reproducible in CI. |
-| [ORGANIZATION_PLAN.md](ORGANIZATION_PLAN.md) | Repository organization, naming, and the desktop-bridge decomposition. |
+| [ROADMAP.md](ROADMAP.md) | Completed, active, planned, deferred, and non-goal status for the product, including the open items carried from archived plans. |
+| [HARNESS_VALIDATION_PLAN.md](HARNESS_VALIDATION_PLAN.md) | Making every documented validation check runnable locally and reproducible in CI; per-phase status and the open items. |
 | [SIMPLIFICATION_PLAN.md](SIMPLIFICATION_PLAN.md) | KISS/YAGNI simplification pass: completed steps, remaining work, and findings deliberately left unchanged. |
 
 Documentation file names are predictable: `UPPER_SNAKE_CASE.md` in `docs/`, lowercase-hyphenated names in `archived-doc/`, and no spaces or embedded dates anywhere (dates belong in commit history or `CHANGELOG.md`). The repository root keeps only `README.md`, `AGENTS.md`, and `CHANGELOG.md`. `tests/structural/test_documentation_layout.py` enforces this.
 
+The completed harness fix, harness quality-of-life, and organization plans are archived in `archived-doc/` (indexed in its `README.md`).
+
 ## Local-only state
 
-`.local-chat-snapshot.json` and `.local-chat-checkpoints/` are runtime artifacts. They are ignored and must not be committed. The historical `archived-doc/` directory is non-normative.
+`.local-chat-checkpoints/` is a runtime artifact. It is ignored and must not be committed. The historical `archived-doc/` directory is non-normative.
 
 ## Checks
 
-```text
-pytest
-pytest -m "slow and not docker"
-pytest -m docker
-ruff check .
-python -m compileall -q app.py src server shared executor egress tests scripts
-pyside6-qmllint qml/Main.qml qml/Sidebar.qml qml/Transcript.qml qml/Composer.qml
-```
+The required checks are listed once, in [TESTING.md](TESTING.md#required-checks).

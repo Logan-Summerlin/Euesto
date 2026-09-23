@@ -14,7 +14,6 @@ venv/
 settings.json
 gateway-session/
 gateway_token.txt
-.local-chat-snapshot.json
 .local-chat-checkpoints/
 
 # Packaging output (keep build/chatbot.spec and build/version_info.txt)

@@ -45,7 +45,7 @@ def test_documentation_names_are_predictable() -> None:
 def test_every_living_plan_is_indexed_once_in_docs() -> None:
     index = (ROOT / "docs" / "README.md").read_text(encoding="utf-8")
     plans = sorted(path.name for path in (ROOT / "docs").glob("*.md") if path.stem.endswith("_PLAN") or path.name == "ROADMAP.md")
-    assert "ROADMAP.md" in plans and "HARNESS_FIX_PLAN.md" in plans
+    assert "ROADMAP.md" in plans
     for name in plans:
         assert f"]({name})" in index, f"docs/README.md must index {name}"
     stray = []
@@ -58,6 +58,13 @@ def test_every_living_plan_is_indexed_once_in_docs() -> None:
             if path.suffix.lower() in DOCUMENT_SUFFIXES and ("plan" in path.stem.lower() or "roadmap" in path.stem.lower()):
                 stray.append(path.relative_to(ROOT).as_posix())
     assert not stray, f"plans live only in docs/ (or archived-doc/ once superseded): {stray}"
+
+
+def test_every_archived_document_is_indexed() -> None:
+    index = (ROOT / "archived-doc" / "README.md").read_text(encoding="utf-8")
+    for path in sorted((ROOT / "archived-doc").glob("*.md")):
+        if path.name != "README.md":
+            assert f"`{path.name}`" in index, f"archived-doc/README.md must list {path.name}"
 
 
 def test_relative_documentation_links_resolve() -> None:

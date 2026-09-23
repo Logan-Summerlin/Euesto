@@ -1,5 +1,7 @@
 # Repository Organization and Simplicity Plan
 
+> **Archived — implemented; not normative.** Formerly `docs/ORGANIZATION_PLAN.md`. The documentation index, the `archived-doc/` rename, the ownership map, the `DesktopBridge` decomposition into `src/desktop/` services, the import-boundary and documentation-layout checks, and the 3a coverage restoration are done. Two items remain open and are carried in [`docs/ROADMAP.md`](../docs/ROADMAP.md): choosing one canonical product name (the legacy `LocalOpenRouterChat` identifiers stay until a migration decision) and moving the remaining flat `tests/*.py` files into `tests/unit/<domain>/`.
+
 ## Purpose
 
 This plan compares the current repository with the ten-point organization checklist and defines the smallest useful adjustments. The repository is already strongly organized around its security/runtime boundaries; the plan therefore favors incremental refactoring over a broad directory reshuffle. It also applies **YAGNI** (do not add structure or abstractions without a demonstrated need) and **KISS** (prefer direct, local, predictable code).

@@ -1,8 +1,10 @@
 # Euesto Coding-Harness Fix Plan (combined, verified against source)
 
+> **Archived — implemented; not normative.** Formerly `docs/HARNESS_FIX_PLAN.md`. Every P0, P1, and P2 task is implemented (see the harness entries in `CHANGELOG.md`). Two items remain open and are carried in [`docs/ROADMAP.md`](../docs/ROADMAP.md): copy-on-write staging (P1-4 fix 3) and the P3 product-scope bullets. Current behavior is documented in `docs/TOOLS.md`, `docs/LIMITS.md`, `docs/PUBLICATION.md`, and `docs/EGRESS.md`; file and line citations below describe the tree as it was when the plan was written.
+
 ## 0. How to use this document
 
-This plan lives at `docs/HARNESS_FIX_PLAN.md` (it was the root-level `EUESTO_HARNESS_FIX_PLAN.md` until P2-5). The file and line citations below describe the tree as it was verified; each task's **Status** line records what changed since.
+This plan lives at `archived-doc/harness-fix-plan.md` (it was the root-level `EUESTO_HARNESS_FIX_PLAN.md` until P2-5). The file and line citations below describe the tree as it was verified; each task's **Status** line records what changed since.
 
 This merges two prior write-ups — `Coding-harness weaknesses.txt` (terse bug list) and
 `Euesto_Critique_Analysis.md` (line-by-line critique review) — into one execution plan,
@@ -35,7 +37,7 @@ confirmed by reading the current code:
   `rollback_on_failure: bool = True` argument, only rolls back when `returncode != 0 and
   rollback_on_failure`, and returns `rolled_back` / `rollback_reason` / `rollback_on_failure` in
   the tool result. The model-facing schema in `server/openrouter/agent.py` exposes
-  `rollback_on_failure` on the `bash` tool. `docs/HARNESS_QOL_PLAN.md` item 5 is marked
+  `rollback_on_failure` on the `bash` tool. `archived-doc/harness-qol-plan.md` item 5 is marked
   `(implemented)`. **No further action needed here** beyond Task P2-6 below (docs/tests polish).
 - **Checkpoint storage is already content-addressed.** `executor/checkpoints.py::create_checkpoint`
   writes into a shared `objects/<sha256>` store and skips re-copying a blob that's already there,
@@ -375,7 +377,7 @@ into a model-facing operation), `executor/app.py` dispatcher, `server/openrouter
 
 **Context:** `.git` is deliberately excluded from staging (`STAGING_EXCLUDED_PARTS` includes
 `.git`; `seed_staging` never copies it), so the agent has no `git status`/`git diff`/`git log`.
-The maintainer's own `docs/HARNESS_QOL_PLAN.md` item 6 already specifies the right-shaped fix —
+The maintainer's own `archived-doc/harness-qol-plan.md` item 6 already specifies the right-shaped fix —
 **harness-native status/diff independent of Git** — and the primitives already exist:
 `executor/staging.py::workspace_changes()` already computes created/modified/deleted/
 permission-changed paths against the snapshot baseline, `app.py::workspace_status()` already
@@ -394,7 +396,7 @@ before publish." Bound it the same way `bounded_diff` already bounds edit diffs
 (`MAX_DIFF_LINES`/`MAX_DIFF_BYTES`), and exclude secret/staging-metadata/checkpoint content the
 same way `workspace_changes`/`visible_files` already do.
 
-**Acceptance criteria (from `docs/HARNESS_QOL_PLAN.md` item 6, already written):**
+**Acceptance criteria (from `archived-doc/harness-qol-plan.md` item 6, already written):**
 - Status is available for an empty and non-empty staging area.
 - Diffs are bounded by bytes and lines.
 - Secret, staging metadata, and checkpoint content are excluded.
@@ -430,11 +432,11 @@ if old_bytes >= 200 and old_lines >= 20 and new_bytes < old_bytes * SHRINK_RATIO
 This is a reasonable guard against a hallucinated near-empty replacement, but it also fires on
 entirely legitimate large deletions/rewrites (stripping a big dead-code block, replacing a stub
 with a smaller real implementation), forcing several smaller edits purely to dodge the ratio. This
-is on the maintainer's own roadmap as `docs/HARNESS_QOL_PLAN.md` items 2 ("Improve exact-edit
+is on the maintainer's own roadmap as `archived-doc/harness-qol-plan.md` items 2 ("Improve exact-edit
 diagnostics and newline handling") and 3 ("Provide an auditable structured patch operation").
 
 **Fix:**
-1. Implement `docs/HARNESS_QOL_PLAN.md` item 3 as written: a single `apply_patch`-style tool
+1. Implement `archived-doc/harness-qol-plan.md` item 3 as written: a single `apply_patch`-style tool
    taking a list of `{path, operation, old_str?, new_str?, content?}` entries, sharing the existing
    checkpoint/rollback/path-safety primitives (`create_mutation_checkpoint`/`rollback_mutation`
    from `executor/mutations.py`) so one failure across the batch rolls back the whole set
@@ -444,7 +446,7 @@ diagnostics and newline handling") and 3 ("Provide an auditable structured patch
    a `shrink_warning: true` flag in the result data instead of raising, once occurrence/hash
    validation has already proven the replacement was deliberate and specific rather than an
    accidental near-total-wipe.
-3. Address `docs/HARNESS_QOL_PLAN.md` item 2 alongside this: make exact-edit matching robust to
+3. Address `archived-doc/harness-qol-plan.md` item 2 alongside this: make exact-edit matching robust to
    CRLF/LF differences per an explicit documented policy, and on a failed match report bounded
    diagnostics (zero matches vs. too many matches vs. hash conflict vs. malformed context, with a
    short escaped context preview) instead of a bare failure.
@@ -682,7 +684,7 @@ fails if any of the four files disagree on this constant (or the `ls`/`find` def
 
 **Context:** The tool schema takes only `query: string` — no path hints, no visibility into what
 the parent has already explored — and the subagent returns free prose the parent must trust rather
-than inspect. `docs/HARNESS_QOL_PLAN.md` item 7 already calls for a configurable investigation
+than inspect. `archived-doc/harness-qol-plan.md` item 7 already calls for a configurable investigation
 budget (partially addressed by the existing `investigation_call_budget` request field, capped at
 `INVESTIGATION_HARD_CALL_CEILING`) but doesn't yet address the cold-start/prose-trust gap.
 
@@ -744,15 +746,15 @@ tests / `scripts/qml_smoke.py`).
 
 ### P2-5. Root-level doc/plan sprawl and naming drift
 
-**Status: implemented** — every living plan and the roadmap now live in `docs/` (`EUESTO_HARNESS_FIX_PLAN.md` → `docs/HARNESS_FIX_PLAN.md`, `PROJECT_PLAN.md` → `docs/ROADMAP.md`) and are indexed in `docs/README.md` (Plans). `Euesto QoL Plan.md` was reconciled item by item (each is implemented, deliberately reverted, or continues as P2-7) and archived as `archived-doc/improvement-plan.md` with a disposition table; `Coding Harness Fixes_9_6_2026.txt` (the bash-rollback write-up, implemented per §1) was removed. The repository root keeps only `README.md`, `AGENTS.md`, and `CHANGELOG.md`, and `tests/structural/test_documentation_layout.py` enforces the root allowlist, `UPPER_SNAKE_CASE.md`/lowercase-hyphen naming with no spaces or dates, and that no document links to a removed location.
+**Status: implemented** — every living plan and the roadmap now live in `docs/` (`EUESTO_HARNESS_FIX_PLAN.md` → `archived-doc/harness-fix-plan.md`, `PROJECT_PLAN.md` → `docs/ROADMAP.md`) and are indexed in `docs/README.md` (Plans). `Euesto QoL Plan.md` was reconciled item by item (each is implemented, deliberately reverted, or continues as P2-7) and archived as `archived-doc/improvement-plan.md` with a disposition table; `Coding Harness Fixes_9_6_2026.txt` (the bash-rollback write-up, implemented per §1) was removed. The repository root keeps only `README.md`, `AGENTS.md`, and `CHANGELOG.md`, and `tests/structural/test_documentation_layout.py` enforces the root allowlist, `UPPER_SNAKE_CASE.md`/lowercase-hyphen naming with no spaces or dates, and that no document links to a removed location.
 
 **Files (verified present at repo root):** `Coding Harness Fixes_9_6_2026.txt` (space + date in
-filename), `Euesto QoL Plan.md` (≈19 KB, duplicating `docs/HARNESS_QOL_PLAN.md`), plus the
+filename), `Euesto QoL Plan.md` (≈19 KB, duplicating `archived-doc/harness-qol-plan.md`), plus the
 already-existing `docs/` tree (`HARNESS_QOL_PLAN.md`, `HARNESS_VALIDATION_PLAN.md`,
 `ORGANIZATION_PLAN.md`, etc.) and a single `archived-doc/` directory.
 
 **Fix:** Consolidate root-level planning documents into `docs/`, delete or explicitly mark
-superseded duplicates (`Euesto QoL Plan.md` vs `docs/HARNESS_QOL_PLAN.md` — reconcile which is
+superseded duplicates (`Euesto QoL Plan.md` vs `archived-doc/harness-qol-plan.md` — reconcile which is
 authoritative and remove the other, don't maintain two copies of the same plan). Normalize file
 naming going forward (no embedded spaces/dates in tracked planning docs — put dates in commit
 history or a changelog entry instead).
@@ -764,12 +766,12 @@ plan content between root and `docs/`.
 
 ### P2-6. Test taxonomy migration left real coverage gaps
 
-**Status: implemented** — `tests/unit/executor/test_bash.py` restores all 14 original assertions (the loss was an accidental truncation in commit `9b604c2`, not a deliberate trim) and absorbs the duplicate `test_bash_regressions.py`; it adds `rollback_on_failure` coverage (default rollback, opt-out retaining partial progress, opt-out never bypassing timeout or cancellation rollback, argument validation). Writing those tests exposed that an explicitly cancelled command with `rollback_on_failure: false` kept its changes; cancellation now always rolls back and reports `rollback_reason: "cancelled"`. Commands also get `/dev/null` stdin instead of inheriting the executor's, so TTY rejection holds regardless of how the service was started (tested with a pseudo-terminal). The QML transcript tests are restored as `tests/ui/test_transcript_qml.py` (marked `slow`, synchronized on observable conditions) and `docs/ORGANIZATION_PLAN.md` §3a records the resolution.
+**Status: implemented** — `tests/unit/executor/test_bash.py` restores all 14 original assertions (the loss was an accidental truncation in commit `9b604c2`, not a deliberate trim) and absorbs the duplicate `test_bash_regressions.py`; it adds `rollback_on_failure` coverage (default rollback, opt-out retaining partial progress, opt-out never bypassing timeout or cancellation rollback, argument validation). Writing those tests exposed that an explicitly cancelled command with `rollback_on_failure: false` kept its changes; cancellation now always rolls back and reports `rollback_reason: "cancelled"`. Commands also get `/dev/null` stdin instead of inheriting the executor's, so TTY rejection holds regardless of how the service was started (tested with a pseudo-terminal). The QML transcript tests are restored as `tests/ui/test_transcript_qml.py` (marked `slow`, synchronized on observable conditions) and `archived-doc/organization-plan.md` §3a records the resolution.
 
-**Files:** `docs/ORGANIZATION_PLAN.md`, `tests/unit/executor/test_bash.py`, (deleted)
+**Files:** `archived-doc/organization-plan.md`, `tests/unit/executor/test_bash.py`, (deleted)
 `tests/test_transcript_qml.py`
 
-**Verified:** `docs/ORGANIZATION_PLAN.md` itself documents that `tests/test_bash.py` (14 tests:
+**Verified:** `archived-doc/organization-plan.md` itself documents that `tests/test_bash.py` (14 tests:
 shell syntax, workspace-traversal rejection, timeout rollback, cancellation, restricted env vars,
 TTY rejection, large-output truncation, event-retention bounds) was replaced by
 `tests/unit/executor/test_bash.py`, which currently contains **3** tests (confirmed by counting
@@ -777,7 +779,7 @@ TTY rejection, large-output truncation, event-retention bounds) was replaced by
 `tests/test_transcript_qml.py` (257 lines of QML `Transcript` rendering tests via
 `QQmlApplicationEngine`) was deleted with no replacement.
 
-**Fix:** Per `docs/ORGANIZATION_PLAN.md`'s own recommendation: restore the missing bash-tool
+**Fix:** Per `archived-doc/organization-plan.md`'s own recommendation: restore the missing bash-tool
 assertions into `tests/unit/executor/test_bash.py` (or a sibling file in the same directory) —
 this is especially important now given the `rollback_on_failure` behavior added in the already-done
 bash-rollback fix (§1) needs its own coverage alongside whatever the original 14 tests covered.
@@ -867,7 +869,7 @@ rather than treating them as backlog debt:
 2. **P2-1** (README/doc drift + CI doc-contract check) — trivial, and gives you a safety net
    (the extended `tests/test_documentation_contract.py`) that several later tasks touch anyway.
 3. **P1-1** (native status/diff) and **P1-2** (structured patch + advisory shrink guard) — both
-   already scoped in the repo's own `docs/HARNESS_QOL_PLAN.md`; biggest agent-UX win without
+   already scoped in the repo's own `archived-doc/harness-qol-plan.md`; biggest agent-UX win without
    expanding authority.
 4. **P1-4** (checkpoint/status hashing cost) — do this before or alongside P1-1/P1-2, since a new
    status/diff tool and a new patch tool will both call into the same `visible_files()`/checkpoint

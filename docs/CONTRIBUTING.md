@@ -7,21 +7,14 @@ Use Python 3.12. Install development dependencies and create a local virtual env
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements-dev.txt
+python -m pip install -r requirements-dev.lock
 ```
+
+`requirements-dev.lock` pins the validation toolchain; `python scripts/bootstrap.py` installs it into the active Python 3.12 interpreter and prints the installed versions.
 
 ## Required checks
 
-The canonical validation entry point is `python scripts/validate.py`. Bootstrap with `python -m venv .venv` and `python -m pip install -r requirements-dev.lock`, then run `python scripts/validate.py preflight --json validation-report.json` to distinguish unavailable tools from failed checks. Use `fast`, `slow`, `qml`, `docker`, or `all` for explicit tiers.
-
-Run the repository checks that apply to the change:
-
-```powershell
-pytest
-ruff check .
-python -m compileall -q app.py src server shared executor egress tests scripts
-pyside6-qmllint qml/Main.qml qml/Sidebar.qml qml/Transcript.qml qml/Composer.qml
-```
+The canonical validation entry point is `python scripts/validate.py`. Run `python scripts/validate.py preflight --json validation-report.json` to distinguish unavailable tools from failed checks, then `fast`, `slow`, `docker`, `ruff`, `compile`, `qml`, or `all` for explicit tiers. The individual commands are listed once, in [TESTING.md](TESTING.md#required-checks); run the ones that apply to the change.
 
 Container changes should also be checked with the repository's container workflow/scripts. QML checks apply when QML or QML-facing interfaces change.
 
@@ -53,4 +46,4 @@ Unit tests should use fake provider responses or dependency injection. No test s
 
 ## Documentation
 
-Use `docs/ARCHITECTURE.md`, `docs/TOOLS.md`, `docs/LIMITS.md`, and `docs/PUBLICATION.md` as authoritative references. `docs/ROADMAP.md` is a status roadmap, `AGENTS.md` contains only durable agent invariants, and planning documents live only in `docs/` (see the plan index in `docs/README.md`).
+Use `docs/ARCHITECTURE.md`, `docs/TOOLS.md`, `docs/LIMITS.md`, and `docs/PUBLICATION.md` as authoritative references. `docs/ROADMAP.md` is a status roadmap, `AGENTS.md` contains only durable agent invariants, and living plans live only in `docs/` (see the plan index in `docs/README.md`); completed plans move to `archived-doc/`.

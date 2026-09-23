@@ -81,17 +81,10 @@ git clone https://github.com/Logan-Summerlin/Euesto.git
 cd Euesto
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements-dev.txt
+python -m pip install -r requirements-dev.lock
 ```
 
-Run the applicable checks:
-
-```powershell
-pytest
-ruff check .
-python -m compileall -q app.py src server shared executor tests scripts
-pyside6-qmllint qml/Main.qml qml/Sidebar.qml qml/Transcript.qml qml/Composer.qml
-```
+Run the applicable checks with `python scripts/validate.py` (`preflight`, `fast`, `slow`, `docker`, `ruff`, `compile`, `qml`, or `all`). The individual commands are listed once, in [docs/TESTING.md](docs/TESTING.md#required-checks).
 
 Unit tests do not require provider credentials. Container/security checks are part of the CI workflow when container-related changes apply.
 

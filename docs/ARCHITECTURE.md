@@ -68,7 +68,7 @@ Markdown skill files with frontmatter can be discovered globally (`%LOCALAPPDATA
 
 ## Publication and recovery
 
-The executor creates a manifest from its current staging baseline. The manifest records workspace identity, source snapshot identity, approval identity, operations, and staged content hashes. The desktop broker validates that the manifest is for the selected workspace and current baseline before applying it. Stale or conflicting manifests are rejected rather than silently rebased. Broker-side bounds: at most 500 operations and 32 MB of content per publication. See [PUBLICATION.md](PUBLICATION.md).
+The executor creates a manifest from its current staging baseline. The manifest records workspace identity, source snapshot identity, approval identity, operations, and staged content hashes. The desktop broker validates that the manifest is for the selected workspace and current baseline before applying it. Stale or conflicting manifests are rejected rather than silently rebased. Broker-side bounds apply per batch: at most 500 operations and 32,000,000 bytes of content in each separately approved, all-or-nothing batch, so a larger changeset publishes as several batches. See [PUBLICATION.md](PUBLICATION.md).
 
 ## Security boundary
 

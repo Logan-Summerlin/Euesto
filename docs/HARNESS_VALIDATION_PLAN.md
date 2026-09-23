@@ -13,7 +13,17 @@ Make every documented Euesto validation check runnable from the coding harness a
 
 The plan addresses the current failure mode where the harness does not contain `pytest` (`pytest: command not found`) and prevents a missing optional dependency from being confused with a failed validation.
 
-## Current gaps
+## Status
+
+Phases 1–3 and 6 are done; phases 4, 5, 7, and 8 are partly done. Each phase below starts with its status line. The open items are:
+
+- a Qt preflight check that reports whether Qt can initialize offscreen (Phase 2 lists it; it ships with the validation image);
+- a dedicated Qt-enabled validation image or Compose profile (Phase 4);
+- collection/marker checks and per-tier test counts in the validation output (Phase 5);
+- JUnit result upload from CI (Phase 7);
+- a structural test that the workflows invoke the shared validator (Phase 8).
+
+## Gaps this plan was written against
 
 1. The repository declares Python development dependencies in `requirements-dev.txt`, but the harness image/session does not install them automatically.
 2. QML linting is documented and used by GitHub Actions, but there is no repository-owned preflight command that verifies `pyside6-qmllint` availability, reports its version, or explains how to install it.
@@ -33,11 +43,13 @@ The plan addresses the current failure mode where the harness does not contain `
 - Missing tools must be reported as `unavailable`, not silently skipped and not misreported as test failures.
 - A command that is advertised as `full` must fail if a required check is unavailable, unless the caller explicitly selects an `allow-unavailable` policy.
 - Preflight output must include versions and safe paths only; never dump the complete environment, tokens, headers, or arbitrary command output.
-- Keep the existing public model-facing eight-tool vocabulary unchanged. Validation support is a harness/developer capability, not a new model-facing executor tool.
+- Keep the existing public model-facing ten-tool vocabulary unchanged. Validation support is a harness/developer capability, not a new model-facing executor tool.
 
 ## Implementation phases
 
 ### Phase 1: Establish one validation entry point
+
+**Status: done.** `scripts/validate.py` provides `preflight`, `fast`, `slow`, `docker`, `qml`, `ruff`, `compile`, and `all`, with `--json` and `--allow-unavailable`; `tests/test_validation_harness.py` covers it.
 
 Add `scripts/validate.py` (or an equivalent small module under `scripts/`) with these subcommands:
 
@@ -65,6 +77,8 @@ Refactor README, `docs/CONTRIBUTING.md`, `docs/TESTING.md`, and relevant workflo
 
 ### Phase 2: Add safe preflight reporting
 
+**Status: done, except the Qt offscreen check.** `validate.py preflight` reports Python, the locked packages, `pyside6-qmllint`, Docker, Docker Compose, PyInstaller, the QML files, the Docker daemon, the repository root, and tier support. Whether Qt can initialize offscreen is not reported yet; it is open with Phase 4.
+
 Implement a read-only preflight report that checks:
 
 - Python executable, version, and platform;
@@ -91,12 +105,14 @@ Add tests for available, missing, and failing commands using injected command ru
 
 ### Phase 3: Make dependencies reproducible
 
+**Status: done.** `requirements-dev.lock` pins the direct development toolchain for Python 3.12, and `scripts/bootstrap.py` verifies Python 3.12, installs the lock into the active interpreter, and prints the installed versions. CI installs the same lock.
+
 Add a documented installation profile for the harness:
 
 ```text
 python -m venv .venv
 python -m pip install --upgrade pip
-python -m pip install -r requirements-dev.txt
+python -m pip install -r requirements-dev.lock
 ```
 
 Then choose and implement one reproducibility strategy:
@@ -118,6 +134,8 @@ Do not put development-only tools into the gateway or executor runtime images un
 
 ### Phase 4: Add a supported QML validation environment
 
+**Status: partly done.** `pyside6-qmllint` runs through `validate.py qml` and `scripts/qml_smoke.py` loads `qml/Main.qml` offscreen. Open: the dedicated validation image or Compose profile, and the Qt preflight check.
+
 Provide a Linux validation path matching CI, preferably a small developer/CI image or documented container profile containing:
 
 - Python 3.12;
@@ -136,6 +154,8 @@ Keep software rendering as a validation/diagnostic setting only. It must not bec
 
 ### Phase 5: Strengthen test-tier execution
 
+**Status: partly done.** The fast, slow, and container marker expressions are the validator's `fast`, `slow`, and `docker` tiers, and pytest exit code 5 is reported as an empty tier. Open: collection checks that fail on unmarked Docker or slow tests, and per-tier test counts in the validation output.
+
 Update pytest configuration and tests so all tiers are explicit and reliable:
 
 - fast: `pytest -m "not slow and not docker"`;
@@ -148,6 +168,8 @@ Audit all tests for missing markers and classify them consistently. Add collecti
 Add a test-count/collection report to the validation output. A full run must show the count for each tier and must not silently pass an empty required tier.
 
 ### Phase 6: Make Docker validation explicit and portable
+
+**Status: done.** Container checks run in a dedicated Linux job through `validate.py docker`, fixtures come from `scripts/docker-fixtures.sh` with trap-based teardown, and the Windows release job does not run Docker-marked tests.
 
 Separate container validation from ordinary Python validation in CI and the local harness.
 
@@ -166,6 +188,8 @@ Add a repository script for fixture setup and teardown so local and CI runs use 
 
 ### Phase 7: Align GitHub Actions with the local harness
 
+**Status: partly done.** Both workflows bootstrap the lock, upload the preflight JSON, and run every tier through the validator, and the validation workflow keys its pip cache on `requirements-dev.lock`. Open: JUnit result upload.
+
 Refactor `.github/workflows/test-containers.yml` to:
 
 1. install the same locked development dependencies as the documented local harness;
@@ -181,6 +205,8 @@ Update `.github/workflows/release.yml` so the Windows job consumes the shared no
 Add a lightweight workflow or job that runs the preflight script on pull requests and reports missing optional tooling early.
 
 ### Phase 8: Add regression coverage for the harness itself
+
+**Status: partly done.** `tests/test_validation_harness.py` covers missing and failing tools, exit-code propagation, empty tiers, safe report content, the Qt environment, and command construction. Open: a structural test that the workflows invoke the shared validator and that documented commands match its tier names.
 
 Add tests covering:
 
@@ -210,7 +236,7 @@ Update:
 - `AGENTS.md`: the canonical validation entry point and the rule that missing dependencies must be reported explicitly;
 - GitHub workflow comments and job names.
 
-Keep `docs/HARNESS_QOL_PLAN.md` as the feature plan and use this document as the implementation plan for making its validation acceptance criteria executable.
+The feature plan this document implements is archived as [`archived-doc/harness-qol-plan.md`](../archived-doc/harness-qol-plan.md); this document tracks the remaining validation work.
 
 ## Acceptance criteria
 

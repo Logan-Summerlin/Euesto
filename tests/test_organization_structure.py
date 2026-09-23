@@ -16,7 +16,6 @@ def test_documentation_index_and_ownership_map_exist() -> None:
 
 def test_local_runtime_artifacts_are_ignored() -> None:
     ignored = (ROOT / ".gitignore").read_text(encoding="utf-8")
-    assert ".local-chat-snapshot.json" in ignored
     assert ".local-chat-checkpoints/" in ignored
 
 

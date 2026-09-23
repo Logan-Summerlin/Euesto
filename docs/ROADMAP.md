@@ -30,6 +30,25 @@ This document is a status-oriented roadmap. It is not the authoritative architec
 - Add narrowly scoped usability improvements that preserve the current security and publication model.
 - Keep resource defaults evidence-based as real workloads reveal bottlenecks.
 
+### Open items carried from archived plans
+
+From [the harness fix plan](../archived-doc/harness-fix-plan.md):
+
+- **Copy-on-write staging** (P1-4 fix 3): seed staging with reflinks where the filesystem supports them instead of an eager full copy, falling back to today's copy elsewhere.
+- **P3 product-scope decisions**, each sequenced on its own timeline and informed by demand:
+  - a second provider adapter (local models or direct provider access) behind the existing agent-turn and tool-schema interface, rather than a generic multi-provider layer;
+  - Linux-native desktop support, the lowest-risk step if cross-platform support becomes a goal (sandboxing is already Linux-container based);
+  - streaming provider responses with a configurable, per-model or per-profile timeout instead of the agent turn's fixed 90-second non-streaming request;
+  - lightweight symbol and reference navigation (for example `symbols(path)` and `references(symbol)` from an index built at staging time), not full LSP integration;
+  - a graceful budget wind-down that summarizes staged progress and offers to continue in a fresh run instead of failing with `run.failed`;
+  - structured reduction of large tool output for the highest-value formats (test runners, compilers, linters) before head+tail truncation;
+  - a small agent-efficacy benchmark suite tracked over time (success rate, tool calls, rollback frequency).
+
+From [the organization plan](../archived-doc/organization-plan.md):
+
+- **Product naming:** choose one canonical product name for user-facing text and record the legacy `LocalOpenRouterChat` runtime identifiers (keyring service, export marker, window title, installer and executable names) once. Renaming them needs a migration decision because the keyring service name protects stored secrets.
+- **Flat test relocation:** move the remaining flat `tests/*.py` files into `tests/unit/<domain>/` (or `integration/`/`security/` once those tiers exist) as they are touched, without dropping assertions.
+
 ## Deferred
 
 - Broader plugin/MCP discovery and credential delegation.
