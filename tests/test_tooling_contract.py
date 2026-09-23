@@ -170,8 +170,7 @@ def test_executor_dispatches_mutations_only_into_staging(tmp_path: Path) -> None
     assert not (source / "new.txt").exists() and not (source / "patched.txt").exists()
     assert (source / "existing.txt").read_text(encoding="utf-8") == "before\n"
     status = asyncio.run(service.execute(ToolRequest("status-1", "run", "status", "agent", {})))
-    assert status.ok
-    assert {name: status.data["counts"][name] for name in ("created", "modified", "deleted")} == {"created": 3, "modified": 1, "deleted": 0}
+    assert status.ok and status.data["counts"] == {"created": 3, "modified": 1, "deleted": 0, "permission_changes": 0}
 
 
 def test_dispatch_passes_only_operation_specific_effective_limits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

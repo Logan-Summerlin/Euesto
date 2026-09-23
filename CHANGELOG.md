@@ -11,6 +11,7 @@ A KISS/YAGNI pass that keeps behavior, the QML bridge surface, HTTP/protocol sha
 - The investigation model's forced final-summary turn is no longer offered tools. An empty `allowed_tools` set now sends `tool_choice: "none"`.
 - The composer hint now names the actual steer shortcut, Ctrl+Enter; Shift+Enter always inserts a newline.
 - Malformed JSON posted to the approval endpoint returns 422 instead of an internal error.
+- Staged rewrites keep file permission modes. `write`, `edit`, and `apply_patch` replaced files through a `0600` temporary file, so every rewrite of an existing file reported a permission change in `status` and `workspace_status`, and publication made the host file owner-only on POSIX hosts. A replaced file now keeps its mode and a new file gets the default (`0666` minus the umask).
 - The fast CI tier passes on GitHub runners, whose login profile appends `/snap/bin` to `PATH`; the bash environment test now requires the base `PATH` entries rather than an exact suffix.
 
 **Simplification**
@@ -63,8 +64,6 @@ A KISS/YAGNI pass that keeps behavior, the QML bridge surface, HTTP/protocol sha
 - Replaced source-text assertions on `server/service.py`, `server/openrouter/agent.py`, `app.py`, and `src/workers.py` with behavioral tests. The `"pi-compatible"` profile constants that existed only for those checks are removed.
 - Tool vocabulary and mode rules are asserted once, in `tests/test_tooling_contract.py`, instead of in seven files. Duplicated executor-config, bash, approval, and investigation cases are merged into their domain files.
 - `tests/ui/test_privacy_and_transcript.py` no longer reads source text. Its checks are behavioral desktop-service tests, the existing QML rendering tests, or named structural checks in `tests/structural/test_qml_structure.py`.
-
-**Reported, not changed:** staged rewrites (`write`, `edit`, `apply_patch`) produce mode-`0600` files, so every rewrite reports a permission change and publication applies that mode on POSIX hosts. See `docs/ROADMAP.md`.
 
 ## Unreleased — Harness P2-5/P2-6 and `apply_patch`
 

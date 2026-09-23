@@ -52,7 +52,6 @@ From [the code-simplification plan](../archived-doc/simplification-plan.md), fin
 - **Undeclared tool arguments:** `find`/`ls` accept `cursor` and `read` accepts `offset`, but the model-facing schemas do not declare them.
 - **`read` clamps to 256,000 bytes** regardless of a larger configured `max_read_bytes`.
 - **Starlette/uvicorn versions drift** between `requirements-dev.lock` (0.45.3/0.34.0) and the gateway image (0.52.1).
-- **Staged rewrites drop file modes:** `write`, `edit`, and `apply_patch` replace files with mode `0600`, so status reports a permission change on every rewrite and publication applies that mode on POSIX hosts.
 - **Three usage formatters** produce different UI strings.
 
 From [the organization plan](../archived-doc/organization-plan.md):

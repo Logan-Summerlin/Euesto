@@ -6,6 +6,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..atomic_io import replacement_mode
 from ..checkpoints import create_checkpoint, restore_checkpoint
 from ..errors import (
     EDIT_MALFORMED_CONTEXT,
@@ -108,6 +109,7 @@ def apply_edit(prepared: PreparedEdit, *, max_result_bytes: int) -> AppliedEdit:
             raise _match_error(prepared, actual, old, adjustment)
         shrink_warning = guard_shrink(prepared.relative, path, None, replacement_old=old, replacement_new=new, replacement_occurrences=actual, advisory=True)
         if result_size > max_result_bytes: raise ExecutorToolError(LIMIT_EXCEEDED, "Edited content exceeds the mutation limit")
+        os.chmod(temp_path, replacement_mode(path))
         os.replace(temp_path, path)
     except BaseException:
         temp_path.unlink(missing_ok=True); raise
