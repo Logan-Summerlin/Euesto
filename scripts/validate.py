@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -33,17 +34,34 @@ def _safe_env() -> dict[str, str]:
     }
     if os.name == "nt":
         # Windows subprocesses need these OS-level variables for DLL and
-        # service-provider resolution (including asyncio/WinSock startup).
-        for var in ("SYSTEMROOT", "SYSTEMDRIVE", "TEMP", "TMP"):
+        # service-provider resolution (including asyncio/WinSock startup),
+        # executable lookup, and Path.home() (USERPROFILE).
+        for var in ("SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP",
+                    "USERPROFILE", "LOCALAPPDATA"):
             value = os.environ.get(var)
             if value:
                 env[var] = value
     return env
 
 
-def _version(command: list[str], runner: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> tuple[str, str]:
+def _run_probe(command: list[str], *, timeout: float, env: dict[str, str]) -> subprocess.CompletedProcess:
+    """Run a version probe without pipes.
+
+    A timed-out probe is killed, but on Windows a grandchild (console-script launchers,
+    the Docker CLI) can keep an inherited pipe open, and reading that pipe would then block
+    forever. Output goes to a temporary file instead, so only the direct child is awaited.
+    """
+    with tempfile.TemporaryFile() as output:
+        completed = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=output,
+                                   stderr=subprocess.STDOUT, timeout=timeout, env=env)
+        output.seek(0)
+        text = output.read().decode("utf-8", "replace")
+    return subprocess.CompletedProcess(command, completed.returncode, stdout=text, stderr="")
+
+
+def _version(command: list[str], runner: Callable[..., subprocess.CompletedProcess] = _run_probe) -> tuple[str, str]:
     try:
-        result = runner(command, capture_output=True, text=True, timeout=8, env=_safe_env())
+        result = runner(command, timeout=8, env=_safe_env())
     except (OSError, subprocess.TimeoutExpired) as exc:
         return "unknown", type(exc).__name__
     output = (result.stdout or result.stderr or "").strip().splitlines()
@@ -56,7 +74,7 @@ def _record(name: str, status: str, version: str = "unknown", detail: str = "") 
     return {"name": name, "status": status, "version": version, "detail": detail[:240]}
 
 
-def preflight(tier: str = "all", runner: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> dict[str, Any]:
+def preflight(tier: str = "all", runner: Callable[..., subprocess.CompletedProcess] = _run_probe) -> dict[str, Any]:
     records = [_record("python", "available", platform.python_version(), sys.executable),
                _record("repository-root", "available" if Path.cwd().resolve() == ROOT else "failed", detail=str(ROOT))]
     if sys.version_info[:2] != (3, 12):
