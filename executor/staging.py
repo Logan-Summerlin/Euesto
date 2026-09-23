@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import shutil
 import stat
@@ -193,25 +192,20 @@ def seed_staging(config: ExecutorConfig) -> Snapshot:
             cache[relative] = (_signature(destination.lstat()), digest, observed)
     assert_unique_paths(relative_paths)
     snapshot = Snapshot(str(uuid.uuid4()), hashes, total, sizes, modes)
-    _write_snapshot(work, snapshot)
     _store_hash_cache(work, cache)
     return snapshot
 
 
-def snapshot_current_staging(work_root: Path) -> Snapshot:
-    """Create a baseline from the entire staged workspace.
-
-    This helper is retained for callers that intentionally want a complete
-    snapshot; publication uses ``advance_published_staging`` so unrelated staged
-    changes are never implicitly marked as published.
-    """
-    current = visible_files(work_root)
-    hashes = {path: value[0] for path, value in current.items()}
-    sizes = {path: value[1] for path, value in current.items()}
-    modes = {path: value[2] for path, value in current.items()}
-    snapshot = Snapshot(str(uuid.uuid4()), hashes, sum(sizes.values()), sizes, modes)
-    _write_snapshot(work_root, snapshot)
-    return snapshot
+def discard_staging(config: ExecutorConfig) -> Snapshot:
+    """Empty the staging area and reseed it from the read-only source."""
+    work_root = config.work_root
+    work_root.mkdir(parents=True, exist_ok=True)
+    for child in tuple(work_root.iterdir()):
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+    return seed_staging(config)
 
 
 def advance_published_staging(
@@ -246,26 +240,7 @@ def advance_published_staging(
         sizes[operation.path] = value[1]
         modes[operation.path] = value[2]
     updated = Snapshot(str(uuid.uuid4()), hashes, sum(sizes.values()), sizes, modes)
-    _write_snapshot(work_root, updated)
     return updated
-
-
-def _write_snapshot(work: Path, snapshot: Snapshot) -> None:
-    (work / ".local-chat-snapshot.json").write_text(
-        json.dumps({"snapshot_id": snapshot.snapshot_id, "hashes": snapshot.hashes, "sizes": snapshot.sizes, "modes": snapshot.modes, "total_bytes": snapshot.total_bytes}, sort_keys=True),
-        encoding="utf-8",
-    )
-
-
-def load_snapshot(work_root: Path) -> Snapshot:
-    data = json.loads((work_root / ".local-chat-snapshot.json").read_text(encoding="utf-8"))
-    hashes = {str(k): str(v) for k, v in data["hashes"].items()}
-    sizes = {str(k): max(0, int(v)) for k, v in (data.get("sizes") or {}).items() if isinstance(k, str)}
-    modes = {str(k): int(v) for k, v in (data.get("modes") or {}).items() if isinstance(k, str)}
-    total_bytes = data.get("total_bytes")
-    if total_bytes is None:
-        total_bytes = sum(path.stat().st_size for relative in hashes if (path := work_root / relative).is_file())
-    return Snapshot(str(data["snapshot_id"]), hashes, max(0, int(total_bytes or 0)), sizes, modes)
 
 
 def visible_files(root: Path) -> dict[str, tuple[str, int, int]]:
@@ -325,9 +300,6 @@ def _hidden_name(name: str) -> bool:
         or name.startswith(".local-chat-")
     )
 
-
-def _is_executor_metadata(relative: str) -> bool:
-    return any(part.startswith(".local-chat-") for part in Path(relative).parts)
 
 
 def refresh_visible_files(root: Path, base: dict[str, tuple[str, int, int]], paths: Sequence[str]) -> dict[str, tuple[str, int, int]]:

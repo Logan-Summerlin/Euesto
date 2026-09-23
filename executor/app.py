@@ -24,7 +24,7 @@ from shared.tools import (
     ToolResult,
 )
 
-from .checkpoints import checkpoint_files, discard_staging
+from .checkpoints import checkpoint_files
 from .config import ExecutorConfig
 from .egress import egress_status
 from .errors import INVALID_ARGUMENTS, STAGING_CONFLICT, ExecutorToolError, classify_error
@@ -33,7 +33,7 @@ from .staging import (
     Snapshot,
     WorkspaceChange,
     advance_published_staging,
-    load_snapshot,
+    discard_staging,
     publication_batches,
     refresh_visible_files,
     seed_staging,
@@ -47,9 +47,9 @@ DEVELOPER_EXECUTABLE_CANDIDATES = ("python", "python3", "pytest", "ruff", "node"
 
 
 class ExecutorService:
-    def __init__(self, config: ExecutorConfig, *, seed: bool = True):
+    def __init__(self, config: ExecutorConfig):
         self.config = config
-        self.snapshot = seed_staging(config) if seed else load_snapshot(config.work_root)
+        self.snapshot = seed_staging(config)
 
     async def execute(self, request: ToolRequest) -> ToolResult:
         started = time.perf_counter()

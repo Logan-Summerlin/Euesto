@@ -7,6 +7,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..checkpoints import create_checkpoint, restore_checkpoint
 from ..errors import (
     EDIT_MALFORMED_CONTEXT,
     EDIT_NO_MATCH,
@@ -19,15 +20,9 @@ from ..errors import (
     STAGING_CONFLICT,
     ExecutorToolError,
 )
-from ..mutations import (
-    bounded_diff,
-    bounded_edit_diff,
-    create_mutation_checkpoint,
-    guard_shrink,
-    rollback_mutation,
-    sha256,
-)
+from ..mutations import bounded_diff, bounded_edit_diff, guard_shrink
 from ..paths import safe_path
+from ..staging import sha256_file
 
 EDIT_CHUNK_BYTES = 64 * 1024
 EDIT_DIFF_MEMORY_BYTES = 1_000_000
@@ -59,11 +54,11 @@ class AppliedEdit:
 def edit(root: Path, arguments: dict, *, max_target_bytes: int, max_result_bytes: int, max_checkpoint_files: int = 300_000, max_checkpoint_bytes: int = 2_000_000_000) -> tuple[str, dict]:
     if set(arguments) - EDIT_ARGUMENTS: raise ExecutorToolError(INVALID_ARGUMENTS, "Unknown edit arguments")
     prepared = prepare_edit(root, arguments, max_target_bytes=max_target_bytes)
-    checkpoint_id = create_mutation_checkpoint(root, max_files=max_checkpoint_files, max_total_bytes=max_checkpoint_bytes)
+    checkpoint_id = create_checkpoint(root, max_files=max_checkpoint_files, max_total_bytes=max_checkpoint_bytes)
     try:
         applied = apply_edit(prepared, max_result_bytes=max_result_bytes)
     except BaseException:
-        rollback_mutation(root, checkpoint_id); raise
+        restore_checkpoint(root, checkpoint_id); raise
     data = edit_result(prepared, applied)
     data["checkpoint_id"] = checkpoint_id
     changed = int(data["diff"]["changed_lines"]); output = f"Edited {prepared.relative}. Changed {changed} line{'s' if changed != 1 else ''}."
@@ -85,7 +80,7 @@ def prepare_edit(root: Path, arguments: dict, *, max_target_bytes: int) -> Prepa
     target_size = path.stat().st_size
     if target_size > max_target_bytes: raise ExecutorToolError(LIMIT_EXCEEDED, "Edit target exceeds the mutation limit")
     original_small = path.read_text(encoding="utf-8") if target_size <= EDIT_DIFF_MEMORY_BYTES else None
-    old_hash = sha256(path)
+    old_hash = sha256_file(path)
     expected = arguments.get("expected_sha256")
     if expected is not None:
         if not isinstance(expected, str): raise ExecutorToolError(INVALID_ARGUMENTS, "expected_sha256 must be a string when supplied")
@@ -132,7 +127,7 @@ def edit_result(prepared: PreparedEdit, applied: AppliedEdit) -> dict:
         diff = bounded_diff(path, prepared.original_small, path.read_text(encoding="utf-8"), fromfile=prepared.relative, tofile=prepared.relative)
     else:
         diff = bounded_edit_diff(prepared.relative, applied.actual_occurrences, applied.old, applied.new)
-    data = {"path": prepared.relative, "old_sha256": prepared.old_hash, "new_sha256": sha256(path), "expected_occurrences": prepared.expected_occurrences, "actual_occurrences": applied.actual_occurrences, "size_bytes": path.stat().st_size, "diff": diff, "line_ending_adjustment": applied.line_ending_adjustment, "atomicity": "validated-before-write-with-checkpoint-rollback"}
+    data = {"path": prepared.relative, "old_sha256": prepared.old_hash, "new_sha256": sha256_file(path), "expected_occurrences": prepared.expected_occurrences, "actual_occurrences": applied.actual_occurrences, "size_bytes": path.stat().st_size, "diff": diff, "line_ending_adjustment": applied.line_ending_adjustment, "atomicity": "validated-before-write-with-checkpoint-rollback"}
     if applied.shrink_warning:
         data["shrink_warning"] = True
         data["shrink_details"] = applied.shrink_warning

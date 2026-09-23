@@ -6,13 +6,21 @@ import pytest
 
 from executor.config import ExecutorConfig
 from executor.staging import (
+    Snapshot,
     advance_published_staging,
     seed_staging,
     sha256_file,
-    snapshot_current_staging,
+    visible_files,
     workspace_changes,
 )
 from shared.tools import PublishOperation
+
+
+def snapshot_current_staging(work_root: Path) -> Snapshot:
+    """A baseline covering the entire staged workspace (as if everything were published)."""
+    current = visible_files(work_root)
+    sizes = {path: value[1] for path, value in current.items()}
+    return Snapshot("full", {path: value[0] for path, value in current.items()}, sum(sizes.values()), sizes, {path: value[2] for path, value in current.items()})
 
 
 def make_config(source: Path, work: Path) -> ExecutorConfig:

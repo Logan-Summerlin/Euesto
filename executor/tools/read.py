@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import codecs
-import hashlib
 from pathlib import Path
 
 from ..errors import (
@@ -12,6 +11,7 @@ from ..errors import (
     ExecutorToolError,
 )
 from ..paths import is_tool_excluded, normalize_relative, safe_path
+from ..staging import sha256_file
 
 DEFAULT_READ_BYTES = 64_000
 MAX_READ_BYTES = 256_000
@@ -193,7 +193,7 @@ def _metadata(
 ) -> dict:
     return {
         "path": relative,
-        "sha256": _sha256(path),
+        "sha256": sha256_file(path),
         "size_bytes": size_bytes,
         "content_bytes": len(text.encode("utf-8")),
         "start_line": start_line,
@@ -205,11 +205,3 @@ def _metadata(
         "next_offset": next_offset,
         "next_start_line": next_start_line,
     }
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(128 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()

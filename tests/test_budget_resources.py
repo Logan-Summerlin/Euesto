@@ -7,8 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from executor.checkpoints import CheckpointError, create_checkpoint
+from executor.checkpoints import create_checkpoint
 from executor.config import ExecutorConfig
+from executor.errors import ExecutorToolError
 from server.agent.budgets import (
     EXTENDED_CODING_PROFILE,
     LARGE_CODING_PROFILE,
@@ -64,7 +65,7 @@ def test_checkpoint_budget_is_checked_against_staging_and_temp_headroom(tmp_path
     work.mkdir()
     (work / "file.txt").write_bytes(b"x" * 100)
     monkeypatch.setattr("executor.checkpoints.shutil.disk_usage", lambda _path: SimpleNamespace(total=1_000_000_200))
-    with pytest.raises(CheckpointError, match="combined /work resource budget"):
+    with pytest.raises(ExecutorToolError, match="combined /work resource budget"):
         create_checkpoint(work, max_total_bytes=100)
 
 
@@ -72,7 +73,7 @@ def test_checkpoint_fails_when_current_staging_exceeds_checkpoint_budget(tmp_pat
     work = tmp_path / "work"
     work.mkdir()
     (work / "file.txt").write_bytes(b"x" * 10)
-    with pytest.raises(CheckpointError, match="too large"):
+    with pytest.raises(ExecutorToolError, match="too large"):
         create_checkpoint(work, max_total_bytes=9)
 
 

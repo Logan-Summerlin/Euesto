@@ -7,6 +7,7 @@ import time
 from collections import deque
 from pathlib import Path
 
+from ..checkpoints import create_checkpoint, restore_checkpoint
 from ..egress import proxy_environment
 from ..errors import (
     COMMAND_INVALID_ARGUMENTS,
@@ -14,7 +15,6 @@ from ..errors import (
     WORKING_DIRECTORY_INVALID,
     ExecutorToolError,
 )
-from ..mutations import create_mutation_checkpoint, rollback_mutation
 from ..paths import safe_path
 
 MAX_RETAINED_OUTPUT_BYTES = 512_000
@@ -116,7 +116,7 @@ class BashRunner:
             raise ExecutorToolError(LIMIT_EXCEEDED, f"bash stdin exceeds the configured limit of {stdin_limit} bytes")
 
         environment = self._environment(arguments.get("env", {}))
-        checkpoint_id = create_mutation_checkpoint(root, max_files=max_checkpoint_files, max_total_bytes=max_checkpoint_bytes)
+        checkpoint_id = create_checkpoint(root, max_files=max_checkpoint_files, max_total_bytes=max_checkpoint_bytes)
         started = time.perf_counter()
         self._cancelled.discard(request_id)
         stdout_task = stderr_task = stdin_task = None
@@ -133,12 +133,12 @@ class BashRunner:
             except TimeoutError as exc:
                 await self.cancel(request_id)
                 await asyncio.gather(stdout_task, stderr_task, stdin_task, return_exceptions=True)
-                rollback_mutation(root, checkpoint_id)
+                restore_checkpoint(root, checkpoint_id)
                 raise TimeoutError("Bash command exceeded its approved timeout") from exc
             except asyncio.CancelledError:
                 await self.cancel(request_id)
                 await asyncio.gather(stdout_task, stderr_task, stdin_task, return_exceptions=True)
-                rollback_mutation(root, checkpoint_id)
+                restore_checkpoint(root, checkpoint_id)
                 raise
             finally:
                 self._processes.pop(request_id, None)
@@ -150,7 +150,7 @@ class BashRunner:
             rollback_reason = "cancelled" if cancelled else ("nonzero_exit" if process.returncode != 0 and rollback_on_failure else "none")
             rolled_back = rollback_reason != "none"
             if rolled_back:
-                rollback_mutation(root, checkpoint_id)
+                restore_checkpoint(root, checkpoint_id)
             combined = self._model_output(stdout, stderr, max_output)
             return combined, {
                 "exit_code": process.returncode,
@@ -173,7 +173,7 @@ class BashRunner:
             }
         except Exception:
             if process is None:
-                rollback_mutation(root, checkpoint_id)
+                restore_checkpoint(root, checkpoint_id)
             raise
         finally:
             self._cancelled.discard(request_id)

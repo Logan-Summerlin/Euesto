@@ -1,31 +1,14 @@
 from __future__ import annotations
 
 import difflib
-import hashlib
 from pathlib import Path
 
-from .checkpoints import create_checkpoint, restore_checkpoint
 from .errors import STAGING_SHRINK_WARNING, ExecutorToolError
 
 MAX_DIFF_LINES = 200
 MAX_DIFF_BYTES = 24_000
 SHRINK_RATIO = 0.5
 LINE_COUNT_CHUNK_BYTES = 64 * 1024
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(128 * 1024), b""): digest.update(chunk)
-    return digest.hexdigest()
-
-
-def create_mutation_checkpoint(root: Path, *, max_files: int, max_total_bytes: int) -> str:
-    return create_checkpoint(root, max_files=max_files, max_total_bytes=max_total_bytes, max_storage_bytes=max_total_bytes)
-
-
-def rollback_mutation(root: Path, checkpoint_id: str) -> None:
-    restore_checkpoint(root, checkpoint_id)
 
 
 def guard_shrink(relative: str, path: Path, content: str | None, *, replacement_old: str | None = None, replacement_new: str | None = None, replacement_occurrences: int | None = None, advisory: bool = False) -> dict[str, object] | None:

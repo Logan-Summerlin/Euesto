@@ -11,7 +11,6 @@ import pytest
 
 from executor import errors
 from executor.app import ExecutorService
-from executor.checkpoints import CheckpointError
 from executor.config import ExecutorConfig
 from executor.errors import ERROR_CODES, ExecutorToolError, classify_error
 from executor.paths import UnsafePath
@@ -122,7 +121,6 @@ def test_classify_error_never_reads_message_text() -> None:
 def test_typed_exception_families_carry_codes() -> None:
     assert UnsafePath("anything at all").code == "path.unsafe"
     assert isinstance(UnsafePath("x"), ValueError)
-    assert CheckpointError("checkpoint.corrupt", "x").code == "checkpoint.corrupt"
     plan_write = ToolRequest.__new__(ToolRequest)
     for name, value in {"request_id": "r", "run_id": "run", "tool": "write", "mode": "plan", "arguments": {}}.items():
         object.__setattr__(plan_write, name, value)
@@ -135,7 +133,7 @@ def test_typed_exception_families_carry_codes() -> None:
 # report through their own HTTP endpoints, and configuration validation runs at startup.
 UNTYPED_MODULES = {"executor/config.py", "executor/egress.py"}
 UNTYPED_STAGING_FUNCTIONS = {"seed_staging", "advance_published_staging"}
-TYPED_EXCEPTIONS = {"ExecutorToolError", "UnsafePath", "CheckpointError"}
+TYPED_EXCEPTIONS = {"ExecutorToolError", "UnsafePath"}
 # Exceptions whose type alone determines the code in classify_error.
 TYPE_CLASSIFIED = {"TimeoutError", "PermissionError", "FileNotFoundError"}
 
@@ -162,7 +160,7 @@ def test_every_tool_path_raise_names_a_documented_code() -> None:
             name = node.exc.func.id
             if name in TYPED_EXCEPTIONS:
                 first = node.exc.args[0] if node.exc.args else None
-                if name in {"ExecutorToolError", "CheckpointError"}:
+                if name == "ExecutorToolError":
                     # The code is a named constant (or forwarded from an already-typed cause).
                     named = isinstance(first, ast.Name) and first.id in constants
                     forwarded = isinstance(first, ast.Name) and first.id == "code" or isinstance(first, ast.Attribute) and first.attr == "code"

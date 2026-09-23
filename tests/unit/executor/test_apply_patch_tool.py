@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from executor.app import ExecutorService
-from executor.checkpoints import inspect_checkpoint
+from executor.checkpoints import checkpoint_files
 from executor.config import ExecutorConfig
 from executor.errors import ExecutorToolError
 from executor.tools import apply_patch as apply_patch_export
@@ -58,9 +58,9 @@ def test_apply_patch_applies_multi_file_change_in_order_with_one_checkpoint(tmp_
     assert data["atomicity"] == "single-checkpoint-all-or-nothing"
     assert "5 operations across 4 files" in output
     # Every changed path's pre-patch state is inside the single checkpoint.
-    checkpoint = inspect_checkpoint(root, data["checkpoint_id"], max_results=50)
-    assert {"src/app.py", "src/util.py", "old.txt"} <= set(checkpoint["files"])
-    assert "docs/notes.md" not in checkpoint["files"]
+    checkpointed = set(checkpoint_files(data["checkpoint_id"]) or ())
+    assert {"src/app.py", "src/util.py", "old.txt"} <= checkpointed
+    assert "docs/notes.md" not in checkpointed
 
 
 def test_apply_patch_failure_rolls_back_every_earlier_operation(tmp_path: Path) -> None:

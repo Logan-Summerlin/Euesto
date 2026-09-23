@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..atomic_io import atomic_write_text
+from ..checkpoints import create_checkpoint, restore_checkpoint
 from ..errors import (
     INVALID_ARGUMENTS,
     INVALID_UTF8,
@@ -14,15 +15,9 @@ from ..errors import (
     STAGING_CONFLICT,
     ExecutorToolError,
 )
-from ..mutations import (
-    bounded_diff,
-    bounded_edit_diff,
-    create_mutation_checkpoint,
-    guard_shrink,
-    rollback_mutation,
-    sha256,
-)
+from ..mutations import bounded_diff, bounded_edit_diff, guard_shrink
 from ..paths import safe_path
+from ..staging import sha256_file
 
 WRITE_DIFF_MEMORY_BYTES = 1_000_000
 WRITE_ARGUMENTS = frozenset({"path", "content", "expected_sha256", "create_parents"})
@@ -44,11 +39,11 @@ def write(root: Path, arguments: dict, *, max_bytes: int, max_checkpoint_files: 
     if set(arguments) - WRITE_ARGUMENTS:
         raise ExecutorToolError(INVALID_ARGUMENTS, "Unknown write arguments")
     prepared = prepare_write(root, arguments, max_bytes=max_bytes, max_staging_bytes=max_staging_bytes)
-    checkpoint_id = create_mutation_checkpoint(root, max_files=max_checkpoint_files, max_total_bytes=max_checkpoint_bytes)
+    checkpoint_id = create_checkpoint(root, max_files=max_checkpoint_files, max_total_bytes=max_checkpoint_bytes)
     try:
         commit_write(root, prepared)
     except BaseException:
-        rollback_mutation(root, checkpoint_id)
+        restore_checkpoint(root, checkpoint_id)
         raise
     data = write_result(prepared, max_bytes=max_bytes, max_staging_bytes=max_staging_bytes)
     data["checkpoint_id"] = checkpoint_id
@@ -81,7 +76,7 @@ def prepare_write(root: Path, arguments: dict, *, max_bytes: int, max_staging_by
         if path.is_symlink() or not path.is_file() or path.stat().st_nlink > 1:
             raise ExecutorToolError(PATH_INVALID_TYPE, "write target must be a regular, non-hard-linked file")
         _validate_existing_text(path)
-        old_hash = sha256(path)
+        old_hash = sha256_file(path)
         if path.stat().st_size <= WRITE_DIFF_MEMORY_BYTES:
             original = path.read_text(encoding="utf-8")
 
@@ -125,7 +120,7 @@ def commit_write(root: Path, prepared: PreparedWrite) -> None:
 
 def write_result(prepared: PreparedWrite, *, max_bytes: int, max_staging_bytes: int | None) -> dict:
     data = {
-        "path": prepared.relative, "old_sha256": prepared.old_hash, "new_sha256": sha256(prepared.path),
+        "path": prepared.relative, "old_sha256": prepared.old_hash, "new_sha256": sha256_file(prepared.path),
         "size_bytes": prepared.requested_bytes, "requested_write_bytes": prepared.requested_bytes, "max_write_bytes": max_bytes,
         "staging_capacity_bytes": max_staging_bytes, "diff": prepared.diff,
         "atomicity": "tempfile-fsync-atomic-replace-with-checkpoint-rollback",

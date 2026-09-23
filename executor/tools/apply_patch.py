@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ..checkpoints import create_checkpoint, restore_checkpoint
 from ..errors import (
     APPLY_PATCH_MALFORMED,
     INVALID_ARGUMENTS,
@@ -14,8 +15,8 @@ from ..errors import (
     ExecutorToolError,
     classify_error,
 )
-from ..mutations import create_mutation_checkpoint, rollback_mutation, sha256
 from ..paths import normalize_relative, safe_path
+from ..staging import sha256_file
 from .edit import EDIT_ARGUMENTS, apply_edit, edit_result, prepare_edit
 from .write import WRITE_ARGUMENTS, commit_write, prepare_write, write_result
 
@@ -67,13 +68,13 @@ def apply_patch(
     for index, item in enumerate(operations):
         _validate_shape(index, item)
 
-    checkpoint_id = create_mutation_checkpoint(root, max_files=max_checkpoint_files, max_total_bytes=max_checkpoint_bytes)
+    checkpoint_id = create_checkpoint(root, max_files=max_checkpoint_files, max_total_bytes=max_checkpoint_bytes)
     results: list[dict] = []
     try:
         for item in operations:
             results.append(_apply_one(root, item, max_write_bytes=max_write_bytes, max_edit_target_bytes=max_edit_target_bytes, max_edit_result_bytes=max_edit_result_bytes, max_staging_bytes=max_staging_bytes))
     except BaseException as exc:
-        rollback_mutation(root, checkpoint_id)
+        restore_checkpoint(root, checkpoint_id)
         if not isinstance(exc, Exception):
             raise
         index = len(results)
@@ -153,7 +154,7 @@ def _delete(root: Path, arguments: dict) -> dict:
         raise ExecutorToolError(PATH_MISSING, f"delete target not found: {relative}") from exc
     if path.is_symlink() or not path.is_file() or path.stat().st_nlink > 1:
         raise ExecutorToolError(PATH_INVALID_TYPE, "delete target must be a regular, non-hard-linked file")
-    old_hash = sha256(path)
+    old_hash = sha256_file(path)
     expected = arguments.get("expected_sha256")
     if expected is not None:
         if not isinstance(expected, str):

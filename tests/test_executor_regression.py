@@ -7,8 +7,9 @@ from pathlib import Path
 import pytest
 
 from executor.config import ExecutorConfig
-from executor.mutations import guard_shrink, sha256
+from executor.mutations import guard_shrink
 from executor.paths import UnsafePath, assert_unique_paths, normalize_relative, safe_path
+from executor.staging import sha256_file
 from executor.tools.bash import BashRunner, _OutputBuffer
 from executor.tools.edit import edit
 from executor.tools.find import find
@@ -65,7 +66,7 @@ def test_read_small_medium_large_and_utf8_metadata(tmp_path: Path, size: int) ->
     text, metadata = read(root, {"path": "text.txt", "max_bytes": 1_000}, max_bytes=1_000)
     assert len(text.encode()) == min(size, 1_000)
     assert metadata["truncated"] is (size > 1_000)
-    assert metadata["sha256"] == sha256(path)
+    assert metadata["sha256"] == sha256_file(path)
     unicode_path = root / "unicode.txt"
     unicode_path.write_text("a\n€uro\n", encoding="utf-8")
     with pytest.raises(ValueError, match="UTF-8 character boundary"):
@@ -93,7 +94,7 @@ def test_write_edit_hash_occurrence_result_and_shrink_guards(tmp_path: Path) -> 
     write(root, {"path": "file.txt", "content": "alpha\nbeta\n"}, max_bytes=100)
     with pytest.raises(ValueError, match="Staging hash conflict"):
         write(root, {"path": "file.txt", "content": "x", "expected_sha256": "0" * 64}, max_bytes=100)
-    old_hash = sha256(root / "file.txt")
+    old_hash = sha256_file(root / "file.txt")
     _, result = edit(root, {"path": "file.txt", "old_str": "beta", "new_str": "gamma", "expected_occurrences": 1, "expected_sha256": old_hash}, max_target_bytes=100, max_result_bytes=100)
     assert result["old_sha256"] == old_hash
     with pytest.raises(ValueError, match="occurrence conflict"):
@@ -248,4 +249,4 @@ def test_reparse_point_security_contract_and_hashes(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(Path, "lstat", lambda self: FakeStat())
     with pytest.raises(UnsafePath, match="reparse"):
         safe_path(root, "target")
-    assert sha256(target) == sha256(target)
+    assert sha256_file(target) == sha256_file(target)
