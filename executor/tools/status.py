@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import difflib
 import hashlib
 from pathlib import Path
@@ -12,6 +11,7 @@ from shared.tools import PUBLISH_BATCH_MAX_BYTES, PUBLISH_BATCH_MAX_OPERATIONS
 from ..errors import INVALID_ARGUMENTS, PATH_INVALID, PATH_MISSING, ExecutorToolError
 from ..paths import UnsafePath, is_tool_excluded, normalize_relative
 from ..staging import Snapshot, WorkspaceChange, publication_batches, workspace_changes
+from .listing import decode_cursor, encode_cursor
 
 STATUS_ARGUMENTS = frozenset({"paths", "include_diffs", "max_results", "cursor"})
 DEFAULT_STATUS_RESULTS = 100
@@ -39,7 +39,7 @@ def status(work_root: Path, source_root: Path, snapshot: Snapshot, arguments: di
     if not isinstance(include_diffs, bool):
         raise ExecutorToolError(INVALID_ARGUMENTS, "include_diffs must be a boolean")
     scopes = _scopes(arguments.get("paths"))
-    cursor = _decode_cursor(arguments.get("cursor"))
+    cursor = decode_cursor(arguments.get("cursor"), "status", maximum=MAX_CURSOR_OFFSET)
 
     all_changes = workspace_changes(snapshot, work_root, current)
     changes = all_changes
@@ -69,7 +69,7 @@ def status(work_root: Path, source_root: Path, snapshot: Snapshot, arguments: di
         data["paths"] = scopes
     if has_more:
         data["truncation_reason"] = "result_limit"
-        data["next_cursor"] = _encode_cursor(cursor + len(page))
+        data["next_cursor"] = encode_cursor(cursor + len(page))
     if include_diffs:
         diffs, diff_truncated = _diffs(work_root, source_root, page)
         data["diffs"] = diffs
@@ -243,19 +243,3 @@ def _text(content: bytes) -> str | None:
     except UnicodeDecodeError:
         return None
 
-
-def _encode_cursor(value: int) -> str:
-    return base64.urlsafe_b64encode(str(max(0, value)).encode()).decode().rstrip("=")
-
-
-def _decode_cursor(value: object) -> int:
-    if not value:
-        return 0
-    try:
-        padding = "=" * (-len(str(value)) % 4)
-        parsed = int(base64.urlsafe_b64decode(str(value) + padding).decode())
-    except (ValueError, UnicodeError, base64.binascii.Error):
-        raise ExecutorToolError(INVALID_ARGUMENTS, "Invalid status result cursor") from None
-    if parsed < 0 or parsed > MAX_CURSOR_OFFSET:
-        raise ExecutorToolError(INVALID_ARGUMENTS, "Status result cursor is outside the bounded pagination range")
-    return parsed

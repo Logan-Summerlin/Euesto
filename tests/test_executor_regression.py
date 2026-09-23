@@ -13,9 +13,9 @@ from executor.staging import sha256_file
 from executor.tools.bash import BashRunner, _OutputBuffer
 from executor.tools.edit import edit
 from executor.tools.find import find
+from executor.tools.grep import search_text
 from executor.tools.ls import ls
 from executor.tools.read import read
-from executor.tools.search_text import search_text
 from executor.tools.write import write
 from server.agent.budgets import BudgetExceededError, RunBudget
 
