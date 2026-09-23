@@ -18,7 +18,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 QML_FILES = ("qml/Main.qml", "qml/Sidebar.qml", "qml/Transcript.qml", "qml/Composer.qml")
-PYTHON_PACKAGES = ("PySide6", "pytest", "pytest-asyncio", "pytest-timeout", "ruff", "Pillow")
+PYTHON_PACKAGES = ("PySide6", "pytest", "pytest-timeout", "ruff")
 EXECUTABLES = ("pyside6-qmllint", "docker", "docker compose", "pyinstaller")
 
 

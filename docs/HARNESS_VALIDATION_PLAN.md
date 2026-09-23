@@ -68,7 +68,7 @@ Refactor README, `docs/CONTRIBUTING.md`, `docs/TESTING.md`, and relevant workflo
 Implement a read-only preflight report that checks:
 
 - Python executable, version, and platform;
-- import availability and versions for PySide6, pytest, pytest-asyncio, pytest-timeout, Ruff, and Pillow;
+- import availability and versions for PySide6, pytest, pytest-timeout, and Ruff;
 - executable availability and version for `pyside6-qmllint`, Docker, Docker Compose, and PyInstaller;
 - whether the required QML files exist;
 - whether Docker is reachable without printing daemon configuration or credentials;

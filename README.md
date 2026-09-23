@@ -107,10 +107,10 @@ qml/                Qt Quick UI
 docker/             Container images, compose, security checks
 tests/              Unit, integration, security, and contract tests
 docs/               Authoritative references, roadmap, and living plans
-scripts/            Developer helpers (dev up/down, install, protocol check)
+scripts/            Developer helpers (bootstrap, validation, dev up/down, QML smoke, Docker fixtures)
 installer/          Windows installer definition
 build/              Packaging spec and version metadata
-assets/             Icon and screenshot
+assets/             Application icon
 .github/            CI workflows (container checks, release)
 archived-doc/       Superseded/implemented historical documents (not normative)
 AGENTS.md           Durable agent invariants and repository map

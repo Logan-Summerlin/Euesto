@@ -34,22 +34,24 @@ def test_restrictive_permission_decisions_win() -> None:
     assert resolve_permission(request("src/private/a.txt"), "ws", rules) == PermissionDecision.DENY
 
 
-@pytest.mark.asyncio
-async def test_approval_timeout_is_bounded_and_removed() -> None:
+def test_approval_timeout_is_bounded_and_removed() -> None:
     coordinator = ApprovalCoordinator()
     with pytest.raises(ApprovalTimeoutError) as error:
-        await coordinator.wait("run", "approval", timeout=0.01)
+        asyncio.run(coordinator.wait("run", "approval", timeout=0.01))
     assert error.value.approval_id == "approval"
     assert coordinator.get("run", "approval") is None
 
 
-@pytest.mark.asyncio
-async def test_approval_can_be_resolved_before_timeout() -> None:
+def test_approval_can_be_resolved_before_timeout() -> None:
     coordinator = ApprovalCoordinator()
-    task = asyncio.create_task(coordinator.wait("run", "approval", timeout=1))
-    await asyncio.sleep(0)
-    assert coordinator.resolve("run", "approval", PermissionDecision.ALLOW_ONCE)
-    assert await task == PermissionDecision.ALLOW_ONCE
+
+    async def resolve_while_waiting() -> PermissionDecision:
+        task = asyncio.create_task(coordinator.wait("run", "approval", timeout=1))
+        await asyncio.sleep(0)  # let the wait register its pending approval
+        assert coordinator.resolve("run", "approval", PermissionDecision.ALLOW_ONCE)
+        return await task
+
+    assert asyncio.run(resolve_while_waiting()) == PermissionDecision.ALLOW_ONCE
 
 
 def test_safe_message_redacts_drive_unc_and_multiple_paths() -> None:

@@ -72,7 +72,7 @@ Concise guide to each top-level folder:
 |---|---|
 | `.github/` | CI workflows: container security checks and release packaging. |
 | `archived-doc/` | Superseded or fully implemented historical documents. Not normative. |
-| `assets/` | Application icon and screenshot used by the desktop app and README. |
+| `assets/` | Application icon used by the desktop app, packaging, and installer. |
 | `build/` | PyInstaller spec and version metadata for Windows packaging. |
 | `docker/` | Gateway/executor images, Compose topology, secrets wiring, and the container operator guide (`README.container.md`). |
 | `docs/` | Authoritative architecture, tools, limits, publication, contributor, and troubleshooting references, plus the roadmap and every living plan (indexed in `docs/README.md`). |
@@ -80,7 +80,7 @@ Concise guide to each top-level folder:
 | `executor/` | The sandboxed tool service: dispatch, path safety, staging, checkpoints, resource limits. |
 | `installer/` | Inno Setup script for the Windows installer. |
 | `qml/` | Qt Quick UI (main window, sidebar, transcript, composer). |
-| `scripts/` | Developer helpers: dev up/down, install/uninstall, protocol check, icons/screenshots/mockups. |
+| `scripts/` | Developer helpers: locked bootstrap, the validation harness, dev up/down, QML smoke check, and Docker test fixtures. |
 | `server/` | Loopback gateway: HTTP API, auth, agent runtime, budgets, journal store, OpenRouter client, skills/capabilities extensions. |
 | `shared/` | Framework-neutral protocol: tool registry, requests/responses, permissions, events, publish manifests. |
 | `src/` | Desktop application code: thin QML adapter (`qml_backend.py`) over the services in `src/desktop/`, controllers, storage/migrations, gateway client, runtime manager, publication broker. |
