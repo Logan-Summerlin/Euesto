@@ -28,7 +28,7 @@ def test_read_small_medium_large_and_utf8_metadata(tmp_path: Path, size: int) ->
     assert metadata["truncated"] is (size > 1_000)
     assert metadata["sha256"] == sha256_file(path)
     unicode_path = root / "unicode.txt"
-    unicode_path.write_text("a\n€uro\n", encoding="utf-8")
+    unicode_path.write_bytes("a\n€uro\n".encode())
     with pytest.raises(ValueError, match="UTF-8 character boundary"):
         read(root, {"path": "unicode.txt", "offset": 3}, max_bytes=100)
 
