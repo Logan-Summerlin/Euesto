@@ -8,6 +8,8 @@ import platform
 import shutil
 import time
 import uuid
+from collections.abc import Awaitable, Callable
+from pathlib import Path
 
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -50,42 +52,48 @@ class ExecutorService:
     def __init__(self, config: ExecutorConfig):
         self.config = config
         self.snapshot = seed_staging(config)
+        self._tools = self._dispatch_table()
 
     async def execute(self, request: ToolRequest) -> ToolResult:
         started = time.perf_counter()
         try:
             enforce_capability(request)
             root = self.config.source_root if request.mode == "plan" else self.config.work_root
-            if request.tool == "read":
-                requested = request.arguments.get("max_bytes")
-                # Read-only tools run off the event loop so independent calls proceed concurrently.
-                output, data = await asyncio.to_thread(read, root, request.arguments, max_bytes=self.config.effective_limit("max_read_bytes", requested))
-            elif request.tool == "write":
-                output, data = write(root, request.arguments, max_bytes=self.config.effective_limit("max_write_bytes"), max_checkpoint_files=self.config.max_staged_files, max_checkpoint_bytes=self.config.max_checkpoint_bytes, max_staging_bytes=self.config.max_staging_bytes)
-            elif request.tool == "edit":
-                output, data = edit(root, request.arguments, max_target_bytes=self.config.effective_limit("max_edit_target_bytes"), max_result_bytes=self.config.effective_limit("max_edit_result_bytes"), max_checkpoint_files=self.config.max_staged_files, max_checkpoint_bytes=self.config.max_checkpoint_bytes,)
-            elif request.tool == "apply_patch":
-                output, data = apply_patch(root, request.arguments, max_operations=self.config.effective_limit("max_patch_operations"), max_patch_bytes=self.config.effective_limit("max_patch_bytes"), max_write_bytes=self.config.effective_limit("max_write_bytes"), max_edit_target_bytes=self.config.effective_limit("max_edit_target_bytes"), max_edit_result_bytes=self.config.effective_limit("max_edit_result_bytes"), max_checkpoint_files=self.config.max_staged_files, max_checkpoint_bytes=self.config.max_checkpoint_bytes, max_staging_bytes=self.config.max_staging_bytes)
-            elif request.tool == "bash":
-                output, data = await bash(request.request_id, root, request.arguments, max_seconds=self.config.effective_limit("max_command_seconds"), max_output=self.config.effective_limit("max_bash_output_bytes"), max_command_bytes=self.config.effective_limit("max_command_bytes"), max_stdin_bytes=self.config.effective_limit("max_bash_stdin_bytes"), max_checkpoint_files=self.config.max_staged_files, max_checkpoint_bytes=self.config.max_checkpoint_bytes)
-            elif request.tool == "status":
-                output, data = await asyncio.to_thread(status, self.config.work_root, self.config.source_root, self.snapshot, request.arguments)
-            elif request.tool == "grep":
-                requested_results = request.arguments.get("max_results")
-                output, data = await asyncio.to_thread(grep, root, request.arguments, max_scan_bytes=self.config.effective_limit("max_grep_scan_bytes"), max_output_bytes=self.config.effective_limit("max_grep_output_bytes"), max_results=self.config.effective_limit("max_search_results", requested_results), max_seconds=self.config.effective_limit("max_search_seconds"))
-            elif request.tool == "find":
-                requested_results = request.arguments.get("max_results")
-                output, data = await asyncio.to_thread(find, root, request.arguments, max_results=self.config.effective_limit("max_find_results", requested_results), max_seconds=self.config.effective_limit("max_search_seconds"))
-            elif request.tool == "ls":
-                requested_results = request.arguments.get("max_results")
-                output, data = await asyncio.to_thread(ls, root, request.arguments, max_results=self.config.effective_limit("max_ls_results", requested_results), max_seconds=self.config.effective_limit("max_search_seconds"))
-            else: raise ExecutorToolError(INVALID_ARGUMENTS, f"Unknown tool: {request.tool}")
+            run = self._tools.get(request.tool)
+            if run is None: raise ExecutorToolError(INVALID_ARGUMENTS, f"Unknown tool: {request.tool}")
+            output, data = await run(request, root)
             if request.mode == "agent" and request.tool in MUTATION_TOOLS:
-                data["workspace_status"] = self.workspace_status(self._post_mutation_files(request, data)); output = f"{output} {data['workspace_status']['summary']}"
+                data["workspace_status"] = self.workspace_status(self._post_mutation_files(request, data))
+                output = f"{output} {data['workspace_status']['summary']}"
             return _success_result(request.request_id, output, data, time.perf_counter() - started)
         except Exception as exc:
             classified = classify_error(exc)
             return ToolResult(request.request_id, False, output=classified.message, data=dict(classified.details or {}), error_code=classified.code, elapsed_seconds=time.perf_counter() - started)
+
+    def _dispatch_table(self) -> dict[str, Callable[[ToolRequest, Path], Awaitable[tuple[str, dict]]]]:
+        """One entry per executor tool, passing only that operation's effective limits.
+
+        Read-only tools run off the event loop so independent calls proceed concurrently;
+        mutations run inline and stay serialized in call order.
+        """
+        config = self.config
+        limit = config.effective_limit
+        checkpoint = {"max_checkpoint_files": config.max_staged_files, "max_checkpoint_bytes": config.max_checkpoint_bytes}
+
+        def search(name: str, request: ToolRequest) -> dict[str, int]:
+            return {"max_results": limit(name, request.arguments.get("max_results")), "max_seconds": limit("max_search_seconds")}
+
+        return {
+            "read": lambda request, root: asyncio.to_thread(read, root, request.arguments, max_bytes=limit("max_read_bytes", request.arguments.get("max_bytes"))),
+            "write": lambda request, root: _inline(write, root, request.arguments, max_bytes=limit("max_write_bytes"), max_staging_bytes=config.max_staging_bytes, **checkpoint),
+            "edit": lambda request, root: _inline(edit, root, request.arguments, max_target_bytes=limit("max_edit_target_bytes"), max_result_bytes=limit("max_edit_result_bytes"), **checkpoint),
+            "apply_patch": lambda request, root: _inline(apply_patch, root, request.arguments, max_operations=limit("max_patch_operations"), max_patch_bytes=limit("max_patch_bytes"), max_write_bytes=limit("max_write_bytes"), max_edit_target_bytes=limit("max_edit_target_bytes"), max_edit_result_bytes=limit("max_edit_result_bytes"), max_staging_bytes=config.max_staging_bytes, **checkpoint),
+            "bash": lambda request, root: bash(request.request_id, root, request.arguments, max_seconds=limit("max_command_seconds"), max_output=limit("max_bash_output_bytes"), max_command_bytes=limit("max_command_bytes"), max_stdin_bytes=limit("max_bash_stdin_bytes"), **checkpoint),
+            "status": lambda request, root: asyncio.to_thread(status, config.work_root, config.source_root, self.snapshot, request.arguments),
+            "grep": lambda request, root: asyncio.to_thread(grep, root, request.arguments, max_scan_bytes=limit("max_grep_scan_bytes"), max_output_bytes=limit("max_grep_output_bytes"), **search("max_search_results", request)),
+            "find": lambda request, root: asyncio.to_thread(find, root, request.arguments, **search("max_find_results", request)),
+            "ls": lambda request, root: asyncio.to_thread(ls, root, request.arguments, **search("max_ls_results", request)),
+        }
 
     def _post_mutation_files(self, request: ToolRequest, data: dict) -> dict[str, tuple[str, int, int]] | None:
         """Reuse the listing the mutation's own checkpoint just walked when the touched paths
@@ -100,8 +108,19 @@ class ExecutorService:
         return refresh_visible_files(self.config.work_root, base, [path for path in paths if path])
 
     def workspace_status(self, current: dict[str, tuple[str, int, int]] | None = None) -> dict[str, object]:
-        changes = workspace_changes(self.snapshot, self.config.work_root, current); created = [x.path for x in changes if x.operation == "create"]; modified = [x.path for x in changes if x.operation == "update"]; deleted = [x.path for x in changes if x.operation == "delete"]; permissions = [x.path for x in changes if x.permission_changed]
-        return {"created": created, "modified": modified, "deleted": deleted, "permission_changes": permissions, "staged": bool(changes), "publication": "pending_review" if changes else "no_changes", "summary": f"Created {len(created)}, modified {len(modified)}, deleted {len(deleted)}; host publication pending review."}
+        changes = workspace_changes(self.snapshot, self.config.work_root, current)
+        created = [change.path for change in changes if change.operation == "create"]
+        modified = [change.path for change in changes if change.operation == "update"]
+        deleted = [change.path for change in changes if change.operation == "delete"]
+        return {
+            "created": created,
+            "modified": modified,
+            "deleted": deleted,
+            "permission_changes": [change.path for change in changes if change.permission_changed],
+            "staged": bool(changes),
+            "publication": "pending_review" if changes else "no_changes",
+            "summary": f"Created {len(created)}, modified {len(modified)}, deleted {len(deleted)}; host publication pending review.",
+        }
 
     def manifest(self, run_id: str, approval_id: str, *, publication_id: str | None = None, batch_index: int = 1) -> PublishManifest:
         """Build the next publication batch from the changes still pending.
@@ -137,6 +156,10 @@ class ExecutorService:
         if manifest.workspace_id != self.config.workspace_id: raise ExecutorToolError(INVALID_ARGUMENTS, "Publication manifest belongs to another workspace")
         if manifest.source_snapshot_id != self.snapshot.snapshot_id: raise ExecutorToolError(STAGING_CONFLICT, "Publication manifest is stale for the current staging baseline")
         self.snapshot = advance_published_staging(self.config.work_root, self.snapshot, manifest.operations); return self.snapshot
+
+
+async def _inline(function: Callable[..., tuple[str, dict]], *args: object, **kwargs: object) -> tuple[str, dict]:
+    return function(*args, **kwargs)
 
 
 def _success_result(request_id: str, output: str, data: dict, elapsed: float) -> ToolResult:

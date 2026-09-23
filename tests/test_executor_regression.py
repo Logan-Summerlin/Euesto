@@ -91,16 +91,16 @@ def test_read_binary_invalid_utf8_and_ranges_are_rejected(tmp_path: Path) -> Non
 def test_write_edit_hash_occurrence_result_and_shrink_guards(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
-    write(root, {"path": "file.txt", "content": "alpha\nbeta\n"}, max_bytes=100)
+    write(root, {"path": "file.txt", "content": "alpha\nbeta\n"}, max_bytes=100, max_checkpoint_bytes=100_000_000)
     with pytest.raises(ValueError, match="Staging hash conflict"):
-        write(root, {"path": "file.txt", "content": "x", "expected_sha256": "0" * 64}, max_bytes=100)
+        write(root, {"path": "file.txt", "content": "x", "expected_sha256": "0" * 64}, max_bytes=100, max_checkpoint_bytes=100_000_000)
     old_hash = sha256_file(root / "file.txt")
-    _, result = edit(root, {"path": "file.txt", "old_str": "beta", "new_str": "gamma", "expected_occurrences": 1, "expected_sha256": old_hash}, max_target_bytes=100, max_result_bytes=100)
+    _, result = edit(root, {"path": "file.txt", "old_str": "beta", "new_str": "gamma", "expected_occurrences": 1, "expected_sha256": old_hash}, max_target_bytes=100, max_result_bytes=100, max_checkpoint_bytes=100_000_000)
     assert result["old_sha256"] == old_hash
     with pytest.raises(ValueError, match="occurrence conflict"):
-        edit(root, {"path": "file.txt", "old_str": "missing", "new_str": "x"}, max_target_bytes=100, max_result_bytes=100)
+        edit(root, {"path": "file.txt", "old_str": "missing", "new_str": "x"}, max_target_bytes=100, max_result_bytes=100, max_checkpoint_bytes=100_000_000)
     with pytest.raises(ValueError, match="mutation limit"):
-        write(root, {"path": "large", "content": "x" * 101}, max_bytes=100)
+        write(root, {"path": "large", "content": "x" * 101}, max_bytes=100, max_checkpoint_bytes=100_000_000)
     large = root / "large-edit"
     large.write_text("line\n" * 50, encoding="utf-8")
     with pytest.raises(Exception, match="shrink"):
@@ -161,9 +161,9 @@ def test_path_traversal_links_hard_links_and_secret_restrictions(tmp_path: Path)
 
 def test_bash_limits_output_retention_and_environment_policy() -> None:
     with pytest.raises(ValueError, match="command exceeds"):
-        asyncio.run(BashRunner().run("cmd", Path("."), {"command": "x" * 1_000_001}, max_seconds=10, max_output=100))
+        asyncio.run(BashRunner().run("cmd", Path("."), {"command": "x" * 1_000_001}, max_seconds=10, max_output=100, max_checkpoint_bytes=100_000_000))
     with pytest.raises(ValueError, match="stdin exceeds"):
-        asyncio.run(BashRunner().run("stdin", Path("."), {"command": "true", "stdin": "x" * 8_000_001}, max_seconds=10, max_output=100))
+        asyncio.run(BashRunner().run("stdin", Path("."), {"command": "true", "stdin": "x" * 8_000_001}, max_seconds=10, max_output=100, max_checkpoint_bytes=100_000_000))
     with pytest.raises(ValueError, match="restricted"):
         BashRunner._environment({"PATH": "unsafe"})
     output = _OutputBuffer(8)
@@ -176,14 +176,14 @@ def test_bash_failure_and_timeout_roll_back_staging(tmp_path: Path) -> None:
     root.mkdir()
     target = root / "state"
     target.write_text("before", encoding="utf-8")
-    _, result = asyncio.run(BashRunner().run("failure", root, {"command": "printf after > state; exit 7"}, max_seconds=10, max_output=100))
+    _, result = asyncio.run(BashRunner().run("failure", root, {"command": "printf after > state; exit 7"}, max_seconds=10, max_output=100, max_checkpoint_bytes=100_000_000))
     assert result["rolled_back"] is True and result["rollback_reason"] == "nonzero_exit" and target.read_text(encoding="utf-8") == "before"
-    _, retained = asyncio.run(BashRunner().run("retained", root, {"command": "printf retained > state; exit 7", "rollback_on_failure": False}, max_seconds=10, max_output=100))
+    _, retained = asyncio.run(BashRunner().run("retained", root, {"command": "printf retained > state; exit 7", "rollback_on_failure": False}, max_seconds=10, max_output=100, max_checkpoint_bytes=100_000_000))
     assert retained["exit_code"] == 7 and retained["rolled_back"] is False and retained["rollback_reason"] == "none"
     assert target.read_text(encoding="utf-8") == "retained"
     target.write_text("before", encoding="utf-8")
     with pytest.raises(TimeoutError):
-        asyncio.run(BashRunner().run("timeout", root, {"command": "printf after > state; sleep 5", "timeout_seconds": 1}, max_seconds=1, max_output=100))
+        asyncio.run(BashRunner().run("timeout", root, {"command": "printf after > state; sleep 5", "timeout_seconds": 1}, max_seconds=1, max_output=100, max_checkpoint_bytes=100_000_000))
     assert target.read_text(encoding="utf-8") == "before"
 
 
@@ -201,6 +201,7 @@ def test_failed_bash_preserves_previous_staged_changes(tmp_path: Path) -> None:
         {"command": "printf changed > state; printf new > created.txt; exit 7"},
         max_seconds=10,
         max_output=100,
+        max_checkpoint_bytes=100_000_000,
     ))
 
     assert result["exit_code"] == 7

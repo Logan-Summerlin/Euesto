@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import codecs
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,14 +9,13 @@ from ..errors import (
     INVALID_ARGUMENTS,
     INVALID_UTF8,
     LIMIT_EXCEEDED,
-    PATH_INVALID_TYPE,
     PATH_MISSING,
-    STAGING_CONFLICT,
     ExecutorToolError,
 )
-from ..mutations import bounded_diff, bounded_edit_diff, guard_shrink
-from ..paths import safe_path
+from ..mutations import bounded_diff, bounded_edit_diff, check_expected_sha256, guard_shrink
+from ..paths import require_regular_file, safe_path
 from ..staging import sha256_file
+from ..utf8 import validate_utf8_file
 
 WRITE_DIFF_MEMORY_BYTES = 1_000_000
 WRITE_ARGUMENTS = frozenset({"path", "content", "expected_sha256", "create_parents"})
@@ -35,7 +33,7 @@ class PreparedWrite:
     shrink_warning: dict | None
 
 
-def write(root: Path, arguments: dict, *, max_bytes: int, max_checkpoint_files: int = 300_000, max_checkpoint_bytes: int = 2_000_000_000, max_staging_bytes: int | None = None) -> tuple[str, dict]:
+def write(root: Path, arguments: dict, *, max_bytes: int, max_checkpoint_files: int = 300_000, max_checkpoint_bytes: int, max_staging_bytes: int | None = None) -> tuple[str, dict]:
     if set(arguments) - WRITE_ARGUMENTS:
         raise ExecutorToolError(INVALID_ARGUMENTS, "Unknown write arguments")
     prepared = prepare_write(root, arguments, max_bytes=max_bytes, max_staging_bytes=max_staging_bytes)
@@ -73,19 +71,14 @@ def prepare_write(root: Path, arguments: dict, *, max_bytes: int, max_staging_by
     old_hash = None
     original = None
     if path.exists():
-        if path.is_symlink() or not path.is_file() or path.stat().st_nlink > 1:
-            raise ExecutorToolError(PATH_INVALID_TYPE, "write target must be a regular, non-hard-linked file")
-        _validate_existing_text(path)
+        require_regular_file(path, "write")
+        validate_utf8_file(path, "Only UTF-8 text writes are supported")
         old_hash = sha256_file(path)
         if path.stat().st_size <= WRITE_DIFF_MEMORY_BYTES:
             original = path.read_text(encoding="utf-8")
 
     expected = arguments.get("expected_sha256")
-    if expected is not None:
-        if not isinstance(expected, str):
-            raise ExecutorToolError(INVALID_ARGUMENTS, "expected_sha256 must be a string when supplied")
-        if old_hash != expected:
-            raise ExecutorToolError(STAGING_CONFLICT, f"Staging hash conflict: {relative}", retryable=True, details={"failure": "hash_conflict", "path": relative, "expected_sha256": expected, "actual_sha256": old_hash})
+    check_expected_sha256(relative, expected, old_hash)
     # A matching expected_sha256 proves the caller reviewed the current content, so a large
     # shrink is a deliberate rewrite and is reported rather than refused.
     shrink_warning = guard_shrink(relative, path, content, advisory=expected is not None) if old_hash is not None else None
@@ -113,8 +106,8 @@ def commit_write(root: Path, prepared: PreparedWrite) -> None:
     if prepared.create_parents:
         prepared.path.parent.mkdir(parents=True, exist_ok=True)
     target = safe_path(root, prepared.relative, must_exist=False)
-    if target.exists() and (target.is_symlink() or not target.is_file() or target.stat().st_nlink > 1):
-        raise ExecutorToolError(PATH_INVALID_TYPE, "write target must be a regular, non-hard-linked file")
+    if target.exists():
+        require_regular_file(target, "write")
     atomic_write_text(target, prepared.content)
 
 
@@ -137,18 +130,3 @@ def _validate_new_parents(root: Path, parent: Path) -> None:
         current = current / part
         if current.exists(): safe_path(root, current.relative_to(root).as_posix(), must_exist=True)
 
-
-def _validate_existing_text(path: Path) -> None:
-    decoder = codecs.getincrementaldecoder("utf-8")()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(64 * 1024), b""):
-            if b"\x00" in chunk:
-                raise ExecutorToolError(INVALID_UTF8, "Only UTF-8 text writes are supported")
-            try:
-                decoder.decode(chunk)
-            except UnicodeDecodeError as exc:
-                raise ExecutorToolError(INVALID_UTF8, "Only UTF-8 text writes are supported") from exc
-    try:
-        decoder.decode(b"", final=True)
-    except UnicodeDecodeError as exc:
-        raise ExecutorToolError(INVALID_UTF8, "Only UTF-8 text writes are supported") from exc

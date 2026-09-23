@@ -3,12 +3,27 @@ from __future__ import annotations
 import difflib
 from pathlib import Path
 
-from .errors import STAGING_SHRINK_WARNING, ExecutorToolError
+from .errors import (
+    INVALID_ARGUMENTS,
+    STAGING_CONFLICT,
+    STAGING_SHRINK_WARNING,
+    ExecutorToolError,
+)
 
 MAX_DIFF_LINES = 200
 MAX_DIFF_BYTES = 24_000
 SHRINK_RATIO = 0.5
 LINE_COUNT_CHUNK_BYTES = 64 * 1024
+
+
+def check_expected_sha256(relative: str, expected: object, actual: str | None) -> None:
+    """Refuse a mutation whose caller-supplied ``expected_sha256`` no longer matches."""
+    if expected is None:
+        return
+    if not isinstance(expected, str):
+        raise ExecutorToolError(INVALID_ARGUMENTS, "expected_sha256 must be a string when supplied")
+    if expected != actual:
+        raise ExecutorToolError(STAGING_CONFLICT, f"Staging hash conflict: {relative}", details={"failure": "hash_conflict", "path": relative, "expected_sha256": expected, "actual_sha256": actual})
 
 
 def guard_shrink(relative: str, path: Path, content: str | None, *, replacement_old: str | None = None, replacement_new: str | None = None, replacement_occurrences: int | None = None, advisory: bool = False) -> dict[str, object] | None:

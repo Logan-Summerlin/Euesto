@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import ClassVar
 
@@ -135,30 +135,10 @@ class ExecutorConfig:
             **values,
         )
 
-    @staticmethod
-    def _profiles() -> dict[str, dict[str, int]]:
-        base = {
-            "max_read_bytes": 1_000_000,
-            "max_write_bytes": 1_000_000,
-            "max_edit_target_bytes": 2_000_000,
-            "max_edit_result_bytes": 2_000_000,
-            "max_patch_operations": 100,
-            "max_patch_bytes": 2_000_000,
-            "max_bash_output_bytes": 1_000_000,
-            "max_bash_stdin_bytes": 1_000_000,
-            "max_command_bytes": 1_000_000,
-            "max_checkpoint_bytes": 2_500_000_000,
-            "max_staging_bytes": 2_500_000_000,
-            "max_staged_files": 300_000,
-            "max_command_seconds": 300,
-            "max_search_results": 500,
-            "max_find_results": 500,
-            "max_ls_results": 500,
-            "max_grep_scan_bytes": 64_000_000,
-            "max_grep_output_bytes": 1_000_000,
-            "max_search_seconds": 30,
-            "work_capacity_bytes": 8_000_000_000,
-        }
+    @classmethod
+    def _profiles(cls) -> dict[str, dict[str, int]]:
+        # The "coding" profile is the field defaults above; the others override a subset.
+        base = {item.name: item.default for item in fields(cls) if item.name in cls._LIMIT_FIELDS}
         return {
             "small": {
                 **base,

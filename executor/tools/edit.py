@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import codecs
 import os
 import re
 import tempfile
@@ -14,15 +13,13 @@ from ..errors import (
     EDIT_TOO_FEW_MATCHES,
     EDIT_TOO_MANY_MATCHES,
     INVALID_ARGUMENTS,
-    INVALID_UTF8,
     LIMIT_EXCEEDED,
-    PATH_INVALID_TYPE,
-    STAGING_CONFLICT,
     ExecutorToolError,
 )
-from ..mutations import bounded_diff, bounded_edit_diff, guard_shrink
-from ..paths import safe_path
+from ..mutations import bounded_diff, bounded_edit_diff, check_expected_sha256, guard_shrink
+from ..paths import require_regular_file, safe_path
 from ..staging import sha256_file
+from ..utf8 import Utf8Validator
 
 EDIT_CHUNK_BYTES = 64 * 1024
 EDIT_DIFF_MEMORY_BYTES = 1_000_000
@@ -51,7 +48,7 @@ class AppliedEdit:
     shrink_warning: dict | None
 
 
-def edit(root: Path, arguments: dict, *, max_target_bytes: int, max_result_bytes: int, max_checkpoint_files: int = 300_000, max_checkpoint_bytes: int = 2_000_000_000) -> tuple[str, dict]:
+def edit(root: Path, arguments: dict, *, max_target_bytes: int, max_result_bytes: int, max_checkpoint_files: int = 300_000, max_checkpoint_bytes: int) -> tuple[str, dict]:
     if set(arguments) - EDIT_ARGUMENTS: raise ExecutorToolError(INVALID_ARGUMENTS, "Unknown edit arguments")
     prepared = prepare_edit(root, arguments, max_target_bytes=max_target_bytes)
     checkpoint_id = create_checkpoint(root, max_files=max_checkpoint_files, max_total_bytes=max_checkpoint_bytes)
@@ -76,16 +73,12 @@ def prepare_edit(root: Path, arguments: dict, *, max_target_bytes: int) -> Prepa
     if not isinstance(expected_occurrences, int) or isinstance(expected_occurrences, bool) or not 1 <= expected_occurrences <= 1000:
         raise ExecutorToolError(EDIT_MALFORMED_CONTEXT, "expected_occurrences must be an integer from 1 to 1000", details={"failure": "malformed_context", "path": relative})
     path = safe_path(root, relative, must_exist=True)
-    if path.is_symlink() or not path.is_file() or path.stat().st_nlink > 1: raise ExecutorToolError(PATH_INVALID_TYPE, "edit target must be a regular, non-hard-linked file")
+    require_regular_file(path, "edit")
     target_size = path.stat().st_size
     if target_size > max_target_bytes: raise ExecutorToolError(LIMIT_EXCEEDED, "Edit target exceeds the mutation limit")
     original_small = path.read_text(encoding="utf-8") if target_size <= EDIT_DIFF_MEMORY_BYTES else None
     old_hash = sha256_file(path)
-    expected = arguments.get("expected_sha256")
-    if expected is not None:
-        if not isinstance(expected, str): raise ExecutorToolError(INVALID_ARGUMENTS, "expected_sha256 must be a string when supplied")
-        if old_hash != expected:
-            raise ExecutorToolError(STAGING_CONFLICT, f"Staging hash conflict: {relative}", retryable=True, details={"failure": "hash_conflict", "path": relative, "expected_sha256": expected, "actual_sha256": old_hash})
+    check_expected_sha256(relative, arguments.get("expected_sha256"), old_hash)
     return PreparedEdit(relative, path, old, new, expected_occurrences, old_hash, original_small)
 
 
@@ -208,16 +201,14 @@ def _collapse(value: str) -> str:
 
 def _stream_replace(path: Path, old: bytes, new: bytes, max_result_bytes: int) -> tuple[Path, int, int]:
     fd, raw_temp = tempfile.mkstemp(prefix=f".{path.name}.edit-", dir=path.parent); temp_path = Path(raw_temp)
-    decoder = codecs.getincrementaldecoder("utf-8")(); count = 0; result_size = 0; pending = b""; keep = max(1, len(old))
+    validator = Utf8Validator("Only UTF-8 text edits are supported"); count = 0; result_size = 0; pending = b""; keep = max(1, len(old))
     try:
         with os.fdopen(fd, "wb") as output:
             with path.open("rb") as source:
                 while True:
                     chunk = source.read(EDIT_CHUNK_BYTES)
                     if not chunk: break
-                    if b"\x00" in chunk: raise ExecutorToolError(INVALID_UTF8, "Only UTF-8 text edits are supported")
-                    try: decoder.decode(chunk)
-                    except UnicodeDecodeError as exc: raise ExecutorToolError(INVALID_UTF8, "Only UTF-8 text edits are supported") from exc
+                    validator.feed(chunk)
                     pending += chunk
                     while True:
                         index = pending.find(old)
@@ -229,8 +220,7 @@ def _stream_replace(path: Path, old: bytes, new: bytes, max_result_bytes: int) -
                         prefix = pending[:-keep]; result_size += len(prefix)
                         if result_size > max_result_bytes: raise ExecutorToolError(LIMIT_EXCEEDED, "Edited content exceeds the mutation limit")
                         output.write(prefix); pending = pending[-keep:]
-            try: decoder.decode(b"", final=True)
-            except UnicodeDecodeError as exc: raise ExecutorToolError(INVALID_UTF8, "Only UTF-8 text edits are supported") from exc
+            validator.finish()
             replaced = pending.replace(old, new); count += pending.count(old); result_size += len(replaced)
             if result_size > max_result_bytes: raise ExecutorToolError(LIMIT_EXCEEDED, "Edited content exceeds the mutation limit")
             output.write(replaced)

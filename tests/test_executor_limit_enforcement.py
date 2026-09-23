@@ -20,6 +20,7 @@ def test_bash_command_limit_is_enforced_before_execution(tmp_path) -> None:
                 max_seconds=10,
                 max_output=1_000,
                 max_command_bytes=100,
+                max_checkpoint_bytes=100_000_000,
             )
         )
 
@@ -37,5 +38,6 @@ def test_bash_stdin_limit_is_enforced_before_execution(tmp_path) -> None:
                 max_seconds=10,
                 max_output=1_000,
                 max_stdin_bytes=100,
+                max_checkpoint_bytes=100_000_000,
             )
         )

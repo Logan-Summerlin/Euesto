@@ -113,12 +113,13 @@ def test_bash_rejects_non_boolean_rollback_on_failure(tmp_path: Path) -> None:
 
 def test_bash_preserves_restricted_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SECRET", "host-value")
-    # The shell starts from the fixed base environment only (a login profile may extend PATH).
+    # The shell starts from the fixed base environment only; a login profile may prepend or
+    # append PATH entries (Ubuntu runners add /snap/bin), so only require the base entries.
     assert bash_tool.BashRunner._environment({"DEBUG": "1"}) == {**BASE_ENVIRONMENT, "DEBUG": "1"}
     output, data = asyncio.run(run_bash(tmp_path, {"command": "printf '%s\\n' \"$PATH\"; printf '%s\\n' \"${SECRET:-unset}\"; printf '%s\\n' \"$HOME\""}))
     assert data["exit_code"] == 0
     path, secret, home = output.splitlines()
-    assert path.endswith(BASE_ENVIRONMENT["PATH"])
+    assert BASE_ENVIRONMENT["PATH"] in path
     assert secret == "unset"
     assert home == BASE_ENVIRONMENT["HOME"]
 

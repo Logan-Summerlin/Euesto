@@ -111,3 +111,15 @@ def test_runtime_limit_status_contains_all_limit_sources(tmp_path: Path) -> None
         assert values["effective"] == getattr(config, name)
         assert values["source"] == "constructor"
     assert status["required_temp_headroom_bytes"]["configured"] == 1_000_000_000
+
+
+def test_coding_profile_is_the_constructor_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    token_path = tmp_path / "token"
+    token_path.write_text("x" * 32, encoding="utf-8")
+    monkeypatch.setenv("LOCAL_CHAT_EXECUTOR_TOKEN_FILE", str(token_path))
+    monkeypatch.setenv("LOCAL_CHAT_WORKSPACE_ID", "env-workspace")
+    monkeypatch.setenv("LOCAL_CHAT_EXECUTOR_PROFILE", "coding")
+    profiled = ExecutorConfig.from_environment()
+    defaults = _config(tmp_path)
+    assert {name: getattr(profiled, name) for name in ExecutorConfig.HARD_CEILINGS} == {name: getattr(defaults, name) for name in ExecutorConfig.HARD_CEILINGS}
+    assert set(profiled.sources.values()) == {"profile:coding"}

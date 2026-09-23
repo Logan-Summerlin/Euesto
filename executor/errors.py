@@ -53,7 +53,6 @@ class ExecutorToolError(ValueError):
 
     code: str
     message: str
-    retryable: bool = False
     details: dict[str, Any] | None = None
 
     def __str__(self) -> str:
@@ -80,7 +79,7 @@ def classify_error(exc: BaseException) -> ExecutorToolError:
     if isinstance(exc, PermissionError):
         return ExecutorToolError(PERMISSION_DENIED, "The executor denied that operation.")
     if isinstance(exc, TimeoutError):
-        return ExecutorToolError(TOOL_TIMEOUT, "The operation exceeded its approved timeout.", retryable=True)
+        return ExecutorToolError(TOOL_TIMEOUT, "The operation exceeded its approved timeout.")
     if isinstance(exc, UnicodeError):
         return ExecutorToolError(INVALID_UTF8, "The file is not valid UTF-8 text.")
     if isinstance(exc, FileNotFoundError):
@@ -90,7 +89,7 @@ def classify_error(exc: BaseException) -> ExecutorToolError:
     if isinstance(exc, OSError):
         if exc.errno in _CAPACITY_ERRNOS:
             return ExecutorToolError(LIMIT_EXCEEDED, "The staging volume has no capacity left for this operation.")
-        return ExecutorToolError(IO_INTERNAL, "The executor could not complete the operation.", retryable=True)
+        return ExecutorToolError(IO_INTERNAL, "The executor could not complete the operation.")
     if isinstance(exc, ValueError | TypeError):
         return ExecutorToolError(INVALID_ARGUMENTS, safe_message(exc))
     return ExecutorToolError(TOOL_INTERNAL, "The executor failed unexpectedly.")

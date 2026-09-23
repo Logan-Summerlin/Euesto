@@ -8,7 +8,7 @@ import pytest
 from executor.errors import ExecutorToolError
 from executor.tools.edit import edit
 
-LIMITS = {"max_target_bytes": 2_000_000, "max_result_bytes": 2_000_000}
+LIMITS = {"max_target_bytes": 2_000_000, "max_result_bytes": 2_000_000, "max_checkpoint_bytes": 100_000_000}
 
 
 def _file(tmp_path: Path, content: bytes, name: str = "f.txt") -> Path:

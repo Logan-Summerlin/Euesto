@@ -8,6 +8,7 @@ from collections import deque
 from pathlib import Path
 
 from ..checkpoints import create_checkpoint, restore_checkpoint
+from ..config import ExecutorConfig
 from ..egress import proxy_environment
 from ..errors import (
     COMMAND_INVALID_ARGUMENTS,
@@ -19,9 +20,9 @@ from ..paths import safe_path
 
 MAX_RETAINED_OUTPUT_BYTES = 512_000
 MAX_STREAM_PREVIEW_BYTES = MAX_RETAINED_OUTPUT_BYTES // 2
-MAX_STDIN_BYTES = 8_000_000
-MAX_COMMAND_BYTES = 1_000_000
-MAX_COMMAND_SECONDS = 900
+MAX_STDIN_BYTES = ExecutorConfig.HARD_CEILINGS["max_bash_stdin_bytes"]
+MAX_COMMAND_BYTES = ExecutorConfig.HARD_CEILINGS["max_command_bytes"]
+MAX_COMMAND_SECONDS = ExecutorConfig.HARD_CEILINGS["max_command_seconds"]
 MAX_ENV_VARS = 64
 MAX_ENV_VALUE_BYTES = 16_384
 BASE_ENVIRONMENT = {
@@ -86,7 +87,7 @@ class BashRunner:
         self._processes: dict[str, asyncio.subprocess.Process] = {}
         self._cancelled: set[str] = set()
 
-    async def run(self, request_id: str, root: Path, arguments: dict, *, max_seconds: int, max_output: int, max_command_bytes: int = MAX_COMMAND_BYTES, max_stdin_bytes: int = MAX_STDIN_BYTES, max_checkpoint_files: int = 300_000, max_checkpoint_bytes: int = 2_000_000_000) -> tuple[str, dict]:
+    async def run(self, request_id: str, root: Path, arguments: dict, *, max_seconds: int, max_output: int, max_command_bytes: int = MAX_COMMAND_BYTES, max_stdin_bytes: int = MAX_STDIN_BYTES, max_checkpoint_files: int = 300_000, max_checkpoint_bytes: int) -> tuple[str, dict]:
         command = arguments.get("command")
         if not isinstance(command, str) or not command.strip() or "\x00" in command:
             raise ExecutorToolError(COMMAND_INVALID_ARGUMENTS, "bash requires a non-empty command")
@@ -253,7 +254,7 @@ class BashRunner:
 _runner = BashRunner()
 
 
-async def bash(request_id: str, root: Path, arguments: dict, *, max_seconds: int, max_output: int, max_command_bytes: int = MAX_COMMAND_BYTES, max_stdin_bytes: int = MAX_STDIN_BYTES, max_checkpoint_files: int = 300_000, max_checkpoint_bytes: int = 2_000_000_000) -> tuple[str, dict]:
+async def bash(request_id: str, root: Path, arguments: dict, *, max_seconds: int, max_output: int, max_command_bytes: int = MAX_COMMAND_BYTES, max_stdin_bytes: int = MAX_STDIN_BYTES, max_checkpoint_files: int = 300_000, max_checkpoint_bytes: int) -> tuple[str, dict]:
     return await _runner.run(request_id, root, arguments, max_seconds=max_seconds, max_output=max_output, max_command_bytes=max_command_bytes, max_stdin_bytes=max_stdin_bytes, max_checkpoint_files=max_checkpoint_files, max_checkpoint_bytes=max_checkpoint_bytes)
 
 

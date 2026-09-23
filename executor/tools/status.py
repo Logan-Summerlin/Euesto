@@ -141,7 +141,7 @@ def _entry(change: WorkspaceChange) -> dict[str, object]:
 def _status_line(change: WorkspaceChange) -> str:
     code = {"create": "A", "update": "M", "delete": "D"}[change.operation]
     line = f"{code}  {change.path}"
-    if change.mode_changed and change.operation == "update":
+    if change.permission_changed:
         line += f" (mode {_octal(change.base_mode)} -> {_octal(change.staged_mode)})"
     elif change.operation == "create" and change.staged_mode is not None:
         line += f" (mode {_octal(change.staged_mode)})"

@@ -6,7 +6,7 @@ import stat
 import unicodedata
 from pathlib import Path, PurePosixPath
 
-from .errors import PATH_UNSAFE, ExecutorToolError
+from .errors import PATH_INVALID_TYPE, PATH_UNSAFE, ExecutorToolError
 
 RESERVED = frozenset({"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))})
 SECRET_PARTS = frozenset({".env", ".aws", ".azure", ".ssh", ".gnupg", ".npmrc", ".pypirc", "credentials", "id_rsa", "id_ed25519"})
@@ -113,6 +113,13 @@ def _reject_links(root: Path, relative: str) -> None:
             attributes = getattr(current.lstat(), "st_file_attributes", 0)
             if attributes & 0x400:
                 raise UnsafePath("Windows reparse points are forbidden")
+
+
+def require_regular_file(path: Path, tool: str) -> None:
+    """File tools act only on regular files with a single link: a hard link would let a change
+    through one path alter content reachable through another."""
+    if path.is_symlink() or not path.is_file() or path.stat().st_nlink > 1:
+        raise ExecutorToolError(PATH_INVALID_TYPE, f"{tool} target must be a regular, non-hard-linked file")
 
 
 def assert_unique_paths(paths: list[str]) -> None:

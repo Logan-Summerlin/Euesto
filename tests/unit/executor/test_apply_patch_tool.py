@@ -22,7 +22,7 @@ from shared.permissions import (
 )
 from shared.tools import MUTATION_TOOLS, ToolRequest
 
-LIMITS = {"max_operations": 20, "max_patch_bytes": 100_000, "max_write_bytes": 50_000, "max_edit_target_bytes": 50_000, "max_edit_result_bytes": 50_000}
+LIMITS = {"max_operations": 20, "max_patch_bytes": 100_000, "max_write_bytes": 50_000, "max_edit_target_bytes": 50_000, "max_edit_result_bytes": 50_000, "max_checkpoint_bytes": 100_000_000}
 
 
 def _root(tmp_path: Path, files: dict[str, str]) -> Path:
@@ -166,11 +166,11 @@ def test_executor_dispatches_apply_patch_with_status_and_error_diagnostics(tmp_p
 def test_confirmed_whole_file_write_shrink_warns_but_unconfirmed_still_blocks(tmp_path: Path) -> None:
     root = _root(tmp_path, {"big.py": "".join(f"line {index} = {index}\n" for index in range(100))})
     with pytest.raises(ExecutorToolError) as raised:
-        write(root, {"path": "big.py", "content": "stub = 1\n"}, max_bytes=100_000)
+        write(root, {"path": "big.py", "content": "stub = 1\n"}, max_bytes=100_000, max_checkpoint_bytes=100_000_000)
     assert raised.value.code == "staging.shrink_warning"
     assert (root / "big.py").read_text(encoding="utf-8").startswith("line 0")
     digest = hashlib.sha256((root / "big.py").read_bytes()).hexdigest()
-    output, data = write(root, {"path": "big.py", "content": "stub = 1\n", "expected_sha256": digest}, max_bytes=100_000)
+    output, data = write(root, {"path": "big.py", "content": "stub = 1\n", "expected_sha256": digest}, max_bytes=100_000, max_checkpoint_bytes=100_000_000)
     assert data["shrink_warning"] is True and data["shrink_details"]["old_lines"] == 100
     assert "shrink" in output
     assert (root / "big.py").read_text(encoding="utf-8") == "stub = 1\n"

@@ -1,21 +1,14 @@
 from __future__ import annotations
 
-import codecs
 from pathlib import Path
 
-from ..errors import (
-    INVALID_ARGUMENTS,
-    INVALID_UTF8,
-    PATH_INVALID_TYPE,
-    PATH_MISSING,
-    ExecutorToolError,
-)
-from ..paths import is_tool_excluded, normalize_relative, safe_path
+from ..errors import INVALID_ARGUMENTS, INVALID_UTF8, PATH_MISSING, ExecutorToolError
+from ..paths import is_tool_excluded, normalize_relative, require_regular_file, safe_path
 from ..staging import sha256_file
+from ..utf8 import CHUNK_BYTES, validate_utf8_file
 
 DEFAULT_READ_BYTES = 64_000
 MAX_READ_BYTES = 256_000
-READ_CHUNK_BYTES = 64 * 1024
 
 
 def read(root: Path, arguments: dict, *, max_bytes: int) -> tuple[str, dict]:
@@ -38,13 +31,9 @@ def read(root: Path, arguments: dict, *, max_bytes: int) -> tuple[str, dict]:
         path = safe_path(root, relative, must_exist=True)
     except FileNotFoundError as exc:
         raise ExecutorToolError(PATH_MISSING, f"file not found: {relative}") from exc
-    if path.is_symlink() or not path.is_file():
-        raise ExecutorToolError(PATH_INVALID_TYPE, "read requires a regular file")
-    stat = path.stat()
-    if stat.st_nlink > 1:
-        raise ExecutorToolError(PATH_INVALID_TYPE, "read rejects hard-linked files")
-    size_bytes = stat.st_size
-    _validate_text_file(path)
+    require_regular_file(path, "read")
+    size_bytes = path.stat().st_size
+    validate_utf8_file(path, "Binary files are not model-readable; read requires valid UTF-8 text")
 
     has_range = "start_line" in arguments or "end_line" in arguments
     has_offset = "offset" in arguments
@@ -114,25 +103,6 @@ def read(root: Path, arguments: dict, *, max_bytes: int) -> tuple[str, dict]:
     return text, data
 
 
-def _validate_text_file(path: Path) -> None:
-    decoder = codecs.getincrementaldecoder("utf-8")()
-    with path.open("rb") as handle:
-        while True:
-            chunk = handle.read(READ_CHUNK_BYTES)
-            if not chunk:
-                break
-            if b"\x00" in chunk:
-                raise ExecutorToolError(INVALID_UTF8, "Binary files are not model-readable")
-            try:
-                decoder.decode(chunk)
-            except UnicodeDecodeError as exc:
-                raise ExecutorToolError(INVALID_UTF8, "File is not valid UTF-8 text") from exc
-    try:
-        decoder.decode(b"", final=True)
-    except UnicodeDecodeError as exc:
-        raise ExecutorToolError(INVALID_UTF8, "File is not valid UTF-8 text") from exc
-
-
 def _line_range_offsets(path: Path, start_line: int, end_line: int | None) -> tuple[int, int, int]:
     size = path.stat().st_size
     if size == 0:
@@ -143,7 +113,7 @@ def _line_range_offsets(path: Path, start_line: int, end_line: int | None) -> tu
     position = 0
     last_byte = b""
     with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(READ_CHUNK_BYTES), b""):
+        for chunk in iter(lambda: handle.read(CHUNK_BYTES), b""):
             last_byte = chunk[-1:]
             for index, byte in enumerate(chunk):
                 if byte != 0x0A:

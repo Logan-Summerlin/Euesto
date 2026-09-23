@@ -9,13 +9,12 @@ from ..errors import (
     APPLY_PATCH_MALFORMED,
     INVALID_ARGUMENTS,
     LIMIT_EXCEEDED,
-    PATH_INVALID_TYPE,
     PATH_MISSING,
-    STAGING_CONFLICT,
     ExecutorToolError,
     classify_error,
 )
-from ..paths import normalize_relative, safe_path
+from ..mutations import check_expected_sha256
+from ..paths import normalize_relative, require_regular_file, safe_path
 from ..staging import sha256_file
 from .edit import EDIT_ARGUMENTS, apply_edit, edit_result, prepare_edit
 from .write import WRITE_ARGUMENTS, commit_write, prepare_write, write_result
@@ -46,7 +45,7 @@ def apply_patch(
     max_edit_target_bytes: int,
     max_edit_result_bytes: int,
     max_checkpoint_files: int = 300_000,
-    max_checkpoint_bytes: int = 2_000_000_000,
+    max_checkpoint_bytes: int,
     max_staging_bytes: int | None = None,
 ) -> tuple[str, dict]:
     """Apply ordered operations atomically: every operation lands, or none do.
@@ -82,7 +81,7 @@ def apply_patch(
         details = {"failure": "operation_failed", "failed_operation": index, "operation": operations[index].get("operation"), "path": operations[index].get("path"), "applied_before_failure": len(results), "rolled_back": True, "cause_code": cause.code}
         if cause.details:
             details["cause"] = cause.details
-        raise ExecutorToolError(cause.code, f"apply_patch operation {index} ({operations[index].get('operation')} {operations[index].get('path')}) failed: {cause.message} No operation was applied.", cause.retryable, details) from exc
+        raise ExecutorToolError(cause.code, f"apply_patch operation {index} ({operations[index].get('operation')} {operations[index].get('path')}) failed: {cause.message} No operation was applied.", details=details) from exc
 
     _bound_diffs(results)
     paths = list(dict.fromkeys(item["path"] for item in results))
@@ -152,15 +151,9 @@ def _delete(root: Path, arguments: dict) -> dict:
         path = safe_path(root, relative, must_exist=True)
     except FileNotFoundError as exc:
         raise ExecutorToolError(PATH_MISSING, f"delete target not found: {relative}") from exc
-    if path.is_symlink() or not path.is_file() or path.stat().st_nlink > 1:
-        raise ExecutorToolError(PATH_INVALID_TYPE, "delete target must be a regular, non-hard-linked file")
+    require_regular_file(path, "delete")
     old_hash = sha256_file(path)
-    expected = arguments.get("expected_sha256")
-    if expected is not None:
-        if not isinstance(expected, str):
-            raise ExecutorToolError(INVALID_ARGUMENTS, "expected_sha256 must be a string when supplied")
-        if expected != old_hash:
-            raise ExecutorToolError(STAGING_CONFLICT, f"Staging hash conflict: {relative}", retryable=True, details={"failure": "hash_conflict", "path": relative, "expected_sha256": expected, "actual_sha256": old_hash})
+    check_expected_sha256(relative, arguments.get("expected_sha256"), old_hash)
     size = path.stat().st_size
     path.unlink()
     return {"operation": "delete", "path": relative, "old_sha256": old_hash, "new_sha256": None, "size_bytes": 0, "deleted_bytes": size, "diff": {"path": relative, "text": f"{relative}: deleted ({size} bytes).", "truncated": False, "lines": 0, "changed_lines": 0, "added_lines": 0, "removed_lines": 0}}
