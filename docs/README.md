@@ -31,11 +31,10 @@ Every living plan and the roadmap live in this directory, one authoritative copy
 |---|---|
 | [ROADMAP.md](ROADMAP.md) | Completed, active, planned, deferred, and non-goal status for the product, including the open items carried from archived plans. |
 | [HARNESS_VALIDATION_PLAN.md](HARNESS_VALIDATION_PLAN.md) | Making every documented validation check runnable locally and reproducible in CI; per-phase status and the open items. |
-| [SIMPLIFICATION_PLAN.md](SIMPLIFICATION_PLAN.md) | KISS/YAGNI simplification pass: completed steps, remaining work, and findings deliberately left unchanged. |
 
 Documentation file names are predictable: `UPPER_SNAKE_CASE.md` in `docs/`, lowercase-hyphenated names in `archived-doc/`, and no spaces or embedded dates anywhere (dates belong in commit history or `CHANGELOG.md`). The repository root keeps only `README.md`, `AGENTS.md`, and `CHANGELOG.md`. `tests/structural/test_documentation_layout.py` enforces this.
 
-The completed harness fix, harness quality-of-life, and organization plans are archived in `archived-doc/` (indexed in its `README.md`).
+The completed harness fix, harness quality-of-life, organization, and code-simplification plans are archived in `archived-doc/` (indexed in its `README.md`).
 
 ## Local-only state
 

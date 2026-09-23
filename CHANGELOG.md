@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased — Code simplification (in progress)
+## Unreleased — Code simplification
 
-A KISS/YAGNI pass that keeps behavior, the QML bridge surface, HTTP/protocol shapes, and tool contracts unchanged except for the fixes below. Remaining work is tracked in `docs/SIMPLIFICATION_PLAN.md`.
+A KISS/YAGNI pass that keeps behavior, the QML bridge surface, HTTP/protocol shapes, and tool contracts unchanged except for the fixes below. The completed plan is archived as `archived-doc/simplification-plan.md`; the findings it left for a product or security decision are listed in `docs/ROADMAP.md`.
 
 **Fixes**
 
@@ -11,6 +11,7 @@ A KISS/YAGNI pass that keeps behavior, the QML bridge surface, HTTP/protocol sha
 - The investigation model's forced final-summary turn is no longer offered tools. An empty `allowed_tools` set now sends `tool_choice: "none"`.
 - The composer hint now names the actual steer shortcut, Ctrl+Enter; Shift+Enter always inserts a newline.
 - Malformed JSON posted to the approval endpoint returns 422 instead of an internal error.
+- The fast CI tier passes on GitHub runners, whose login profile appends `/snap/bin` to `PATH`; the bash environment test now requires the base `PATH` entries rather than an exact suffix.
 
 **Simplification**
 
@@ -35,12 +36,19 @@ A KISS/YAGNI pass that keeps behavior, the QML bridge surface, HTTP/protocol sha
   - One `sha256_file` and one atomic write replace their copies.
   - Pagination cursors and listing lines are shared in `executor/tools/listing.py`.
   - The text search now lives in `grep.py`.
+  - `ExecutorService.execute` dispatches through a table that passes each tool only its effective limits.
+  - `max_checkpoint_bytes` is keyword-required on the mutation tools (the stale 2,000,000,000 default is gone), `bash` reads its caps from `ExecutorConfig.HARD_CEILINGS`, and the `coding` profile is derived from the config field defaults.
+  - One helper each for the `expected_sha256` conflict check, the regular non-hard-linked file check, and streaming UTF-8 validation (`executor/utf8.py`). `read` now reports hard-linked targets with the same message as the mutation tools.
+  - `ExecutorToolError.retryable` is removed; nothing read it.
 - **Removed dead code:**
   - The unused bash event stream (`/v1/tools/{id}/events`) and its client method.
   - `scripts/capture_screenshot.py` and `src/commands.py`.
   - Unused package re-exports and `__version__` strings.
   - Legacy `run_command`/`patch` display branches.
   - Assorted unreferenced helpers, each checked across Python, QML, tests, scripts, workflows, and the build spec.
+  - The superseded `scripts/install.ps1` and `scripts/uninstall-shortcuts.ps1`, the icon/mockup/protocol-check scripts, and `assets/screenshot.png`.
+- **Dependencies:** Pillow and pytest-asyncio are no longer development dependencies.
+- **Documentation:** the completed harness fix, harness QoL, organization, and simplification plans are archived in `archived-doc/`, with their open items in `docs/ROADMAP.md`. `docs/HARNESS_VALIDATION_PLAN.md` records per-phase status. `docs/TESTING.md` holds the only list of check commands, and stale container, testing, and architecture text is corrected.
 - **Lint:** ruff no longer ignores unused imports and variables (`F401`, `F841`), import order (`I001`), or the `UP` modernization rules.
 
 **Tests**
@@ -53,6 +61,10 @@ A KISS/YAGNI pass that keeps behavior, the QML bridge surface, HTTP/protocol sha
   - agent context compaction;
   - bash cancellation bookkeeping.
 - Replaced source-text assertions on `server/service.py`, `server/openrouter/agent.py`, `app.py`, and `src/workers.py` with behavioral tests. The `"pi-compatible"` profile constants that existed only for those checks are removed.
+- Tool vocabulary and mode rules are asserted once, in `tests/test_tooling_contract.py`, instead of in seven files. Duplicated executor-config, bash, approval, and investigation cases are merged into their domain files.
+- `tests/ui/test_privacy_and_transcript.py` no longer reads source text. Its checks are behavioral desktop-service tests, the existing QML rendering tests, or named structural checks in `tests/structural/test_qml_structure.py`.
+
+**Reported, not changed:** staged rewrites (`write`, `edit`, `apply_patch`) produce mode-`0600` files, so every rewrite reports a permission change and publication applies that mode on POSIX hosts. See `docs/ROADMAP.md`.
 
 ## Unreleased — Harness P2-5/P2-6 and `apply_patch`
 

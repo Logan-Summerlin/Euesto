@@ -44,9 +44,20 @@ From [the harness fix plan](../archived-doc/harness-fix-plan.md):
   - structured reduction of large tool output for the highest-value formats (test runners, compilers, linters) before head+tail truncation;
   - a small agent-efficacy benchmark suite tracked over time (success rate, tool calls, rollback frequency).
 
+From [the code-simplification plan](../archived-doc/simplification-plan.md), findings that need a product or security decision:
+
+- **Saved bash rules are too broad:** `JournalStore.rule_for_request` keys on `executable`/`arguments` fields no tool sends, so one saved bash rule allows every bash command in that workspace and mode; the per-run rule tokenizes `command` correctly. Unifying them tightens existing saved rules.
+- **`rule_used` is never invoked,** so `PermissionRule.last_used_at` is never set.
+- **The auto-policy clean-staging preflight is unreachable over HTTP,** because `AgentRunRequest.from_dict` always fills `investigation_model_id`.
+- **Undeclared tool arguments:** `find`/`ls` accept `cursor` and `read` accepts `offset`, but the model-facing schemas do not declare them.
+- **`read` clamps to 256,000 bytes** regardless of a larger configured `max_read_bytes`.
+- **Starlette/uvicorn versions drift** between `requirements-dev.lock` (0.45.3/0.34.0) and the gateway image (0.52.1).
+- **Staged rewrites drop file modes:** `write`, `edit`, and `apply_patch` replace files with mode `0600`, so status reports a permission change on every rewrite and publication applies that mode on POSIX hosts.
+- **Three usage formatters** produce different UI strings.
+
 From [the organization plan](../archived-doc/organization-plan.md):
 
-- **Product naming:** choose one canonical product name for user-facing text and record the legacy `LocalOpenRouterChat` runtime identifiers (keyring service, export marker, window title, installer and executable names) once. Renaming them needs a migration decision because the keyring service name protects stored secrets.
+- **Product naming:** choose one canonical product name for user-facing text and record the legacy `LocalOpenRouterChat`/"Local OpenRouter Chat" runtime identifiers (keyring service, export marker, window title, installer and executable names) once. Renaming them needs a migration decision because the keyring service name protects stored secrets.
 - **Flat test relocation:** move the remaining flat `tests/*.py` files into `tests/unit/<domain>/` (or `integration/`/`security/` once those tiers exist) as they are touched, without dropping assertions.
 
 ## Deferred
