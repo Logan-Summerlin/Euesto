@@ -38,6 +38,7 @@ def test_status_reports_an_empty_staging_area(tmp_path: Path) -> None:
     assert "No staged changes" in result.output
 
 
+@pytest.mark.posix
 def test_status_reports_every_kind_of_change_with_review_metadata(tmp_path: Path) -> None:
     service = _service(tmp_path, {"keep.txt": "keep\n", "edit.txt": "before\n", "gone.txt": "bye\n", "run.sh": "echo hi\n"})
     work = service.config.work_root

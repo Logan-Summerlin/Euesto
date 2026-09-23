@@ -78,6 +78,7 @@ def test_single_file_mutation_hashing_does_not_scale_with_repository_size(tmp_pa
     assert small_data["workspace_status"] == {**large_data["workspace_status"]}
 
 
+@pytest.mark.posix
 def test_cache_detects_same_size_rewrites_and_racy_changes(tmp_path: Path) -> None:
     root = tmp_path / "work"
     root.mkdir()
@@ -132,6 +133,7 @@ def test_checkpoint_restore_is_unchanged_with_a_warm_cache(tmp_path: Path) -> No
     assert visible_files(work) == before
 
 
+@pytest.mark.posix
 @pytest.mark.slow
 @pytest.mark.timeout(600)
 def test_large_workspace_mutation_is_dominated_by_the_write_not_the_tree_hash(tmp_path: Path, monkeypatch) -> None:
