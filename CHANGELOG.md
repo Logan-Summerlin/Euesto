@@ -1,5 +1,59 @@
 # Changelog
 
+## Unreleased — Code simplification (in progress)
+
+A KISS/YAGNI pass that keeps behavior, the QML bridge surface, HTTP/protocol shapes, and tool contracts unchanged except for the fixes below. Remaining work is tracked in `docs/SIMPLIFICATION_PLAN.md`.
+
+**Fixes**
+
+- Holding a model in the model picker to favourite it no longer raises `AttributeError`; `SettingsService` called `Storage` methods that did not exist.
+- `scripts/validate.py` runs again when invoked as a script. Its `__main__` guard had been lost, so every CI `validate.py <tier>` step exited 0 without running anything. **CI now really runs these tiers.**
+- The investigation model's forced final-summary turn is no longer offered tools. An empty `allowed_tools` set now sends `tool_choice: "none"`.
+- The composer hint now names the actual steer shortcut, Ctrl+Enter; Shift+Enter always inserts a newline.
+- Malformed JSON posted to the approval endpoint returns 422 instead of an internal error.
+
+**Simplification**
+
+- **Desktop:**
+  - `app.py` only wires the application. Its `DesktopBridge` subclass (investigation-model defaults, model filtering, validated saving, deferred permission reloads) is folded into `SettingsService`/`DesktopBridge`, and `src/investigation_models.py` is merged into `src/desktop/preferences.py`.
+  - Removed the unused worker slots from the bridge (`onRunStarted`, `onAgentEvent`, `onStream*`, `onWorkerFinished`).
+  - Replaced the module-global publication client with an explicit one.
+  - Merged the two identical staging workers.
+  - Status updates go through `set_status` only.
+  - Consolidated runtime-state updates and the message-metadata fields.
+  - Deduplicated QML dialog and model-option code.
+- **Gateway:**
+  - One tool-call parser in the agent runtime, and the investigation loop is split into small helpers.
+  - One workspace guard and shared run bookkeeping in `GatewayService`.
+  - One Starlette handler for `GatewayServiceError`.
+  - One request helper in `ExecutorClient`.
+  - The OpenRouter title header and provider routing are shared.
+  - The agent context compactor returns only the messages.
+- **Executor:**
+  - Removed the unused `seed=False` path and the `.local-chat-snapshot.json` file it read.
+  - Removed the test-only checkpoint inspection and the unused checkpoint options; `CheckpointError` is folded into `ExecutorToolError`.
+  - One `sha256_file` and one atomic write replace their copies.
+  - Pagination cursors and listing lines are shared in `executor/tools/listing.py`.
+  - The text search now lives in `grep.py`.
+- **Removed dead code:**
+  - The unused bash event stream (`/v1/tools/{id}/events`) and its client method.
+  - `scripts/capture_screenshot.py` and `src/commands.py`.
+  - Unused package re-exports and `__version__` strings.
+  - Legacy `run_command`/`patch` display branches.
+  - Assorted unreferenced helpers, each checked across Python, QML, tests, scripts, workflows, and the build spec.
+- **Lint:** ruff no longer ignores unused imports and variables (`F401`, `F841`), import order (`I001`), or the `UP` modernization rules.
+
+**Tests**
+
+- New coverage:
+  - the fixes above;
+  - the folded bridge behavior (investigation models are listed, filterable, and validated);
+  - agent worker failure handling;
+  - a Unix-socket round trip for `ExecutorClient`;
+  - agent context compaction;
+  - bash cancellation bookkeeping.
+- Replaced source-text assertions on `server/service.py`, `server/openrouter/agent.py`, `app.py`, and `src/workers.py` with behavioral tests. The `"pi-compatible"` profile constants that existed only for those checks are removed.
+
 ## Unreleased — Harness P2-5/P2-6 and `apply_patch`
 
 - Renamed the multi-file mutation tool `patch` to `apply_patch` everywhere (registry, schema, executor dispatch and module, permissions, approval display, docs, tests); its malformed-request error code is now `apply_patch.malformed`. `patch` is a removed name with no alias. The `max_patch_operations`/`max_patch_bytes` limit names are unchanged.
