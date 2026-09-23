@@ -425,6 +425,20 @@ ApplicationWindow {
         function optionalText(value) {
             return value === null || value === undefined ? "" : String(value)
         }
+        function activeSkillNames() {
+            return backend.skills.filter(skill => skill.active).map(skill => skill.name).join(", ")
+        }
+        function saveModelOptions() {
+            backend.saveModelOptions({
+                max_tokens: maxTokens.text,
+                temperature: temperature.text,
+                top_p: topP.text,
+                reasoning_effort: backend.reasoningEffort,
+                stop: stopSequences.text.split("\n").filter(value => value.length > 0),
+                data_collection: privacyDeny.checked ? "deny" : "allow",
+                zero_data_retention: zdr.checked
+            })
+        }
         function openAndLoad() {
             gatewayUrl.text = backend.gatewaySettings.url
             gatewayToken.clear()
@@ -442,10 +456,7 @@ ApplicationWindow {
             workspaceInstructions.text = config.instructions || ""
             customTools.text = JSON.stringify(config.custom_tools || [], null, 2)
             backend.refreshSkills()
-            let names = []
-            for (let i = 0; i < backend.skills.length; ++i)
-                if (backend.skills[i].active) names.push(backend.skills[i].name)
-            activeSkills.text = names.join(", ")
+            activeSkills.text = activeSkillNames()
             backend.loadPermissionRules()
             open()
         }
@@ -499,15 +510,7 @@ ApplicationWindow {
                         }
                         Button {
                             text: "Save privacy controls"
-                            onClicked: backend.saveModelOptions({
-                                max_tokens: maxTokens.text,
-                                temperature: temperature.text,
-                                top_p: topP.text,
-                                reasoning_effort: backend.reasoningEffort,
-                                stop: stopSequences.text.split("\n").filter(value => value.length > 0),
-                                data_collection: privacyDeny.checked ? "deny" : "allow",
-                                zero_data_retention: zdr.checked
-                            })
+                            onClicked: settingsDialog.saveModelOptions()
                         }
                         Item { Layout.fillHeight: true }
                     }
@@ -562,15 +565,7 @@ ApplicationWindow {
                         }
                         Button {
                             text: "Save model controls"
-                            onClicked: backend.saveModelOptions({
-                                max_tokens: maxTokens.text,
-                                temperature: temperature.text,
-                                top_p: topP.text,
-                                reasoning_effort: backend.reasoningEffort,
-                                stop: stopSequences.text.split("\n").filter(value => value.length > 0),
-                                data_collection: privacyDeny.checked ? "deny" : "allow",
-                                zero_data_retention: zdr.checked
-                            })
+                            onClicked: settingsDialog.saveModelOptions()
                         }
                         RowLayout {
                             Button { text: backend.theme === "dark" ? "Use light theme" : "Use dark theme"; onClicked: backend.setTheme(backend.theme === "dark" ? "light" : "dark") }
@@ -653,12 +648,7 @@ ApplicationWindow {
                             id: activeSkills
                             Layout.fillWidth: true
                             placeholderText: "Comma-separated active skill names"
-                            Component.onCompleted: {
-                                let names = []
-                                for (let i = 0; i < backend.skills.length; ++i)
-                                    if (backend.skills[i].active) names.push(backend.skills[i].name)
-                                text = names.join(", ")
-                            }
+                            Component.onCompleted: text = settingsDialog.activeSkillNames()
                         }
                         Button { text: "Save active skills"; onClicked: backend.saveActiveSkills(activeSkills.text) }
                         Repeater {
@@ -806,6 +796,11 @@ ApplicationWindow {
         anchors.centerIn: parent
         width: Math.min(650, window.width - 50)
         standardButtons: Dialog.Ok
+        function show(heading, message) {
+            title = heading
+            noticeText.text = message
+            open()
+        }
         contentItem: ScrollView {
             implicitHeight: Math.min(400, noticeText.contentHeight + 30)
             TextArea {
@@ -834,14 +829,10 @@ ApplicationWindow {
     Connections {
         target: backend
         function onInfoRequested(title, message) {
-            noticeDialog.title = title
-            noticeText.text = message
-            noticeDialog.open()
+            noticeDialog.show(title, message)
         }
         function onErrorRequested(title, message) {
-            noticeDialog.title = title
-            noticeText.text = message
-            noticeDialog.open()
+            noticeDialog.show(title, message)
         }
         function onConfirmRequested(token, title, message) {
             confirmationDialog.token = token
@@ -858,14 +849,10 @@ ApplicationWindow {
             approvalDialog.open()
         }
         function onFileExported(name) {
-            noticeDialog.title = "Export complete"
-            noticeText.text = "Exported " + name
-            noticeDialog.open()
+            noticeDialog.show("Export complete", "Exported " + name)
         }
         function onFileImported(name) {
-            noticeDialog.title = "Import complete"
-            noticeText.text = "Imported " + name
-            noticeDialog.open()
+            noticeDialog.show("Import complete", "Imported " + name)
         }
         function onRuntimeSetupStarted() {
             runtimeDialog.open()

@@ -6,7 +6,6 @@ from typing import Any
 from PySide6.QtCore import QObject, QTimer, Slot
 
 from ..approval_display import approval_display
-from ..commands import expand_prompt_command
 from ..controllers import GenerationController
 from ..extensions import load_selected_skills
 from ..gateway_client import GatewayClient, GatewayConnection, GatewayError
@@ -171,7 +170,7 @@ class GenerationService(QObject):
         name = name.casefold()
         custom = next((item for item in self.storage.list_prompt_commands() if item["name"] == name), None)
         if custom:
-            expanded = expand_prompt_command(custom["template"], arguments)
+            expanded = _expand_prompt_command(custom["template"], arguments)
             self.host.confirm(f"command:{name}:{id(expanded)}", f"Run /{name}?", expanded[:8_000], lambda: self.start_user_turn(expanded))
             return None
         history = self.host.history
@@ -461,3 +460,8 @@ class GenerationService(QObject):
         if self.worker:
             self.worker.stop()
             self.worker.wait(1500)
+
+
+def _expand_prompt_command(template: str, arguments: str) -> str:
+    value = arguments.strip()
+    return template.replace("{{args}}", value).replace("$ARGUMENTS", value).strip()

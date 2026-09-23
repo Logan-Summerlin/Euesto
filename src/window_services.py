@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 
 class TrayService:
-    """Keep tray lifetime and menu wiring out of the window's application logic."""
+    """System-tray icon and menu for showing, hiding, and quitting the window."""
 
     def __init__(
         self,

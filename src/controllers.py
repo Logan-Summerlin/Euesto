@@ -54,7 +54,7 @@ class GenerationState:
 
 
 class ConversationController:
-    """Unit-testable conversation mutations used by the desktop view."""
+    """Conversation mutations (create, rename, fork, branch navigation) over ``Storage``."""
 
     def __init__(self, storage: Storage):
         self.storage = storage
