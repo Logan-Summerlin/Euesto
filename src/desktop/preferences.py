@@ -187,7 +187,7 @@ class SettingsService(QObject):
                 "year": model.release_year,
                 "favorite": model.id in favorites,
                 "recent": model.id in recents,
-                "reasoning": model.supports("reasoning"),
+                "reasoning": "reasoning" in model.supported_parameters,
                 "textCompatible": model.text_compatible,
             }
             for model in self.catalog.models()

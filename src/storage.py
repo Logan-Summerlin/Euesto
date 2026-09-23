@@ -721,10 +721,6 @@ class Storage:
                 (alias, model_id, utc_now()),
             )
 
-    def delete_model_alias(self, alias: str) -> None:
-        with self._connection:
-            self._connection.execute("DELETE FROM model_aliases WHERE alias = ?", (alias,))
-
     def model_aliases(self) -> dict[str, str]:
         return {
             str(row[0]): str(row[1])
@@ -799,20 +795,6 @@ class Storage:
             "reasoning_tokens": int(row[3]),
             "cost": float(row[4]),
         }
-
-    def daily_usage(self, limit: int = 30) -> list[dict[str, object]]:
-        rows = self._connection.execute(
-            """
-            SELECT substr(created_at, 1, 10) AS day,
-                   COALESCE(SUM(total_tokens), 0) AS tokens,
-                   COALESCE(SUM(cost), 0) AS cost
-            FROM messages
-            WHERE input_tokens IS NOT NULL OR output_tokens IS NOT NULL OR cost IS NOT NULL
-            GROUP BY day ORDER BY day DESC LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-        return [dict(row) for row in rows]
 
     @staticmethod
     def _conversation_from_row(row: sqlite3.Row) -> Conversation:

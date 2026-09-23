@@ -47,7 +47,6 @@ class RuntimeService(QObject):
         self.workspace_path = self.storage.get_setting("workspace_path", "") or ""
         self.gateway_text = "Gateway: checking"
         self.gateway_detail = ""
-        self.health_state = HealthState.STARTING
         self.last_status: object | None = None
         self.state = "starting" if self.automatic else "manual"
         self.detail = "Preparing the local runtime…" if self.automatic else "The developer runtime is managed by scripts."
@@ -235,7 +234,6 @@ class RuntimeService(QObject):
     def apply_health(self, result: HealthResult) -> None:
         if self.busy:
             return
-        self.health_state = result.state
         self.last_status = result.status
         if self.state == "failed":
             self.gateway_text = "Runtime: setup failed"

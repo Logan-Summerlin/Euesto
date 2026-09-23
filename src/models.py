@@ -71,16 +71,6 @@ class ModelOption:
     def text_compatible(self) -> bool:
         return "text" in self.input_modalities and "text" in self.output_modalities
 
-    def supports(self, parameter: str) -> bool:
-        aliases = {
-            "max_tokens": {"max_tokens", "max_completion_tokens"},
-            "reasoning": {"reasoning"},
-            "temperature": {"temperature"},
-            "top_p": {"top_p"},
-            "stop": {"stop"},
-        }
-        return bool(aliases.get(parameter, {parameter}) & self.supported_parameters)
-
     @property
     def release_year(self) -> int | None:
         if self.created is None:

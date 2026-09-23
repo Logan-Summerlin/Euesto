@@ -5,7 +5,7 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QTimer, QUrl
 
-from ..context_utils import compact_messages, estimate_tokens
+from ..context_utils import compact_messages, context_source, estimate_tokens
 from ..controllers import ConversationController
 from ..import_export import ImportExportError, export_to_file, import_from_file
 from ..markdown_renderer import render_markdown
@@ -223,16 +223,12 @@ class ConversationService(QObject):
         conversation = self.current()
         if not conversation:
             return
-        raw: list[dict[str, Any]] = []
-        if conversation.system_prompt:
-            raw.append({"role": "system", "content": conversation.system_prompt})
-        raw.extend({"role": item.role, "content": item.content, "_message_id": item.id} for item in self.storage.list_messages(conversation.id))
         limit = max(4_000, int(model_context_length(conversation.model, self.host.settings.catalog.models()) * 0.4))
-        _context, inspection, covered = compact_messages(raw, limit)
+        _context, summary, covered = compact_messages(context_source(conversation.system_prompt, self.storage.list_messages(conversation.id)), limit)
         if not covered:
             self.host.infoRequested.emit("Context", "The active branch is already below the compaction target.")
             return
-        self.storage.save_compaction(conversation.id, conversation.active_leaf_id, covered, inspection.summary, conversation.model)
+        self.storage.save_compaction(conversation.id, conversation.active_leaf_id, covered, summary, conversation.model)
         self.host.set_status(f"Compacted {len(covered)} older message(s)")
 
     def inspect_context(self) -> None:

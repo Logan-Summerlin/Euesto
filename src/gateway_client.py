@@ -56,7 +56,6 @@ class GatewayStreamEvent:
     provider_id: str | None = None
     finish_reason: str | None = None
     done: bool = False
-    cancelled: bool = False
     run_id: str | None = None
 
 
@@ -256,15 +255,6 @@ class GatewayClient:
             response = client.put(f"/v1/permissions/{rule_id}/enabled", headers={**self.headers, "Content-Type": "application/json"}, json={"enabled": enabled})
             self._raise_for_error(response)
 
-    def workspace_config(self, workspace_id: str) -> dict[str, Any]:
-        with self._client(timeout=10) as client:
-            response = client.get(f"/v1/workspaces/{workspace_id}/config", headers=self.headers)
-            self._raise_for_error(response)
-            value = response.json().get("config")
-        if not isinstance(value, dict):
-            raise GatewayError("Gateway returned invalid workspace configuration.")
-        return dict(value)
-
     def save_workspace_config(self, workspace_id: str, config: dict[str, Any]) -> None:
         with self._client(timeout=10) as client:
             response = client.put(f"/v1/workspaces/{workspace_id}/config", headers={**self.headers, "Content-Type": "application/json"}, json=config)
@@ -377,7 +367,7 @@ def _map_event(event: EventEnvelope, *, run_id: str | None = None) -> GatewayStr
     if event.type in {"model.failed", "run.failed"}:
         raise GatewayError(str(payload.get("message") or "Gateway run failed."), code=str(payload.get("code") or "gateway.run_failed"), retryable=bool(payload.get("retryable")))
     if event.type == "run.cancelled":
-        return GatewayStreamEvent(done=True, cancelled=True, run_id=run_id)
+        return GatewayStreamEvent(done=True, run_id=run_id)
     if event.type == "run.completed":
         return GatewayStreamEvent(done=True, run_id=run_id)
     return None

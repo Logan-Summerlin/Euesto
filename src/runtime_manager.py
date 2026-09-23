@@ -16,10 +16,10 @@ from queue import Empty, Queue
 import httpx
 from PySide6.QtCore import QObject, QThread, Signal
 
+from .gateway_client import DEFAULT_GATEWAY_URL
 from .workspace_broker import canonical_workspace, workspace_id
 
 PROJECT_NAME = "local-openrouter-chat"
-GATEWAY_URL = "http://127.0.0.1:8765"
 DEFAULT_GATEWAY_IMAGE = "local-openrouter-chat-gateway:1.1.0"
 DEFAULT_EXECUTOR_IMAGE = "local-openrouter-chat-executor:1.1.0"
 SESSION_TOKEN_BYTES = 32
@@ -86,8 +86,6 @@ class RuntimeTarget:
 class RuntimeResult:
     target: RuntimeTarget
     gateway_token: str
-    gateway_url: str = GATEWAY_URL
-    prebuilt: bool = False
 
 
 def bundle_root() -> Path:
@@ -255,7 +253,7 @@ class RuntimeWorker(QThread):
             self.progress.emit("checking", "Waiting for the selected workspace to be ready…")
             self._wait_for_readiness(gateway_token)
             self.succeeded.emit(
-                RuntimeResult(self.target, gateway_token, prebuilt=self.images.prebuilt)
+                RuntimeResult(self.target, gateway_token)
             )
         except RuntimeErrorMessage as exc:
             if not self.stop_event.is_set():
@@ -430,10 +428,10 @@ class RuntimeWorker(QThread):
             self._check_stopped()
             try:
                 with httpx.Client(timeout=3, follow_redirects=False) as client:
-                    health = client.get(f"{GATEWAY_URL}/health")
+                    health = client.get(f"{DEFAULT_GATEWAY_URL}/health")
                     if health.status_code != 200:
                         raise RuntimeErrorMessage("Gateway health endpoint is not ready.")
-                    status_response = client.get(f"{GATEWAY_URL}/v1/status", headers=headers)
+                    status_response = client.get(f"{DEFAULT_GATEWAY_URL}/v1/status", headers=headers)
                     if status_response.status_code == 401:
                         raise RuntimeErrorMessage("Gateway credentials were rejected.")
                     status_response.raise_for_status()
@@ -491,10 +489,6 @@ class RuntimeManager(QObject):
         self.worker: RuntimeWorker | None = None
         self.target: RuntimeTarget | None = None
 
-    @property
-    def prebuilt(self) -> bool:
-        return bool(self.images and self.images.prebuilt)
-
     def ensure(self, workspace: Path | None) -> None:
         target = RuntimeTarget.from_workspace(workspace)
         self.stop_worker()
@@ -519,10 +513,6 @@ class RuntimeManager(QObject):
         worker.finished.connect(self._finished)
         self.worker = worker
         worker.start()
-
-    def retry(self) -> None:
-        target = self.target
-        self.ensure(target.workspace if target else None)
 
     def stop_worker(self) -> None:
         worker = self.worker
