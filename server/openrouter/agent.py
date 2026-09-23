@@ -20,7 +20,6 @@ def _tool(name: str, description: str, properties: dict[str, Any], required: lis
     return {"type": "function", "function": {"name": name, "description": description, "parameters": params}}
 
 
-AGENT_TOOL_PROFILE = "pi-compatible"
 LOCAL_TOOL_SCHEMAS = [
     _tool("read", "Read a UTF-8 text file.", {"path": {"type": "string"}, "start_line": {"type": "integer", "minimum": 1}, "end_line": {"type": "integer", "minimum": 1}, "max_bytes": {"type": "integer", "minimum": 1, "maximum": 8_000_000}}, ["path"]),
     _tool("write", "Create or replace a UTF-8 text file.", {"path": {"type": "string"}, "content": {"type": "string"}, "expected_sha256": {"type": ["string", "null"]}, "create_parents": {"type": "boolean"}}, ["path", "content"]),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -60,50 +61,71 @@ def test_removed_legacy_tools_are_rejected_by_the_request_contract() -> None:
             ToolRequest.from_dict({"request_id": "request", "run_id": "run", "tool": name, "mode": "agent", "arguments": {}})
 
 
-def test_gateway_service_does_not_construct_removed_tools() -> None:
-    source = Path("server/service.py").read_text(encoding="utf-8")
-    offenders = sorted(
-        name for name in LEGACY_TOOL_NAMES if f'"{name}"' in source
-    )
-    assert not offenders, (
-        "server/service.py still contains removed model-facing tool names: "
-        + ", ".join(offenders)
-    )
+class StatusOnlyExecutor:
+    """Executor fake that answers status and fails if a tool is executed."""
+
+    def __init__(self, environment: dict) -> None:
+        self.environment = environment
+        self.status_calls = 0
+
+    async def status(self) -> dict:
+        self.status_calls += 1
+        return {"workspace_id": "workspace", "environment": self.environment}
+
+    async def execute(self, _request):
+        raise AssertionError("staging checks must use executor status, not a tool call")
 
 
-def test_gateway_and_agent_tool_vocabularies_cannot_diverge() -> None:
-    source = Path("server/openrouter/agent.py").read_text(encoding="utf-8")
-    assert 'AGENT_TOOL_PROFILE = "pi-compatible"' in source
-    assert '"inspect_workspace"' not in source
-    assert '"run_command"' not in source
-    assert '"patch"' not in source
+def _executor_service(tmp_path: Path, environment: dict):
+    from server.config import GatewayConfig
+    from server.service import GatewayService
+
+    socket = tmp_path / "executor.sock"
+    socket.touch()
+    service = GatewayService(GatewayConfig("t" * 43, tmp_path / "gateway.sqlite3", executor_socket=socket, executor_token="e" * 43, workspace_id="workspace"))
+    service.executor = StatusOnlyExecutor(environment)
+    return service
 
 
-def test_gateway_status_advertises_canonical_local_tools() -> None:
-    source = Path("server/service.py").read_text(encoding="utf-8")
-    assert '("read", "write", "edit", "apply_patch", "bash", "grep", "find", "ls", "status")' in source
-    assert '"investigate_repository"' not in source
-    assert '"inspect_workspace"' not in source
-    assert '"inspect_checkpoint"' not in source
-    assert '"patch"' not in source
-    assert '"run_command"' not in source
+def test_gateway_status_advertises_canonical_local_tools(tmp_path: Path) -> None:
+    service = _executor_service(tmp_path, {})
+    try:
+        local = [name for name in service.status().supported_tools if not name.startswith("openrouter:")]
+    finally:
+        asyncio.run(service.close())
+    assert tuple(local) == CANONICAL_TOOLS
+    assert not LEGACY_TOOL_NAMES.intersection(local)
 
 
-def test_staging_inspection_uses_executor_status_not_a_removed_tool() -> None:
-    source = Path("server/service.py").read_text(encoding="utf-8")
-    start = source.index("    async def inspect_staging")
-    end = source.index("    async def get_models", start)
-    method = source[start:end]
-    assert "await self.executor.status()" in method
-    assert "ToolRequest(" not in method
-    assert "inspect_workspace" not in method
+def test_staging_inspection_uses_executor_status_not_a_removed_tool(tmp_path: Path) -> None:
+    service = _executor_service(tmp_path, {"unpublished_changes": True, "agent_snapshot": {"file_count": 3}})
+
+    async def scenario() -> dict:
+        try:
+            return await service.inspect_staging("workspace")
+        finally:
+            await service.close()
+
+    result = asyncio.run(scenario())
+    assert result["output"] == "Staging is dirty."
+    assert result["data"]["file_count"] == 3
+    assert service.executor.status_calls == 1
 
 
-def test_auto_preflight_uses_executor_status_not_a_removed_tool() -> None:
-    source = Path("server/service.py").read_text(encoding="utf-8")
-    start = source.index("    async def start_agent")
-    end = source.index("    async def resume_agent", start)
-    method = source[start:end]
-    assert "await self.executor.status()" in method
-    assert "inspect_workspace" not in method
-    assert "auto-preflight" not in method
+def test_auto_preflight_uses_executor_status_not_a_removed_tool(tmp_path: Path) -> None:
+    from server.service import GatewayServiceError
+    from shared.requests import AgentRunRequest
+
+    service = _executor_service(tmp_path, {"unpublished_changes": True})
+    service.configure_client_key("k" * 16)
+    request = AgentRunRequest(model="m", messages=({"role": "user", "content": "go"},), mode="agent", workspace_id="workspace", approval_policy="auto", investigation_model_id=None)
+
+    async def scenario() -> None:
+        try:
+            await service.start_agent(request)
+        finally:
+            await service.close()
+
+    with pytest.raises(GatewayServiceError, match="clean staging"):
+        asyncio.run(scenario())
+    assert service.executor.status_calls == 1

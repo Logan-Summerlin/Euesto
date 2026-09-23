@@ -16,7 +16,7 @@ def openrouter_tools(enabled: Mapping[str, bool]) -> list[dict[str, Any]]:
         tools.append({"type": "openrouter:datetime"})
     return tools
 
-TOOL_PROFILE = "pi-compatible"
+
 TOOL_NAMES = frozenset({"read", "write", "edit", "apply_patch", "bash", "grep", "find", "ls", "status", "investigate_repository"})
 PLAN_TOOLS = frozenset({"read", "grep", "find", "ls"})
 INVESTIGATION_TOOLS = frozenset({"investigate_repository"})

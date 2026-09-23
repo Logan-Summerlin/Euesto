@@ -10,7 +10,6 @@ from shared.tools import (
     INVESTIGATION_TOOLS,
     PLAN_TOOLS,
     TOOL_NAMES,
-    TOOL_PROFILE,
     ToolRequest,
 )
 
@@ -45,7 +44,6 @@ def test_grep_limits_files_considered_and_searched(tmp_path: Path) -> None:
 
 
 def test_canonical_tool_profile_is_exact() -> None:
-    assert TOOL_PROFILE == "pi-compatible"
     canonical_tools = {"read", "write", "edit", "apply_patch", "bash", "grep", "find", "ls", "status"}
     assert canonical_tools <= TOOL_NAMES
     assert TOOL_NAMES == canonical_tools | INVESTIGATION_TOOLS
