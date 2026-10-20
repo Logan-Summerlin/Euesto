@@ -11,7 +11,10 @@ from shared.responses import ErrorResponse
 
 from .config import GatewayConfig
 
-ASGIApp = Callable[[dict[str, Any], Callable[..., Awaitable[dict]], Callable[..., Awaitable[None]]], Awaitable[None]]
+ASGIApp = Callable[
+    [dict[str, Any], Callable[..., Awaitable[dict]], Callable[..., Awaitable[None]]],
+    Awaitable[None],
+]
 
 
 class GatewaySecurityMiddleware:
@@ -28,13 +31,19 @@ class GatewaySecurityMiddleware:
             await self.app(scope, receive, send)
             return
         path = str(scope.get("path") or "")
-        headers = {key.decode("latin-1").lower(): value.decode("latin-1") for key, value in scope.get("headers", [])}
-        host = _host_name(headers.get("host", ""))
-        if host not in self.config.allowed_hosts:
-            await _error(send, 400, "security.invalid_host", "Gateway requests must use a loopback host.")
+        headers = {
+            key.decode("latin-1").lower(): value.decode("latin-1")
+            for key, value in scope.get("headers", [])
+        }
+        if _host_name(headers.get("host", "")) not in self.config.allowed_hosts:
+            await _error(
+                send, 400, "security.invalid_host", "Gateway requests must use a loopback host."
+            )
             return
         if "origin" in headers:
-            await _error(send, 403, "security.browser_origin", "Browser-originated requests are not accepted.")
+            await _error(
+                send, 403, "security.browser_origin", "Browser-originated requests are not accepted."
+            )
             return
         if not self._within_rate_limit(path):
             await _error(
@@ -82,24 +91,25 @@ class GatewaySecurityMiddleware:
 
     def _within_rate_limit(self, path: str) -> bool:
         now = time.monotonic()
-        cutoff = now - 60.0
-        while self._requests and self._requests[0] < cutoff:
-            self._requests.popleft()
-        if len(self._requests) >= self.config.requests_per_minute:
+        if not _admit(self._requests, self.config.requests_per_minute, now):
             return False
-        self._requests.append(now)
-        if path != "/v1/chat/stream":
-            return True
-        while self._chat_requests and self._chat_requests[0] < cutoff:
-            self._chat_requests.popleft()
-        if len(self._chat_requests) >= self.config.chat_requests_per_minute:
-            return False
-        self._chat_requests.append(now)
-        return True
+        return path != "/v1/chat/stream" or _admit(
+            self._chat_requests, self.config.chat_requests_per_minute, now
+        )
 
 
 class RequestBodyTooLarge(Exception):
     pass
+
+
+def _admit(window: deque[float], limit: int, now: float) -> bool:
+    """Record a request in a sliding one-minute window unless the window is already full."""
+    while window and window[0] < now - 60.0:
+        window.popleft()
+    if len(window) >= limit:
+        return False
+    window.append(now)
+    return True
 
 
 def _host_name(value: str) -> str:
@@ -112,5 +122,6 @@ def _host_name(value: str) -> str:
 
 async def _error(send: Callable, status: int, code: str, message: str) -> None:
     body = json.dumps(ErrorResponse(code, message).to_dict(), separators=(",", ":")).encode()
-    await send({"type": "http.response.start", "status": status, "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())]})
+    headers = [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())]
+    await send({"type": "http.response.start", "status": status, "headers": headers})
     await send({"type": "http.response.body", "body": body})

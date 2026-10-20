@@ -8,7 +8,7 @@ from typing import Any
 from PySide6.QtCore import QObject, Slot
 
 from shared.coercion import optional_float, optional_int, optional_string
-from shared.requests import DEFAULT_INVESTIGATION_MODEL
+from shared.requests import DEFAULT_INVESTIGATION_MODEL, WORKSPACE_CONFIG_KEYS
 
 from ..extensions import available_skills
 from ..gateway_client import DEFAULT_GATEWAY_URL, GatewayClient, GatewayError
@@ -31,7 +31,6 @@ BUILTIN_COMMANDS = (
     ("stop", "Stop the active run"),
     ("pause", "Pause the agent at a safe boundary"),
 )
-SYNCED_WORKSPACE_KEYS = ("instructions", "active_skills", "default_mode", "context_policy", "custom_tools")
 LEGACY_INVESTIGATION_DEFAULT = "deepseek/deepseek-chat-v3-0324"
 LEGACY_INVESTIGATION_MIGRATED = "investigation_model_legacy_migrated"
 INVESTIGATION_MODEL_ENTRY = {
@@ -367,7 +366,7 @@ class SettingsService(QObject):
         connection = self.host.runtime.connection()
         if not connection:
             return
-        allowed = {key: config[key] for key in SYNCED_WORKSPACE_KEYS if key in config}
+        allowed = {key: config[key] for key in sorted(WORKSPACE_CONFIG_KEYS) if key in config}
         try:
             GatewayClient(connection).save_workspace_config(identity, allowed)
         except GatewayError:

@@ -66,7 +66,7 @@ def _run(monkeypatch, turns: list[AgentTurn], arguments: dict, executor=None):
     async def append(_run_id, event_type, payload):
         events.append((event_type, payload))
 
-    monkeypatch.setattr("server.agent.runtime.agent_turn", fake_agent_turn)
+    monkeypatch.setattr("server.agent.investigation.agent_turn", fake_agent_turn)
     executor = executor or RecordingExecutor()
     runtime = AgentRuntime(executor, object(), append)
     runtime._api_keys["run"] = "test-key"
@@ -150,7 +150,7 @@ def test_investigation_returns_structured_findings(monkeypatch) -> None:
 
 
 def test_forced_synthesis_also_requests_structured_report(monkeypatch) -> None:
-    monkeypatch.setattr("server.agent.runtime.INVESTIGATION_MAX_TOOL_CALLS", 2)
+    monkeypatch.setattr("server.agent.investigation.INVESTIGATION_MAX_TOOL_CALLS", 2)
     turns = [
         _turn(calls=(_call("c1", "read", {"path": "a.py"}),)),
         _turn('{"summary": "a.py holds it", "findings": [{"file": "a.py", "line": 2, "justification": "x"}]}'),

@@ -28,7 +28,7 @@ def test_repository_investigation_uses_request_model(monkeypatch) -> None:
     async def append(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr("server.agent.runtime.agent_turn", fake_agent_turn)
+    monkeypatch.setattr("server.agent.investigation.agent_turn", fake_agent_turn)
     runtime = AgentRuntime(FakeExecutor(), object(), append)
     runtime._api_keys["run"] = "test-key"
     runtime._tool_result_bytes["run"] = 0

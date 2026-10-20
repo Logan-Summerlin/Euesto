@@ -93,7 +93,7 @@ Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `ve
 ## `find`
 
 - **Purpose:** recursively discover files and directories.
-- **Arguments:** optional `path`, `glob`, `max_depth` (0–20, default 10), `max_results` (1–2000), and `details`.
+- **Arguments:** optional `path`, `glob`, `max_depth` (0–20, default 10), `max_results` (1–2000), `details`, and `cursor`.
 - **Modes:** Plan and Agent.
 - **Permission:** read-only.
 - **Default:** 500 results when `max_results` is omitted and a 30-second time budget in `coding`.
@@ -104,7 +104,7 @@ Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `ve
 ## `ls`
 
 - **Purpose:** list immediate directory contents.
-- **Arguments:** optional `path`, `max_results` (1–2000), and `details`.
+- **Arguments:** optional `path`, `max_results` (1–2000), `details`, and `cursor`.
 - **Modes:** Plan and Agent.
 - **Permission:** read-only.
 - **Default:** 500 results when `max_results` is omitted and a 30-second time budget in `coding`.

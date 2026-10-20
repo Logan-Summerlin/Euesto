@@ -54,7 +54,7 @@ def test_documented_tool_defaults_match_code() -> None:
     import importlib
     import re
 
-    from server.agent import runtime
+    from server.agent import investigation
     from shared.tools import MAX_TOOL_ARGUMENT_BYTES
 
     tools_doc = (ROOT / "docs" / "TOOLS.md").read_text(encoding="utf-8")
@@ -77,8 +77,8 @@ def test_documented_tool_defaults_match_code() -> None:
     assert f"{coding['max_grep_output_bytes']:,}-byte output budget" in section("grep")
     assert f"{MAX_TOOL_ARGUMENT_BYTES:,}" in tools_doc
     assert f"| Tool arguments (protocol) | {MAX_TOOL_ARGUMENT_BYTES:,} bytes |" in limits_doc
-    assert f"{runtime.INVESTIGATION_MAX_WALL_SECONDS} seconds" in limits_doc
-    assert f"{runtime.INVESTIGATION_MIN_WALL_SECONDS}–{runtime.INVESTIGATION_MAX_WALL_SECONDS} seconds" in section("investigate_repository")
+    assert f"{investigation.INVESTIGATION_MAX_WALL_SECONDS} seconds" in limits_doc
+    assert f"{investigation.INVESTIGATION_MIN_WALL_SECONDS}–{investigation.INVESTIGATION_MAX_WALL_SECONDS} seconds" in section("investigate_repository")
 
 
 _NUMBER_WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten"}
@@ -96,10 +96,9 @@ def _stated_investigation_call_limits(text: str) -> set[int]:
 
 def test_investigation_call_limit_is_documented_consistently_with_code() -> None:
     from server.agent import runtime
-    from shared.requests import AgentRunRequest
+    from shared.requests import MAX_INVESTIGATION_CALLS, AgentRunRequest
 
-    ceiling = runtime.INVESTIGATION_HARD_CALL_CEILING
-    assert runtime.DEFAULT_INVESTIGATION_CALL_BUDGET <= ceiling
+    ceiling = MAX_INVESTIGATION_CALLS
     assert AgentRunRequest.__dataclass_fields__["investigation_call_budget"].default <= ceiling
     for name in _CALL_LIMIT_DOCUMENTS:
         stated = _stated_investigation_call_limits((ROOT / name).read_text(encoding="utf-8"))

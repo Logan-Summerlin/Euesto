@@ -47,9 +47,7 @@ From [the harness fix plan](../archived-doc/harness-fix-plan.md):
 From [the code-simplification plan](../archived-doc/simplification-plan.md), findings that need a product or security decision:
 
 - **Saved bash rules are too broad:** `JournalStore.rule_for_request` keys on `executable`/`arguments` fields no tool sends, so one saved bash rule allows every bash command in that workspace and mode; the per-run rule tokenizes `command` correctly. Unifying them tightens existing saved rules.
-- **`rule_used` is never invoked,** so `PermissionRule.last_used_at` is never set.
 - **The auto-policy clean-staging preflight is unreachable over HTTP,** because `AgentRunRequest.from_dict` always fills `investigation_model_id`.
-- **Undeclared tool arguments:** `find`/`ls` accept `cursor` and `read` accepts `offset`, but the model-facing schemas do not declare them.
 - **`read` clamps to 256,000 bytes** regardless of a larger configured `max_read_bytes`.
 - **Starlette/uvicorn versions drift** between `requirements-dev.lock` (0.45.3/0.34.0) and the gateway image (0.52.1).
 - **Three usage formatters** produce different UI strings.

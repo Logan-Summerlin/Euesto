@@ -26,7 +26,7 @@ The ten public tools are defined in three places that must agree:
 2. `server/openrouter/agent.py` — model-facing JSON schemas and Plan/Agent tool selection;
 3. `executor/app.py` — dispatch to the real implementations.
 
-The nested investigation loop lives in `server/agent/runtime.py`; its Plan-tool allowlist is enforced in code there. Permissions are enforced by `executor/permissions.py`; resource defaults and hard ceilings are in `executor/config.py`. Update tests when any schema, mode rule, limit, result field, or dispatch behavior changes.
+The nested investigation loop lives in `server/agent/investigation.py`; its Plan-tool allowlist is enforced in code there. `server/agent/runtime.py` runs the parent loop, and `server/agent/tool_calls.py` holds the tool-call parsing and result bounding both share. Permissions are enforced by `executor/permissions.py`; resource defaults and hard ceilings are in `executor/config.py`. Update tests when any schema, mode rule, limit, result field, or dispatch behavior changes.
 
 ## Safely modifying tools
 

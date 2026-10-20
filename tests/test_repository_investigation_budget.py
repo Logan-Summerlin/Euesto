@@ -4,6 +4,7 @@ import asyncio
 import json
 
 from server.agent import budgets as budgets_module
+from server.agent import investigation as investigation_module
 from server.agent import runtime as runtime_module
 from server.agent.budgets import (
     EXTENDED_CODING_PROFILE,
@@ -65,7 +66,7 @@ def test_investigator_prompt_explains_plan_harness_and_budget(monkeypatch):
             usage={"total_tokens": 8},
         )
 
-    monkeypatch.setattr(runtime_module, "agent_turn", fake_agent_turn)
+    monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
     runtime = make_runtime()
     messages = []
     parent_budget = RunBudget(100, 600, 1.0, 100, "test")
@@ -92,8 +93,8 @@ def test_investigator_prompt_explains_plan_harness_and_budget(monkeypatch):
 
 
 def test_investigator_reserves_final_budget_for_synthesis(monkeypatch):
-    monkeypatch.setattr(runtime_module, "INVESTIGATION_MAX_ITERATIONS", 2)
-    monkeypatch.setattr(runtime_module, "INVESTIGATION_MAX_TOOL_CALLS", 2)
+    monkeypatch.setattr(investigation_module, "INVESTIGATION_MAX_ITERATIONS", 2)
+    monkeypatch.setattr(investigation_module, "INVESTIGATION_MAX_TOOL_CALLS", 2)
     calls = []
 
     async def fake_agent_turn(*args, **kwargs):
@@ -112,7 +113,7 @@ def test_investigator_reserves_final_budget_for_synthesis(monkeypatch):
             usage={"total_tokens": 8},
         )
 
-    monkeypatch.setattr(runtime_module, "agent_turn", fake_agent_turn)
+    monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
     runtime = make_runtime()
     messages = []
     parent_budget = RunBudget(100, 600, 1.0, 100, "test")
@@ -167,7 +168,7 @@ def test_investigation_rejects_hallucinated_tool_and_recovers(monkeypatch):
             usage={"total_tokens": 8},
         )
 
-    monkeypatch.setattr(runtime_module, "agent_turn", fake_agent_turn)
+    monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
     runtime = make_runtime()
     executed = []
 
@@ -233,7 +234,7 @@ def test_investigation_rejects_malformed_and_non_object_json_arguments(monkeypat
             usage={"total_tokens": 8},
         )
 
-    monkeypatch.setattr(runtime_module, "agent_turn", fake_agent_turn)
+    monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
     runtime = make_runtime()
     executed = []
 
@@ -289,8 +290,8 @@ def test_investigation_budget_exhaustion_returns_partial_success(monkeypatch):
         self.tool_calls += 1
         self.check()
 
-    monkeypatch.setattr(runtime_module, "agent_turn", fake_agent_turn)
-    monkeypatch.setattr(runtime_module.RunBudget, "consume_tool_call", fail_investigation_tool_call)
+    monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
+    monkeypatch.setattr(investigation_module.RunBudget, "consume_tool_call", fail_investigation_tool_call)
     runtime = make_runtime()
     messages = []
     parent_budget = RunBudget(100, 600, 1.0, 100, "test")
@@ -316,7 +317,7 @@ def test_parent_and_investigation_budgets_are_tripled():
     assert (STANDARD_CODING_PROFILE.max_iterations, STANDARD_CODING_PROFILE.max_tool_calls) == (600, 900)
     assert (EXTENDED_CODING_PROFILE.max_iterations, EXTENDED_CODING_PROFILE.max_tool_calls) == (1_200, 1_800)
     assert (LARGE_CODING_PROFILE.max_iterations, LARGE_CODING_PROFILE.max_tool_calls) == (1_800, 2_700)
-    assert (runtime_module.INVESTIGATION_MAX_ITERATIONS, runtime_module.INVESTIGATION_MAX_TOOL_CALLS) == (36, 36)
+    assert (investigation_module.INVESTIGATION_MAX_ITERATIONS, investigation_module.INVESTIGATION_MAX_TOOL_CALLS) == (36, 36)
 
 
 def test_investigation_child_wall_time_is_capped_independently_of_parent(monkeypatch):
@@ -328,7 +329,7 @@ def test_investigation_child_wall_time_is_capped_independently_of_parent(monkeyp
     async def append_event(run_id, event_type, payload):
         events.append((event_type, payload))
 
-    monkeypatch.setattr(runtime_module, "agent_turn", fake_agent_turn)
+    monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
     runtime = AgentRuntime(FakeExecutor(), FakeApprovals(), append_event)
     runtime._api_keys["run-1"] = "api-key"
     parent_budget = RunBudget(100, 1_500, 1.0, 100, "test")
@@ -336,16 +337,16 @@ def test_investigation_child_wall_time_is_capped_independently_of_parent(monkeyp
     asyncio.run(runtime._investigate_repository("run-1", make_request(), "investigate-1", json.dumps({"query": "q"}), [], parent_budget))
 
     started = next(payload for kind, payload in events if kind == "subagent.started")
-    assert started["budget"]["max_wall_seconds"] == runtime_module.INVESTIGATION_MAX_WALL_SECONDS
-    assert runtime_module.INVESTIGATION_MAX_WALL_SECONDS == 300
+    assert started["budget"]["max_wall_seconds"] == investigation_module.INVESTIGATION_MAX_WALL_SECONDS
+    assert investigation_module.INVESTIGATION_MAX_WALL_SECONDS == 300
 
 
 def test_investigation_wall_seconds_never_exceeds_ceiling_for_any_parent_remaining_time():
     for remaining in (0, 5, 10, 299, 300, 301, 1_500, 5_400):
         parent = RunBudget(100, remaining, 1.0, 100, "test")
-        wall = runtime_module.investigation_wall_seconds(parent)
-        assert runtime_module.INVESTIGATION_MIN_WALL_SECONDS <= wall <= runtime_module.INVESTIGATION_MAX_WALL_SECONDS
-        if runtime_module.INVESTIGATION_MIN_WALL_SECONDS < remaining < runtime_module.INVESTIGATION_MAX_WALL_SECONDS:
+        wall = investigation_module.investigation_wall_seconds(parent)
+        assert investigation_module.INVESTIGATION_MIN_WALL_SECONDS <= wall <= investigation_module.INVESTIGATION_MAX_WALL_SECONDS
+        if investigation_module.INVESTIGATION_MIN_WALL_SECONDS < remaining < investigation_module.INVESTIGATION_MAX_WALL_SECONDS:
             assert wall <= remaining
 
 
@@ -381,6 +382,7 @@ def test_investigation_call_budget_resets_each_turn(monkeypatch):
         events.append((event_type, payload))
 
     monkeypatch.setattr(runtime_module, "agent_turn", fake_agent_turn)
+    monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
     runtime = AgentRuntime(TurnExecutor(), FakeApprovals(), append_event)
     asyncio.run(runtime.run("run-1", make_request(), "api-key"))
 
@@ -433,7 +435,7 @@ def _assert_tool_calls_answered(messages: list[dict]) -> None:
 def test_budget_boundary_mid_turn_answers_every_tool_call_before_synthesis(monkeypatch):
     # Regression: stopping partway through a multi-call turn left tool calls without results,
     # which providers reject, so the synthesis request failed and no summary was returned.
-    monkeypatch.setattr(runtime_module, "INVESTIGATION_MAX_TOOL_CALLS", 3)
+    monkeypatch.setattr(investigation_module, "INVESTIGATION_MAX_TOOL_CALLS", 3)
     calls = []
 
     async def fake_agent_turn(model, messages, *args, **kwargs):
@@ -442,7 +444,7 @@ def test_budget_boundary_mid_turn_answers_every_tool_call_before_synthesis(monke
             return _tool_turn(*(_read_call(f"read-{index}", f"file{index}.py") for index in range(5)))
         return _text_turn("Synthesized from partial evidence.")
 
-    monkeypatch.setattr(runtime_module, "agent_turn", fake_agent_turn)
+    monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
     result = _investigate(make_runtime())
 
     assert len(calls) == 2
@@ -457,7 +459,7 @@ def test_budget_boundary_mid_turn_answers_every_tool_call_before_synthesis(monke
 
 
 def test_wall_time_reserve_stops_exploration_and_still_returns_summary(monkeypatch):
-    monkeypatch.setattr(runtime_module, "INVESTIGATION_SYNTHESIS_RESERVE_SECONDS", 60)
+    monkeypatch.setattr(investigation_module, "INVESTIGATION_SYNTHESIS_RESERVE_SECONDS", 60)
     clock = {"now": 1_000.0}
     monkeypatch.setattr(budgets_module.time, "monotonic", lambda: clock["now"])
     calls = []
@@ -469,14 +471,14 @@ def test_wall_time_reserve_stops_exploration_and_still_returns_summary(monkeypat
             return _tool_turn(_read_call(f"read-{len(calls)}"))
         return _text_turn("Answer within the wall-time reserve.")
 
-    monkeypatch.setattr(runtime_module, "agent_turn", fake_agent_turn)
+    monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
     result = _investigate(make_runtime())
 
     assert result["summary"] == "Answer within the wall-time reserve."
     assert result["budget_exhausted"] is True
     assert calls[-1]["allowed_tools"] == set()
     assert calls[-1]["timeout"] >= 60
-    assert all(call["timeout"] <= runtime_module.INVESTIGATION_MAX_TURN_SECONDS for call in calls)
+    assert all(call["timeout"] <= investigation_module.INVESTIGATION_MAX_TURN_SECONDS for call in calls)
 
 
 def test_empty_final_answer_requests_an_explicit_synthesis(monkeypatch):
@@ -490,7 +492,7 @@ def test_empty_final_answer_requests_an_explicit_synthesis(monkeypatch):
             return _text_turn("")
         return _text_turn("Explicit summary.")
 
-    monkeypatch.setattr(runtime_module, "agent_turn", fake_agent_turn)
+    monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
     result = _investigate(make_runtime())
 
     assert calls[-1] == set()
@@ -504,8 +506,8 @@ def test_missing_synthesis_text_falls_back_to_harness_summary(monkeypatch):
             return _tool_turn(_read_call("read-1", "src/app.py"))
         return _tool_turn(_read_call("read-late"))  # ignores tool_choice "none"
 
-    monkeypatch.setattr(runtime_module, "INVESTIGATION_MAX_ITERATIONS", 2)
-    monkeypatch.setattr(runtime_module, "agent_turn", fake_agent_turn)
+    monkeypatch.setattr(investigation_module, "INVESTIGATION_MAX_ITERATIONS", 2)
+    monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
     result = _investigate(make_runtime())
 
     assert result["summary"]
@@ -519,14 +521,14 @@ def test_transient_provider_errors_are_retried(monkeypatch):
     async def fake_agent_turn(*args, **kwargs):
         attempts.append(1)
         if len(attempts) < 3:
-            raise runtime_module.ProviderError("provider.agent_error", "OpenRouter agent request failed (502).", retryable=True)
+            raise investigation_module.ProviderError("provider.agent_error", "OpenRouter agent request failed (502).", retryable=True)
         return _text_turn("Recovered after retries.")
 
     async def no_sleep(_seconds):
         return None
 
-    monkeypatch.setattr(runtime_module, "agent_turn", fake_agent_turn)
-    monkeypatch.setattr(runtime_module.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
+    monkeypatch.setattr(investigation_module.asyncio, "sleep", no_sleep)
     result = _investigate(make_runtime())
 
     assert len(attempts) == 3
@@ -541,10 +543,10 @@ def test_provider_failure_after_evidence_still_returns_a_summary(monkeypatch):
         if len(calls) == 1:
             return _tool_turn(_read_call("read-1", "src/app.py"))
         if kwargs["allowed_tools"]:
-            raise runtime_module.ProviderError("provider.agent_error", "OpenRouter agent request failed (400): context too long.")
+            raise investigation_module.ProviderError("provider.agent_error", "OpenRouter agent request failed (400): context too long.")
         return _text_turn("Summary from gathered evidence.")
 
-    monkeypatch.setattr(runtime_module, "agent_turn", fake_agent_turn)
+    monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
     result = _investigate(make_runtime())
 
     assert result["summary"] == "Summary from gathered evidence."
@@ -554,9 +556,9 @@ def test_provider_failure_after_evidence_still_returns_a_summary(monkeypatch):
 
 def test_provider_failure_without_evidence_reports_failure(monkeypatch):
     async def fake_agent_turn(*args, **kwargs):
-        raise runtime_module.ProviderError("provider.agent_error", "OpenRouter agent request failed (401): bad key.")
+        raise investigation_module.ProviderError("provider.agent_error", "OpenRouter agent request failed (401): bad key.")
 
-    monkeypatch.setattr(runtime_module, "agent_turn", fake_agent_turn)
+    monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
     result = _investigate(make_runtime())
 
     assert "bad key" in result["error"]
@@ -576,7 +578,7 @@ def test_investigation_results_do_not_consume_the_parent_result_ledger(monkeypat
             return _tool_turn(_read_call("read-1", "big.txt"))
         return _text_turn("Done.")
 
-    monkeypatch.setattr(runtime_module, "agent_turn", fake_agent_turn)
+    monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
     runtime = AgentRuntime(LargeExecutor(), FakeApprovals(), record_event)
     runtime._api_keys["run-1"] = "api-key"
     # The parent has nearly exhausted its own tool-result allowance.
@@ -587,5 +589,5 @@ def test_investigation_results_do_not_consume_the_parent_result_ledger(monkeypat
     payload = json.loads(tool_message["content"])
     assert not payload["data"].get("truncated")  # not starved by the parent's ledger
     assert payload["truncated"] is True  # but bounded per result
-    assert len(payload["output"]) <= runtime_module.INVESTIGATION_MAX_OUTPUT_CHARS + 100
+    assert len(payload["output"]) <= investigation_module.INVESTIGATION_MAX_OUTPUT_CHARS + 100
     assert runtime._tool_result_bytes == {"run-1": runtime_module.MAX_TOOL_RESULT_BYTES - 1_000}

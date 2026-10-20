@@ -27,14 +27,14 @@ LEGACY_TOOL_NAMES = frozenset({
     "restore_checkpoint", "move", "copy", "checkpoint", "restore",
 })
 SCHEMA_PROPERTIES = {
-    "read": {"path", "start_line", "end_line", "max_bytes"},
+    "read": {"path", "start_line", "end_line", "offset", "max_bytes"},
     "write": {"path", "content", "expected_sha256", "create_parents"},
     "edit": {"path", "old_str", "new_str", "expected_occurrences", "expected_sha256"},
     "apply_patch": {"operations"},
     "bash": {"command", "working_directory", "timeout_seconds", "env", "stdin", "rollback_on_failure"},
     "grep": {"query", "path", "regex", "case_sensitive", "include_glob", "exclude_glob", "max_results", "context_lines", "include_metadata", "cursor"},
-    "find": {"path", "glob", "max_depth", "max_results", "details"},
-    "ls": {"path", "max_results", "details"},
+    "find": {"path", "glob", "max_depth", "max_results", "details", "cursor"},
+    "ls": {"path", "max_results", "details", "cursor"},
     "status": {"paths", "include_diffs", "max_results", "cursor"},
     "investigate_repository": {"query", "inspected_paths"},
 }

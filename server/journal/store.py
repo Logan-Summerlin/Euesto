@@ -60,8 +60,7 @@ class JournalStore:
                     path_prefix TEXT,
                     executable TEXT,
                     argument_prefix_json TEXT NOT NULL,
-                    enabled INTEGER NOT NULL DEFAULT 1,
-                    last_used_at TEXT
+                    enabled INTEGER NOT NULL DEFAULT 1
                 );
                 CREATE TABLE IF NOT EXISTS run_snapshots (
                     run_id TEXT PRIMARY KEY REFERENCES runs(run_id) ON DELETE CASCADE,
@@ -95,12 +94,15 @@ class JournalStore:
     def create_run(self, run_id: str, mode: str, created_at: str) -> None:
         with self._lock, self._connection:
             self._connection.execute(
-                "INSERT INTO runs(run_id, mode, state, created_at, updated_at) VALUES (?, ?, 'created', ?, ?)",
+                "INSERT INTO runs(run_id, mode, state, created_at, updated_at) "
+                "VALUES (?, ?, 'created', ?, ?)",
                 (run_id, mode, created_at, created_at),
             )
             self._prune_runs()
 
-    def append(self, run_id: str, event_type: str, created_at: str, payload: dict[str, Any]) -> EventEnvelope:
+    def append(
+        self, run_id: str, event_type: str, created_at: str, payload: dict[str, Any]
+    ) -> EventEnvelope:
         with self._lock, self._connection:
             row = self._connection.execute(
                 "SELECT COALESCE(MAX(event_id), 0) + 1 FROM events WHERE run_id = ?", (run_id,)
@@ -108,7 +110,14 @@ class JournalStore:
             event = EventEnvelope(int(row[0]), run_id, event_type, created_at, payload)
             self._connection.execute(
                 "INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)",
-                (run_id, event.event_id, event.type, event.created_at, event.schema_version, json.dumps(payload, separators=(",", ":"))),
+                (
+                    run_id,
+                    event.event_id,
+                    event.type,
+                    event.created_at,
+                    event.schema_version,
+                    json.dumps(payload, separators=(",", ":")),
+                ),
             )
             state = event.type.removeprefix("run.") if event.type.startswith("run.") else None
             if state in {"started", "waiting", "paused", "resumed", "cancelled", "failed", "completed"}:
@@ -141,7 +150,9 @@ class JournalStore:
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         with self._lock:
-            row = self._connection.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+            row = self._connection.execute(
+                "SELECT * FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
         return dict(row) if row else None
 
     def nonterminal_runs(self) -> list[str]:
@@ -171,7 +182,8 @@ class JournalStore:
                     created_at,
                     {
                         "code": "gateway.restarted",
-                        "message": "The gateway restarted before this run reached a safe resume point.",
+                        "message": "The gateway restarted before this run reached a safe "
+                        "resume point.",
                         "retryable": True,
                     },
                 )
@@ -291,7 +303,9 @@ class JournalStore:
         except (TypeError, json.JSONDecodeError):
             return None
 
-    def save_workspace_config(self, workspace_id: str, payload: dict[str, Any], updated_at: str) -> None:
+    def save_workspace_config(
+        self, workspace_id: str, payload: dict[str, Any], updated_at: str
+    ) -> None:
         with self._lock, self._connection:
             self._connection.execute(
                 """
@@ -322,14 +336,19 @@ class JournalStore:
     def save_catalog(self, models: list[dict[str, Any]], fetched_at: str) -> None:
         with self._lock, self._connection:
             self._connection.execute(
-                "INSERT INTO model_catalog(singleton, fetched_at, payload_json) VALUES (1, ?, ?) "
-                "ON CONFLICT(singleton) DO UPDATE SET fetched_at=excluded.fetched_at, payload_json=excluded.payload_json",
+                """
+                INSERT INTO model_catalog(singleton, fetched_at, payload_json) VALUES (1, ?, ?)
+                ON CONFLICT(singleton) DO UPDATE SET
+                    fetched_at=excluded.fetched_at, payload_json=excluded.payload_json
+                """,
                 (fetched_at, json.dumps(models, separators=(",", ":"))),
             )
 
     def load_catalog(self) -> tuple[list[dict[str, Any]], str] | None:
         with self._lock:
-            row = self._connection.execute("SELECT fetched_at, payload_json FROM model_catalog WHERE singleton = 1").fetchone()
+            row = self._connection.execute(
+                "SELECT fetched_at, payload_json FROM model_catalog WHERE singleton = 1"
+            ).fetchone()
         if not row:
             return None
         try:
@@ -341,34 +360,53 @@ class JournalStore:
     def save_permission_rule(self, rule: PermissionRule) -> None:
         with self._lock, self._connection:
             self._connection.execute(
-                "INSERT OR REPLACE INTO permission_rules VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                """
+                INSERT OR REPLACE INTO permission_rules(
+                    rule_id, workspace_id, mode, tool, path_prefix, executable,
+                    argument_prefix_json, enabled
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
                 (
-                    rule.rule_id, rule.workspace_id, rule.mode, rule.tool, rule.path_prefix,
-                    rule.executable, json.dumps(rule.argument_prefix), int(rule.enabled), None,
+                    rule.rule_id,
+                    rule.workspace_id,
+                    rule.mode,
+                    rule.tool,
+                    rule.path_prefix,
+                    rule.executable,
+                    json.dumps(rule.argument_prefix),
+                    int(rule.enabled),
                 ),
             )
 
-    def permission_rules(self, workspace_id: str, *, include_disabled: bool = False) -> list[PermissionRule]:
+    def permission_rules(
+        self, workspace_id: str, *, include_disabled: bool = False
+    ) -> list[PermissionRule]:
+        enabled_clause = "" if include_disabled else " AND enabled = 1"
         with self._lock:
-            enabled_clause = "" if include_disabled else " AND enabled = 1"
             rows = self._connection.execute(
-                f"SELECT * FROM permission_rules WHERE workspace_id = ?{enabled_clause}", (workspace_id,)
+                f"SELECT * FROM permission_rules WHERE workspace_id = ?{enabled_clause}",
+                (workspace_id,),
             ).fetchall()
         return [
             PermissionRule(
-                rule_id=str(row["rule_id"]), decision=PermissionDecision.ALLOW_RULE,
-                workspace_id=str(row["workspace_id"]), mode=str(row["mode"]), tool=str(row["tool"]),
+                rule_id=str(row["rule_id"]),
+                decision=PermissionDecision.ALLOW_RULE,
+                workspace_id=str(row["workspace_id"]),
+                mode=str(row["mode"]),
+                tool=str(row["tool"]),
                 path_prefix=str(row["path_prefix"]) if row["path_prefix"] else None,
                 executable=str(row["executable"]) if row["executable"] else None,
-                argument_prefix=tuple(json.loads(row["argument_prefix_json"])), enabled=bool(row["enabled"]),
-                last_used_at=str(row["last_used_at"]) if row["last_used_at"] else None,
+                argument_prefix=tuple(json.loads(row["argument_prefix_json"])),
+                enabled=bool(row["enabled"]),
             )
             for row in rows
         ]
 
     def delete_permission_rule(self, rule_id: str) -> bool:
         with self._lock, self._connection:
-            cursor = self._connection.execute("DELETE FROM permission_rules WHERE rule_id = ?", (rule_id,))
+            cursor = self._connection.execute(
+                "DELETE FROM permission_rules WHERE rule_id = ?", (rule_id,)
+            )
         return cursor.rowcount > 0
 
     def set_permission_rule_enabled(self, rule_id: str, enabled: bool) -> bool:
@@ -379,30 +417,33 @@ class JournalStore:
             )
         return cursor.rowcount > 0
 
-    def touch_permission_rule(self, rule_id: str, used_at: str) -> None:
-        with self._lock, self._connection:
-            self._connection.execute(
-                "UPDATE permission_rules SET last_used_at = ? WHERE rule_id = ?", (used_at, rule_id)
-            )
-
     def rule_for_request(self, request: ToolRequest, workspace_id: str) -> PermissionRule:
-        path = rule_scope(request)
         executable = str(request.arguments.get("executable") or "") or None
         arguments = tuple(str(item) for item in request.arguments.get("arguments") or ())
         return PermissionRule(
-            rule_id=f"rule-{request.request_id}", decision=PermissionDecision.ALLOW_RULE,
-            workspace_id=workspace_id, mode=request.mode, tool=request.tool, path_prefix=path,
-            executable=executable, argument_prefix=arguments,
+            rule_id=f"rule-{request.request_id}",
+            decision=PermissionDecision.ALLOW_RULE,
+            workspace_id=workspace_id,
+            mode=request.mode,
+            tool=request.tool,
+            path_prefix=rule_scope(request),
+            executable=executable,
+            argument_prefix=arguments,
         )
 
     def _prune_run(self, run_id: str) -> None:
-        count = self._connection.execute("SELECT COUNT(*) FROM events WHERE run_id = ?", (run_id,)).fetchone()[0]
+        count = self._connection.execute(
+            "SELECT COUNT(*) FROM events WHERE run_id = ?", (run_id,)
+        ).fetchone()[0]
         if count <= self.max_events_per_run:
             return
-        remove = count - self.max_events_per_run
         self._connection.execute(
-            "DELETE FROM events WHERE run_id = ? AND event_id IN (SELECT event_id FROM events WHERE run_id = ? ORDER BY event_id LIMIT ?)",
-            (run_id, run_id, remove),
+            """
+            DELETE FROM events WHERE run_id = ? AND event_id IN (
+                SELECT event_id FROM events WHERE run_id = ? ORDER BY event_id LIMIT ?
+            )
+            """,
+            (run_id, run_id, count - self.max_events_per_run),
         )
 
     def _prune_runs(self) -> None:

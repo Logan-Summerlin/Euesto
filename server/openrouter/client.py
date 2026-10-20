@@ -137,9 +137,14 @@ def openrouter_tools(enabled: dict[str, bool]) -> list[dict[str, Any]]:
     """The OpenRouter-hosted server tools enabled in the composer."""
     tools: list[dict[str, Any]] = []
     if enabled.get("web_search"):
-        tools.append({"type": "openrouter:web_search", "parameters": {"search_context_size": "low", "max_total_results": 12, "max_results": 4}})
+        tools.append({
+            "type": "openrouter:web_search",
+            "parameters": {"search_context_size": "low", "max_total_results": 12, "max_results": 4},
+        })
     if enabled.get("web_fetch"):
-        tools.append({"type": "openrouter:web_fetch", "parameters": {"max_content_tokens": 3000}})
+        tools.append({
+            "type": "openrouter:web_fetch", "parameters": {"max_content_tokens": 3000}
+        })
     if enabled.get("datetime"):
         tools.append({"type": "openrouter:datetime"})
     return tools
