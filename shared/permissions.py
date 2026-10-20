@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import re
 import shlex
 from dataclasses import asdict, dataclass
 from enum import StrEnum
-from pathlib import PurePosixPath
 from typing import Any
 
+from .coercion import relative_posix_path
 from .tools import MUTATION_TOOLS, READ_TOOLS, STAGED_EDIT_TOOLS, ToolRequest
 
 # Session approval policies for Agent runs, from most to least prompting:
@@ -127,17 +126,6 @@ def apply_approval_policy(decision: PermissionDecision, request: ToolRequest, po
 
 
 def _permission_path(value: str) -> str | None:
-    """Return the canonical relative form used by permission scopes.
-
-    Invalid paths do not match a rule; executor validation remains authoritative.
-    Backslashes are accepted here solely to prevent scope ambiguity on Windows.
-    """
-    if not isinstance(value, str) or "\x00" in value:
-        return None
-    value = value.replace("\\", "/")
-    if not value or value.startswith("/") or re.match(r"^[A-Za-z]:", value):
-        return None
-    parts = [part for part in PurePosixPath(value).parts if part not in ("", ".")]
-    if any(part == ".." for part in parts):
-        return None
-    return "/".join(parts).casefold() if parts else "."
+    """The case-insensitive relative form used by permission scopes; invalid paths never match."""
+    normalized = relative_posix_path(value)
+    return normalized.casefold() if normalized is not None else None

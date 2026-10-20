@@ -9,8 +9,9 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from pathlib import PurePosixPath
 from typing import Any
+
+from .coercion import relative_posix_path
 
 MAX_INSPECTED_PATHS = 50
 MAX_INSPECTED_PATH_CHARS = 512
@@ -32,15 +33,9 @@ REPORT_FORMAT_INSTRUCTIONS = (
 
 def normalize_investigation_path(value: object) -> str | None:
     """Canonical relative POSIX form of a workspace path, or ``None`` if it is not one."""
-    if not isinstance(value, str) or "\x00" in value:
+    if not isinstance(value, str) or len(value.strip()) > MAX_INSPECTED_PATH_CHARS:
         return None
-    text = value.strip().replace("\\", "/")
-    if not text or len(text) > MAX_INSPECTED_PATH_CHARS or text.startswith("/") or re.match(r"^[A-Za-z]:", text):
-        return None
-    parts = [part for part in PurePosixPath(text).parts if part not in ("", ".")]
-    if any(part == ".." for part in parts):
-        return None
-    return "/".join(parts) or "."
+    return relative_posix_path(value.strip())
 
 
 def parse_inspected_paths(value: object) -> tuple[str, ...]:

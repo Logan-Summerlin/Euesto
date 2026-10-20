@@ -18,7 +18,7 @@ from shared.investigation import (
 )
 from shared.permissions import PermissionDecision, resolve_permission
 from shared.requests import DEFAULT_INVESTIGATION_MODEL, AgentRunRequest
-from shared.tools import INVESTIGATION_TOOLS, READ_TOOLS, ToolRequest, ToolResult
+from shared.tools import MUTATION_TOOLS, READ_TOOLS, ToolRequest, ToolResult
 
 
 def _investigation_schema() -> dict:
@@ -200,7 +200,7 @@ def test_reinspection_target_only_covers_read_and_ls() -> None:
 def test_investigation_is_read_only_and_auto_safe() -> None:
     request = ToolRequest("r", "run", "investigate_repository", "agent", {"query": "find architecture"})
     assert request.tool in READ_TOOLS
-    assert request.tool in INVESTIGATION_TOOLS
+    assert request.tool not in MUTATION_TOOLS
     assert resolve_permission(request, "workspace") == PermissionDecision.ALLOW_RUN
 
 

@@ -22,7 +22,7 @@ Container changes should also be checked with the repository's container workflo
 
 The ten public tools are defined in three places that must agree:
 
-1. `shared/tools.py` — public names, request/result protocol, permission sets (`PLAN_TOOLS`, `MUTATION_TOOLS`, `READ_TOOLS`, `INVESTIGATION_TOOLS`, `STAGING_READ_TOOLS`, `PARALLEL_SAFE_TOOLS`), and publish data structures;
+1. `shared/tools.py` — public names, request/result protocol, tool sets (`EXECUTOR_TOOLS`, `PLAN_TOOLS`, `READ_TOOLS`, `MUTATION_TOOLS`, `STAGED_EDIT_TOOLS`, `PARALLEL_SAFE_TOOLS`), and publish data structures;
 2. `server/openrouter/agent.py` — model-facing JSON schemas and Plan/Agent tool selection;
 3. `executor/app.py` — dispatch to the real implementations.
 

@@ -10,8 +10,7 @@ from executor.app import ExecutorService
 from executor.config import ExecutorConfig
 from server.openrouter.agent import LOCAL_TOOL_SCHEMAS
 from shared.tools import (
-    AGENT_TOOLS,
-    INVESTIGATION_TOOLS,
+    EXECUTOR_TOOLS,
     MUTATION_TOOLS,
     PLAN_TOOLS,
     READ_TOOLS,
@@ -55,10 +54,9 @@ def _config(tmp_path: Path, **limits: int) -> ExecutorConfig:
 def test_public_vocabulary_is_exactly_the_ten_tools() -> None:
     assert tuple(item["function"]["name"] for item in LOCAL_TOOL_SCHEMAS) == MODEL_TOOL_NAMES
     assert TOOL_NAMES == frozenset(MODEL_TOOL_NAMES)
-    assert AGENT_TOOLS == TOOL_NAMES
+    assert EXECUTOR_TOOLS == CANONICAL_TOOLS
     assert PLAN_TOOLS == READ_ONLY_TOOLS
-    assert INVESTIGATION_TOOLS == {"investigate_repository"}
-    assert READ_TOOLS == READ_ONLY_TOOLS | INVESTIGATION_TOOLS | {"status"}
+    assert READ_TOOLS == READ_ONLY_TOOLS | {"investigate_repository", "status"}
     assert MUTATION_TOOLS == {"write", "edit", "apply_patch", "bash"}
     assert not LEGACY_TOOL_NAMES & TOOL_NAMES
 

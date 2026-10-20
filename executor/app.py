@@ -16,9 +16,10 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from shared.coercion import optional_nonnegative_int
 from shared.tools import (
+    EXECUTOR_TOOLS,
     MUTATION_TOOLS,
-    TOOL_NAMES,
     PublicationReceipt,
     PublishManifest,
     PublishOperation,
@@ -164,13 +165,7 @@ async def _inline(function: Callable[..., tuple[str, dict]], *args: object, **kw
 
 def _success_result(request_id: str, output: str, data: dict, elapsed: float) -> ToolResult:
     returned = data.get("returned") or data.get("count", data.get("matches_returned"))
-    return ToolResult(request_id, True, output, data, truncated=bool(data.get("truncated")), elapsed_seconds=elapsed, returned=_nonnegative_int(returned), total_known=_nonnegative_int(data.get("total_known")), limit=_nonnegative_int(data.get("limit")), next_cursor=(str(data["next_cursor"]) if data.get("next_cursor") else None))
-
-
-def _nonnegative_int(value: object) -> int | None:
-    if value is None: return None
-    try: return max(0, int(value))
-    except (TypeError, ValueError): return None
+    return ToolResult(request_id, True, output, data, truncated=bool(data.get("truncated")), elapsed_seconds=elapsed, returned=optional_nonnegative_int(returned), total_known=optional_nonnegative_int(data.get("total_known")), limit=optional_nonnegative_int(data.get("limit")), next_cursor=(str(data["next_cursor"]) if data.get("next_cursor") else None))
 
 
 def create_app(config: ExecutorConfig | None = None, service: ExecutorService | None = None) -> Starlette:
@@ -186,7 +181,7 @@ def create_app(config: ExecutorConfig | None = None, service: ExecutorService | 
     async def status(request: Request):
         denied = await authenticate(request)
         if denied: return denied
-        return JSONResponse({"ready": True, "workspace_id": resolved.workspace_id, "snapshot_id": executor.snapshot.snapshot_id, "tools": sorted(TOOL_NAMES - {"investigate_repository"}), "environment": _environment_context(resolved, executor.snapshot), "workspace_status": executor.workspace_status()})
+        return JSONResponse({"ready": True, "workspace_id": resolved.workspace_id, "snapshot_id": executor.snapshot.snapshot_id, "tools": sorted(EXECUTOR_TOOLS), "environment": _environment_context(resolved, executor.snapshot), "workspace_status": executor.workspace_status()})
     async def tool(request: Request):
         denied = await authenticate(request)
         if denied: return denied

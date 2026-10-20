@@ -11,7 +11,13 @@ from shared.events import EventEnvelope
 from shared.permissions import PermissionDecision
 from shared.requests import AgentRunRequest, ChatRequest
 from shared.responses import GatewayStatus
-from shared.tools import MUTATION_TOOLS, PLAN_TOOLS, PublicationReceipt, PublishManifest
+from shared.tools import (
+    EXECUTOR_TOOLS,
+    MUTATION_TOOLS,
+    PLAN_TOOLS,
+    PublicationReceipt,
+    PublishManifest,
+)
 
 from .agent.approvals import ApprovalCoordinator
 from .agent.runtime import AgentRuntime
@@ -93,11 +99,7 @@ class GatewayService:
             self.agent_runtime and self.config.workspace_id and self.config.executor_socket
             and self.config.executor_socket.exists()
         )
-        local_tools = (
-            ("read", "write", "edit", "apply_patch", "bash", "grep", "find", "ls", "status")
-            if executor_ready
-            else ()
-        )
+        local_tools = EXECUTOR_TOOLS if executor_ready else ()
         capabilities = tuple(
             {
                 "name": name,
