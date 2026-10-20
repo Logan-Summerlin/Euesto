@@ -14,5 +14,5 @@ line-length = 96
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
-# Compact one-line guards are an accepted style in the executor and protocol modules.
-ignore = ["E501", "E701", "E702"]
+# `ruff format` owns line wrapping; it cannot split long strings, so E501 stays off.
+ignore = ["E501"]

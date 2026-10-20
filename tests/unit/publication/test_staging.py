@@ -7,18 +7,12 @@ import pytest
 from executor.app import ExecutorService
 from executor.config import ExecutorConfig
 from executor.staging import seed_staging, workspace_changes
-from src.workspace_broker import WorkspaceBroker, workspace_id
+from src.workspace_broker import WorkspaceBroker
+from tests.helpers import executor_config
 
 
 def make_config(source: Path, work: Path, **limits: int) -> ExecutorConfig:
-    return ExecutorConfig(
-        source_root=source,
-        work_root=work,
-        socket_path=work.parent / "executor.sock",
-        token="t" * 43,
-        workspace_id="workspace",
-        **limits,
-    )
+    return executor_config(source, work_root=work, **limits)
 
 
 def test_seed_staging_skips_dependency_metadata_and_cache_directories(tmp_path: Path) -> None:
@@ -73,7 +67,9 @@ def test_generated_runtime_caches_are_not_publication_changes(tmp_path: Path) ->
     assert [(item.path, item.operation) for item in changes] == [("blackjack.py", "create")]
 
 
-def test_publication_manifest_contains_text_file_without_generated_cache(tmp_path: Path) -> None:
+def test_publication_manifest_contains_text_file_without_generated_cache(
+    tmp_path: Path,
+) -> None:
     source = tmp_path / "source"
     work = tmp_path / "work"
     source.mkdir()
@@ -92,13 +88,7 @@ def test_publication_manifest_contains_text_file_without_generated_cache(tmp_pat
 def test_staged_python_file_publishes_to_the_selected_workspace(tmp_path: Path) -> None:
     workspace = tmp_path / "projects" / "new-project"
     workspace.mkdir(parents=True)
-    config = ExecutorConfig(
-        workspace,
-        tmp_path / "work",
-        tmp_path / "executor.sock",
-        "t" * 43,
-        workspace_id(workspace),
-    )
+    config = executor_config(workspace, work_root=tmp_path / "work")
     service = ExecutorService(config)
     (config.work_root / "blackjack.py").write_text("print('ok')", encoding="utf-8")
 
@@ -111,16 +101,12 @@ def test_staged_python_file_publishes_to_the_selected_workspace(tmp_path: Path) 
     assert (workspace / "blackjack.py").read_text(encoding="utf-8") == "print('ok')"
 
 
-def test_publication_chmod_does_not_require_follow_symlinks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_publication_chmod_does_not_require_follow_symlinks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     workspace = tmp_path / "projects" / "new-project"
     workspace.mkdir(parents=True)
-    config = ExecutorConfig(
-        workspace,
-        tmp_path / "work",
-        tmp_path / "executor.sock",
-        "t" * 43,
-        workspace_id(workspace),
-    )
+    config = executor_config(workspace, work_root=tmp_path / "work")
     service = ExecutorService(config)
     (config.work_root / "blackjack.py").write_text("print('ok')", encoding="utf-8")
     manifest = service.manifest("run", "approval")
@@ -143,16 +129,12 @@ def test_publication_chmod_does_not_require_follow_symlinks(tmp_path: Path, monk
     assert result.completed_paths == ("blackjack.py",)
 
 
-def test_publication_preserves_crlf_bytes_and_does_not_report_post_write_mismatch(tmp_path: Path) -> None:
+def test_publication_preserves_crlf_bytes_and_does_not_report_post_write_mismatch(
+    tmp_path: Path,
+) -> None:
     workspace = tmp_path / "projects" / "new-project"
     workspace.mkdir(parents=True)
-    config = ExecutorConfig(
-        workspace,
-        tmp_path / "work",
-        tmp_path / "executor.sock",
-        "t" * 43,
-        workspace_id(workspace),
-    )
+    config = executor_config(workspace, work_root=tmp_path / "work")
     service = ExecutorService(config)
     staged = b"first line\r\nsecond line\r\n"
     (config.work_root / "example.py").write_bytes(staged)
@@ -166,19 +148,13 @@ def test_publication_preserves_crlf_bytes_and_does_not_report_post_write_mismatc
     assert (workspace / "example.py").read_bytes() == staged
 
 
-def test_undo_preserves_recovery_file_bytes(tmp_path: Path) -> None:
+def test_publication_recovery_copy_preserves_file_bytes(tmp_path: Path) -> None:
     workspace = tmp_path / "projects" / "new-project"
     workspace.mkdir(parents=True)
     original = b"old\r\ncontent\r\n"
     target = workspace / "example.py"
     target.write_bytes(original)
-    config = ExecutorConfig(
-        workspace,
-        tmp_path / "work",
-        tmp_path / "executor.sock",
-        "t" * 43,
-        workspace_id(workspace),
-    )
+    config = executor_config(workspace, work_root=tmp_path / "work")
     service = ExecutorService(config)
     replacement = b"new\r\ncontent\r\n"
     (config.work_root / "example.py").write_bytes(replacement)
@@ -186,22 +162,29 @@ def test_undo_preserves_recovery_file_bytes(tmp_path: Path) -> None:
     manifest = service.manifest("run", "approval")
     broker = WorkspaceBroker(workspace, tmp_path / "recovery")
     result = broker.publish(manifest, {item.path for item in manifest.operations})
-    broker.undo(result.checkpoint_id)
 
-    assert target.read_bytes() == original
+    assert target.read_bytes() == replacement
+    recovery_copy = tmp_path / "recovery" / result.checkpoint_id / "files" / "example.py"
+    assert recovery_copy.read_bytes() == original
 
 
 def _seed_env_and_virtualenv_source(source: Path) -> None:
     (source / "env" / "loaders").mkdir(parents=True)
     (source / "env" / "settings.py").write_text("DEBUG = False\n", encoding="utf-8")
-    (source / "env" / "loaders" / "config.py").write_text("def load():\n    return {}\n", encoding="utf-8")
+    (source / "env" / "loaders" / "config.py").write_text(
+        "def load():\n    return {}\n", encoding="utf-8"
+    )
     for name in (".venv", "venv"):
         (source / name / "lib").mkdir(parents=True)
         (source / name / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
-        (source / name / "lib" / "site.py").write_text("needle = 'dependency'\n", encoding="utf-8")
+        (source / name / "lib" / "site.py").write_text(
+            "needle = 'dependency'\n", encoding="utf-8"
+        )
 
 
-def test_real_env_source_directory_is_staged_while_virtualenvs_stay_excluded(tmp_path: Path) -> None:
+def test_real_env_source_directory_is_staged_while_virtualenvs_stay_excluded(
+    tmp_path: Path,
+) -> None:
     source = tmp_path / "source"
     work = tmp_path / "work"
     _seed_env_and_virtualenv_source(source)
@@ -236,13 +219,20 @@ def test_env_source_directory_is_visible_to_tools_and_publishes(tmp_path: Path) 
         found = run("find", mode, {"glob": "*.py"}).output.splitlines()
         assert {"env/settings.py", "env/loaders/config.py"} <= set(found)
         assert not any(line.startswith(("venv/", ".venv/")) for line in found)
-        grep_paths = {line.split(":", 1)[0] for line in run("grep", mode, {"query": "needle"}).output.splitlines()}
+        grep_paths = {
+            line.split(":", 1)[0]
+            for line in run("grep", mode, {"query": "needle"}).output.splitlines()
+        }
         assert grep_paths == {"env/settings.py"}
-        assert run("read", mode, {"path": "env/settings.py"}).output == "DEBUG = False  # needle"
+        assert (
+            run("read", mode, {"path": "env/settings.py"}).output == "DEBUG = False  # needle"
+        )
 
     run("edit", "agent", {"path": "env/settings.py", "old_str": "False", "new_str": "True"})
     manifest = service.manifest("run", "approval")
-    assert [(item.path, item.operation) for item in manifest.operations] == [("env/settings.py", "update")]
+    assert [(item.path, item.operation) for item in manifest.operations] == [
+        ("env/settings.py", "update")
+    ]
 
 
 def test_read_rejects_paths_hidden_from_find_grep_and_ls(tmp_path: Path) -> None:
@@ -256,7 +246,9 @@ def test_read_rejects_paths_hidden_from_find_grep_and_ls(tmp_path: Path) -> None
     (source / ".git").mkdir()
     (source / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     (source / "node_modules" / "pkg").mkdir(parents=True)
-    (source / "node_modules" / "pkg" / "index.js").write_text("module.exports = 1;\n", encoding="utf-8")
+    (source / "node_modules" / "pkg" / "index.js").write_text(
+        "module.exports = 1;\n", encoding="utf-8"
+    )
     (source / ".local-chat-notes.txt").write_text("executor metadata\n", encoding="utf-8")
     service = ExecutorService(make_config(source, work))
     # Recreate the same hidden text inside staging so Agent mode is checked on real bytes too.
@@ -264,7 +256,15 @@ def test_read_rejects_paths_hidden_from_find_grep_and_ls(tmp_path: Path) -> None
     (work / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
 
     for mode in ("plan", "agent"):
-        for path in (".git/HEAD", "node_modules/pkg/index.js", "venv/lib/site.py", ".venv/pyvenv.cfg", ".local-chat-notes.txt"):
-            result = asyncio.run(service.execute(ToolRequest("read", "run", "read", mode, {"path": path})))
+        for path in (
+            ".git/HEAD",
+            "node_modules/pkg/index.js",
+            "venv/lib/site.py",
+            ".venv/pyvenv.cfg",
+            ".local-chat-notes.txt",
+        ):
+            result = asyncio.run(
+                service.execute(ToolRequest("read", "run", "read", mode, {"path": path}))
+            )
             assert not result.ok, (mode, path)
             assert result.error_code == "path.missing", (mode, path, result.error_code)

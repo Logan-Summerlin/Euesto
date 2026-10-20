@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -8,7 +9,7 @@ from typing import Any
 from PySide6.QtCore import QObject, Slot
 
 from shared.coercion import optional_float, optional_int, optional_string
-from shared.requests import DEFAULT_INVESTIGATION_MODEL
+from shared.requests import DEFAULT_INVESTIGATION_MODEL, WORKSPACE_CONFIG_KEYS
 
 from ..extensions import available_skills
 from ..gateway_client import DEFAULT_GATEWAY_URL, GatewayClient, GatewayError
@@ -20,6 +21,7 @@ from ..workers import CatalogWorker
 from .host import BridgeHost
 
 SERVER_TOOLS = ("web_search", "web_fetch", "datetime")
+REASONING_EFFORTS = frozenset({"minimal", "low", "medium", "high"})
 BUILTIN_COMMANDS = (
     ("new", "Start a new conversation"),
     ("mode", "Switch Chat, Plan, or Agent mode"),
@@ -31,7 +33,6 @@ BUILTIN_COMMANDS = (
     ("stop", "Stop the active run"),
     ("pause", "Pause the agent at a safe boundary"),
 )
-SYNCED_WORKSPACE_KEYS = ("instructions", "active_skills", "default_mode", "context_policy", "custom_tools")
 LEGACY_INVESTIGATION_DEFAULT = "deepseek/deepseek-chat-v3-0324"
 LEGACY_INVESTIGATION_MIGRATED = "investigation_model_legacy_migrated"
 INVESTIGATION_MODEL_ENTRY = {
@@ -61,11 +62,28 @@ def _saved_investigation_entry(model_id: str) -> dict[str, Any]:
     }
 
 
+def _request_options(values: dict[str, Any]) -> RequestOptions:
+    """Per-model request options from saved JSON or the QML options dialog."""
+    effort = optional_string(values.get("reasoning_effort"))
+    stop = values.get("stop")
+    return RequestOptions(
+        max_tokens=optional_int(values.get("max_tokens")),
+        reasoning_effort=effort if effort in REASONING_EFFORTS else None,
+        temperature=optional_float(values.get("temperature")),
+        top_p=optional_float(values.get("top_p")),
+        stop=[str(item) for item in stop] if isinstance(stop, list) else [],
+        data_collection="allow" if values.get("data_collection") == "allow" else "deny",
+        zero_data_retention=bool(values.get("zero_data_retention", False)),
+    )
+
+
 class SettingsService(QObject):
     """Preferences, the model catalog, prompt commands and presets, skills, workspace
     configuration, and saved permission rules."""
 
-    def __init__(self, host: BridgeHost, storage: Storage, *, catalog: ModelCatalog | None = None):
+    def __init__(
+        self, host: BridgeHost, storage: Storage, *, catalog: ModelCatalog | None = None
+    ):
         super().__init__(host)  # type: ignore[arg-type]
         self.host = host
         self.storage = storage
@@ -88,7 +106,10 @@ class SettingsService(QObject):
         self.host.settingsChanged.emit()
 
     def server_tools(self) -> dict[str, bool]:
-        return {key: self.storage.get_setting(f"server_tool:{key}", "0") == "1" for key in SERVER_TOOLS}
+        return {
+            key: self.storage.get_setting(f"server_tool:{key}", "0") == "1"
+            for key in SERVER_TOOLS
+        }
 
     def set_server_tool(self, name: str, enabled: bool) -> None:
         if name in SERVER_TOOLS:
@@ -114,7 +135,10 @@ class SettingsService(QObject):
     def save_investigation_model(self, model_id: str) -> None:
         model_id = str(model_id or "").strip()
         if not model_id:
-            self.host.errorRequested.emit("Invalid investigation model", "Choose a model before saving the repository-investigation setting.")
+            self.host.errorRequested.emit(
+                "Invalid investigation model",
+                "Choose a model before saving the repository-investigation setting.",
+            )
             return
         self.storage.set_setting("investigation_model_id", model_id)
         self.host.reload_models()
@@ -123,7 +147,8 @@ class SettingsService(QObject):
 
     def gateway_settings(self) -> dict[str, Any]:
         return {
-            "url": self.storage.get_setting("gateway_url", DEFAULT_GATEWAY_URL) or DEFAULT_GATEWAY_URL,
+            "url": self.storage.get_setting("gateway_url", DEFAULT_GATEWAY_URL)
+            or DEFAULT_GATEWAY_URL,
             "hasToken": bool(self.host.runtime.gateway_token),
             "hasApiKey": bool(get_api_key()),
         }
@@ -148,40 +173,19 @@ class SettingsService(QObject):
     # -- per-model request options -----------------------------------------------------
 
     def request_options(self, model: str) -> RequestOptions:
-        raw = self.storage.get_setting(f"model_options:{model}")
-        if not raw:
-            return RequestOptions()
         try:
-            data = json.loads(raw)
-            return RequestOptions(
-                max_tokens=optional_int(data.get("max_tokens")),
-                reasoning_effort=optional_string(data.get("reasoning_effort")),
-                temperature=optional_float(data.get("temperature")),
-                top_p=optional_float(data.get("top_p")),
-                stop=[str(item) for item in data.get("stop", [])],
-                data_collection=("allow" if data.get("data_collection") == "allow" else "deny"),
-                zero_data_retention=bool(data.get("zero_data_retention", False)),
-            )
-        except (json.JSONDecodeError, TypeError, AttributeError):
+            data = json.loads(self.storage.get_setting(f"model_options:{model}") or "{}")
+            return _request_options(data)
+        except (json.JSONDecodeError, TypeError, ValueError, AttributeError):
             return RequestOptions()
 
     def set_reasoning_effort(self, model: str, effort: str) -> None:
         options = self.request_options(model)
-        options.reasoning_effort = None if effort in {"", "default"} else effort
+        options.reasoning_effort = effort if effort in REASONING_EFFORTS else None
         self._save_model_options(model, options)
 
     def save_model_options(self, model: str, values: dict[str, Any]) -> None:
-        options = self.request_options(model)
-        options.max_tokens = optional_int(values.get("max_tokens"))
-        options.temperature = optional_float(values.get("temperature"))
-        options.top_p = optional_float(values.get("top_p"))
-        stop = values.get("stop")
-        options.stop = [str(item) for item in stop] if isinstance(stop, list) else []
-        effort = str(values.get("reasoning_effort") or "")
-        options.reasoning_effort = effort if effort in {"minimal", "low", "medium", "high"} else None
-        options.data_collection = "allow" if values.get("data_collection") == "allow" else "deny"
-        options.zero_data_retention = bool(values.get("zero_data_retention", False))
-        self._save_model_options(model, options)
+        self._save_model_options(model, _request_options(values))
 
     def _save_model_options(self, model: str, options: RequestOptions) -> None:
         self.storage.set_setting(f"model_options:{model}", json.dumps(asdict(options)))
@@ -194,11 +198,10 @@ class SettingsService(QObject):
         selected = self.ensure_investigation_model()
         favorites = set(self.storage.favorite_model_ids())
         recents = set(self.storage.recent_model_ids())
-        alias_by_model = {model: alias for alias, model in self.storage.model_aliases().items()}
         values = [
             {
                 "id": model.id,
-                "label": alias_by_model.get(model.id, model.label),
+                "label": model.label,
                 "description": model.description,
                 "contextLength": model.context_length,
                 "price": model.average_price_per_million,
@@ -211,7 +214,13 @@ class SettingsService(QObject):
             }
             for model in self.catalog.models()
         ]
-        values.sort(key=lambda item: (not item["favorite"], not item["recent"], str(item["label"]).casefold()))
+        values.sort(
+            key=lambda item: (
+                not item["favorite"],
+                not item["recent"],
+                str(item["label"]).casefold(),
+            )
+        )
         # The investigation models stay selectable even when the catalog does not list them.
         ids = {item["id"] for item in values}
         if DEFAULT_INVESTIGATION_MODEL not in ids:
@@ -221,15 +230,9 @@ class SettingsService(QObject):
         return values
 
     def toggle_favorite_model(self, model_id: str) -> None:
-        self.storage.set_model_favorite(model_id, model_id not in self.storage.favorite_model_ids())
-        self.host.reload_models()
-
-    def save_model_alias(self, alias: str, model_id: str) -> None:
-        try:
-            self.storage.save_model_alias(alias, model_id)
-        except ValueError as exc:
-            self.host.errorRequested.emit("Invalid alias", str(exc))
-            return
+        self.storage.set_model_favorite(
+            model_id, model_id not in self.storage.favorite_model_ids()
+        )
         self.host.reload_models()
 
     def refresh_catalog_if_stale(self) -> None:
@@ -250,7 +253,9 @@ class SettingsService(QObject):
             return
         worker = CatalogWorker(GatewayClient(connection))
         worker.complete.connect(self._catalog_complete)
-        worker.failed.connect(self._catalog_failed if report_errors else self._background_catalog_failed)
+        worker.failed.connect(
+            self._catalog_failed if report_errors else self._background_catalog_failed
+        )
         worker.finished.connect(self._catalog_finished)
         self.catalog_worker = worker
         worker.start()
@@ -265,7 +270,11 @@ class SettingsService(QObject):
 
     @Slot(object)
     def _catalog_complete(self, result: object) -> None:
-        if isinstance(result, dict) and isinstance(result.get("models"), list) and isinstance(result.get("fetched_at"), str):
+        if (
+            isinstance(result, dict)
+            and isinstance(result.get("models"), list)
+            and isinstance(result.get("fetched_at"), str)
+        ):
             self.catalog.cache(result["models"], result["fetched_at"])
             self.host.reload_models()
 
@@ -278,8 +287,13 @@ class SettingsService(QObject):
     # -- prompt commands and presets ---------------------------------------------------
 
     def reload_commands(self) -> None:
-        builtins = [{"name": name, "description": description, "builtin": True} for name, description in BUILTIN_COMMANDS]
-        self.commands = builtins + [{**item, "builtin": False} for item in self.storage.list_prompt_commands()]
+        builtins = [
+            {"name": name, "description": description, "builtin": True}
+            for name, description in BUILTIN_COMMANDS
+        ]
+        self.commands = builtins + [
+            {**item, "builtin": False} for item in self.storage.list_prompt_commands()
+        ]
         self.host.commandsChanged.emit()
 
     def save_prompt_command(self, name: str, description: str, template: str) -> None:
@@ -317,9 +331,17 @@ class SettingsService(QObject):
         if not workspace:
             self.skills = []
         else:
-            active = set(self.storage.workspace_config(self.host.runtime.identity()).get("active_skills") or ())
+            active = set(
+                self.storage.workspace_config(self.host.runtime.identity()).get("active_skills")
+                or ()
+            )
             self.skills = [
-                {"name": skill.name, "description": skill.description, "scope": skill.scope, "active": skill.name in active}
+                {
+                    "name": skill.name,
+                    "description": skill.description,
+                    "scope": skill.scope,
+                    "active": skill.name in active,
+                }
                 for skill in available_skills(app_data_dir() / "skills", Path(workspace))
             ]
         self.host.skillsChanged.emit()
@@ -346,14 +368,22 @@ class SettingsService(QObject):
             return
         try:
             custom_tools = json.loads(declarations or "[]")
-            if not isinstance(custom_tools, list) or any(not isinstance(item, dict) for item in custom_tools):
+            if not isinstance(custom_tools, list) or any(
+                not isinstance(item, dict) for item in custom_tools
+            ):
                 raise ValueError("Custom tools must be a JSON array of objects")
         except (json.JSONDecodeError, ValueError) as exc:
             self.host.errorRequested.emit("Invalid custom capabilities", str(exc))
             return
         identity = self.host.runtime.identity()
         config = self.storage.workspace_config(identity)
-        config.update({"instructions": instructions[:32_000], "custom_tools": custom_tools, "context_policy": config.get("context_policy", "automatic")})
+        config.update(
+            {
+                "instructions": instructions[:32_000],
+                "custom_tools": custom_tools,
+                "context_policy": config.get("context_policy", "automatic"),
+            }
+        )
         self.storage.save_workspace_config(identity, workspace, config)
         self._sync_workspace_config(identity, config)
         self.host.set_status("Workspace configuration saved")
@@ -367,7 +397,7 @@ class SettingsService(QObject):
         connection = self.host.runtime.connection()
         if not connection:
             return
-        allowed = {key: config[key] for key in SYNCED_WORKSPACE_KEYS if key in config}
+        allowed = {key: config[key] for key in sorted(WORKSPACE_CONFIG_KEYS) if key in config}
         try:
             GatewayClient(connection).save_workspace_config(identity, allowed)
         except GatewayError:
@@ -384,31 +414,36 @@ class SettingsService(QObject):
         if not connection:
             return
         try:
-            self.permissions = GatewayClient(connection).permission_rules(self.host.runtime.identity())
+            self.permissions = GatewayClient(connection).permission_rules(
+                self.host.runtime.identity()
+            )
         except GatewayError as exc:
             self.host.errorRequested.emit("Could not load permissions", str(exc))
             return
         self.host.permissionsChanged.emit()
 
     def set_permission_enabled(self, rule_id: str, enabled: bool) -> None:
-        connection = self.host.runtime.connection()
-        if not connection:
-            return
-        try:
-            GatewayClient(connection).set_permission_rule_enabled(rule_id, enabled)
-            self.host.loadPermissionRules()
-        except GatewayError as exc:
-            self.host.errorRequested.emit("Could not update permission", str(exc))
+        self._change_permission(
+            "Could not update permission",
+            lambda client: client.set_permission_rule_enabled(rule_id, enabled),
+        )
 
     def delete_permission(self, rule_id: str) -> None:
+        self._change_permission(
+            "Could not delete permission", lambda client: client.delete_permission_rule(rule_id)
+        )
+
+    def _change_permission(
+        self, failure: str, change: Callable[[GatewayClient], object]
+    ) -> None:
         connection = self.host.runtime.connection()
         if not connection:
             return
         try:
-            GatewayClient(connection).delete_permission_rule(rule_id)
+            change(GatewayClient(connection))
             self.host.loadPermissionRules()
         except GatewayError as exc:
-            self.host.errorRequested.emit("Could not delete permission", str(exc))
+            self.host.errorRequested.emit(failure, str(exc))
 
     def shutdown(self) -> None:
         if self.catalog_worker:

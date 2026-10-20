@@ -98,9 +98,7 @@ class ModelOption:
     @property
     def average_price_per_million(self) -> float | None:
         prices = [
-            price
-            for price in (self.prompt_price, self.completion_price)
-            if price is not None
+            price for price in (self.prompt_price, self.completion_price) if price is not None
         ]
         return (sum(prices) / len(prices)) * 1_000_000 if prices else None
 
@@ -125,9 +123,7 @@ class ModelOption:
             completion_price=optional_float(data.get("completion_price")),
             cached_prompt_price=optional_float(data.get("cached_prompt_price")),
             created=optional_int(data.get("created")),
-            artificial_analysis_score=optional_float(
-                data.get("artificial_analysis_score")
-            ),
+            artificial_analysis_score=optional_float(data.get("artificial_analysis_score")),
             artificial_analysis_rank=optional_int(data.get("artificial_analysis_rank")),
             fetched_at=str(data["fetched_at"]) if data.get("fetched_at") else None,
         )
@@ -177,3 +173,18 @@ def model_context_length(model_id: str, catalog: list[ModelOption] | None = None
         (option.context_length for option in options if option.id == model_id),
         128_000,
     )
+
+
+def usage_labels(
+    tokens: int | None,
+    cost: float | None,
+    cached: int | None = None,
+    reasoning: int | None = None,
+) -> list[str]:
+    """Token and cost labels, worded the same in the status bar, transcript, and usage dialog."""
+    labels = [f"{tokens:,} tokens"] if tokens else []
+    labels += [f"{cached:,} cached"] if cached else []
+    labels += [f"{reasoning:,} reasoning"] if reasoning else []
+    if cost is not None:
+        labels.append(f"${cost:.6f}")
+    return labels

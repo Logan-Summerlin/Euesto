@@ -5,6 +5,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QTimer, Slot
 
+from shared.responses import GatewayStatus
+
 from ..connection import GatewayHealthWorker, HealthResult, HealthState
 from ..gateway_client import DEFAULT_GATEWAY_URL, GatewayConnection
 from ..runtime_manager import RuntimeManager, RuntimeResult
@@ -39,7 +41,14 @@ HEALTH_LABELS = {
 class RuntimeService(QObject):
     """Selected workspace, local runtime lifecycle, gateway token, and gateway health."""
 
-    def __init__(self, host: BridgeHost, storage: Storage, *, automatic: bool | None = None, manager: RuntimeManager | None = None):
+    def __init__(
+        self,
+        host: BridgeHost,
+        storage: Storage,
+        *,
+        automatic: bool | None = None,
+        manager: RuntimeManager | None = None,
+    ):
         super().__init__(host)  # type: ignore[arg-type]
         self.host = host
         self.storage = storage
@@ -48,9 +57,13 @@ class RuntimeService(QObject):
         self.workspace_path = self.storage.get_setting("workspace_path", "") or ""
         self.gateway_text = "Gateway: checking"
         self.gateway_detail = ""
-        self.last_status: object | None = None
+        self.last_status: GatewayStatus | None = None
         self.state = "starting" if self.automatic else "manual"
-        self.detail = "Preparing the local runtime…" if self.automatic else "The developer runtime is managed by scripts."
+        self.detail = (
+            "Preparing the local runtime…"
+            if self.automatic
+            else "The developer runtime is managed by scripts."
+        )
         self.target_identity: str | None = None
         self.health_worker: GatewayHealthWorker | None = None
         self.gateway_token = get_gateway_session_token() or get_gateway_token() or ""
@@ -67,7 +80,9 @@ class RuntimeService(QObject):
         self.manager.failed.connect(self._runtime_failed)
         self.manager.setupStarted.connect(self.host.runtimeSetupStarted)
         self.manager.setupFinished.connect(self.host.runtimeSetupFinished)
-        QTimer.singleShot(0, self._start_for_saved_workspace if self.automatic else self.check_gateway)
+        QTimer.singleShot(
+            0, self._start_for_saved_workspace if self.automatic else self.check_gateway
+        )
 
     # -- queries -------------------------------------------------------------------------
 
@@ -78,45 +93,38 @@ class RuntimeService(QObject):
     def connection(self) -> GatewayConnection | None:
         if not self.gateway_token:
             return None
-        url = self.storage.get_setting("gateway_url", DEFAULT_GATEWAY_URL) or DEFAULT_GATEWAY_URL
+        url = (
+            self.storage.get_setting("gateway_url", DEFAULT_GATEWAY_URL) or DEFAULT_GATEWAY_URL
+        )
         try:
             return GatewayConnection(url, self.gateway_token)
         except ValueError:
             return None
 
     def has_capability(self, name: str) -> bool:
-        capabilities = getattr(self.last_status, "capabilities", ()) if self.last_status else ()
-        return any(isinstance(item, dict) and item.get("name") == name for item in capabilities)
+        capabilities = self.last_status.capabilities if self.last_status else ()
+        return any(item.get("name") == name for item in capabilities)
 
     def identity(self) -> str:
         return workspace_id(Path(self.workspace_path))
 
-    def workspace_ready(self, status: object | None = None) -> bool:
+    def workspace_ready(self, status: GatewayStatus | None = None) -> bool:
         status = self.last_status if status is None else status
         if not self.workspace_path or self.state not in {"ready", "manual"} or status is None:
             return False
         try:
-            identity = self.identity()
+            return status.serves_workspace(self.identity())
         except BrokerError:
             return False
-        supported = set(getattr(status, "supported_modes", ()))
-        return bool(
-            getattr(status, "ready", False)
-            and getattr(status, "executor_present", False)
-            and getattr(status, "executor_status", "") == "ready"
-            and getattr(status, "active_workspace", None) == identity
-            and {"plan", "agent"}.issubset(supported)
-        )
 
     def mode_available(self, mode: str) -> bool:
         """Whether the gateway reports ``mode`` ready for the selected workspace."""
         status = self.last_status
-        supported = tuple(getattr(status, "supported_modes", ())) if status else ()
-        active = getattr(status, "active_workspace", None) if status else None
-        return mode in supported and active == self.identity()
-
-    def resumable_runs(self) -> list[str]:
-        return list(getattr(self.last_status, "resumable_runs", ())) if self.last_status else []
+        return bool(
+            status
+            and mode in status.supported_modes
+            and status.active_workspace == self.identity()
+        )
 
     def status_report(self) -> str:
         status = self.last_status
@@ -148,12 +156,20 @@ class RuntimeService(QObject):
         self.storage.set_setting("workspace_path", self.workspace_path)
         self.target_identity = workspace_id(path)
         self.state = "starting" if self.automatic else "manual"
-        self.detail = "Preparing the selected workspace…" if self.automatic else "Workspace selected. The developer runtime is managed by scripts."
+        self.detail = (
+            "Preparing the selected workspace…"
+            if self.automatic
+            else "Workspace selected. The developer runtime is managed by scripts."
+        )
         self.last_status = None
         self.host.settings.catalog_autorefresh_attempted = False
         self.host.settings.reload_skills()
         self.host.stateChanged.emit()
-        self.host.set_status("Preparing workspace…" if self.automatic else "Workspace selected; checking developer runtime…")
+        self.host.set_status(
+            "Preparing workspace…"
+            if self.automatic
+            else "Workspace selected; checking developer runtime…"
+        )
         if self.automatic:
             self._ensure_runtime(path)
         else:
@@ -167,7 +183,9 @@ class RuntimeService(QObject):
             )
             return
         try:
-            workspace = canonical_workspace(Path(self.workspace_path)) if self.workspace_path else None
+            workspace = (
+                canonical_workspace(Path(self.workspace_path)) if self.workspace_path else None
+            )
         except BrokerError as exc:
             self._runtime_failed(str(exc))
             return
@@ -176,7 +194,9 @@ class RuntimeService(QObject):
     def save_gateway(self, url: str, token: str) -> bool:
         try:
             new_token = token.strip()
-            connection = GatewayConnection(url.strip() or DEFAULT_GATEWAY_URL, new_token or self.gateway_token)
+            connection = GatewayConnection(
+                url.strip() or DEFAULT_GATEWAY_URL, new_token or self.gateway_token
+            )
             self.storage.set_setting("gateway_url", connection.base_url)
             if new_token:
                 save_gateway_token(new_token)
@@ -205,7 +225,9 @@ class RuntimeService(QObject):
             self.host.settingsChanged.emit()
         connection = self.connection()
         if connection is None:
-            self.apply_health(HealthResult(HealthState.DISCONNECTED, "Gateway token not configured"))
+            self.apply_health(
+                HealthResult(HealthState.DISCONNECTED, "Gateway token not configured")
+            )
             return
         worker = GatewayHealthWorker(connection)
         worker.complete.connect(self._health_complete)
@@ -238,7 +260,11 @@ class RuntimeService(QObject):
             return
         self.gateway_text = HEALTH_LABELS[result.state]
         self.gateway_detail = result.message
-        if result.state == HealthState.READY and self.workspace_path and not self.workspace_ready(result.status):
+        if (
+            result.state == HealthState.READY
+            and self.workspace_path
+            and not self.workspace_ready(result.status)
+        ):
             self.gateway_text = "Executor: unavailable"
             self.gateway_detail = "The isolated executor is not ready for this workspace. Retry the local runtime setup."
         self.host.stateChanged.emit()
@@ -289,7 +315,11 @@ class RuntimeService(QObject):
         if result.target.workspace_identity != self.target_identity:
             return
         self.gateway_token = result.gateway_token
-        self._set_runtime_state("ready", "Local runtime started; checking gateway and executor health…", "Gateway: checking")
+        self._set_runtime_state(
+            "ready",
+            "Local runtime started; checking gateway and executor health…",
+            "Gateway: checking",
+        )
         self.host.settingsChanged.emit()
         self.host.stateChanged.emit()
         if self.health_worker:
@@ -299,7 +329,9 @@ class RuntimeService(QObject):
 
     @Slot(str)
     def _runtime_failed(self, message: str) -> None:
-        self._set_runtime_state("failed", message or "Local runtime setup failed.", "Runtime: setup failed")
+        self._set_runtime_state(
+            "failed", message or "Local runtime setup failed.", "Runtime: setup failed"
+        )
         self.host.stateChanged.emit()
         self.host.errorRequested.emit("Local runtime setup failed", self.detail)
 

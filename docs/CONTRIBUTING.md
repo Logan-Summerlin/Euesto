@@ -16,17 +16,17 @@ python -m pip install -r requirements-dev.lock
 
 The canonical validation entry point is `python scripts/validate.py`. Run `python scripts/validate.py preflight --json validation-report.json` to distinguish unavailable tools from failed checks, then `fast`, `slow`, `docker`, `ruff`, `compile`, `qml`, or `all` for explicit tiers. The individual commands are listed once, in [TESTING.md](TESTING.md#required-checks); run the ones that apply to the change.
 
-Container changes should also be checked with the repository's container workflow/scripts. QML checks apply when QML or QML-facing interfaces change.
+Python code is formatted with `ruff format` (run `ruff format .` before committing); the `ruff` tier fails on unformatted files. Container changes should also be checked with the repository's container workflow/scripts. QML checks apply when QML or QML-facing interfaces change.
 
 ## Tool/schema synchronization
 
 The ten public tools are defined in three places that must agree:
 
-1. `shared/tools.py` — public names, request/result protocol, permission sets (`PLAN_TOOLS`, `MUTATION_TOOLS`, `READ_TOOLS`, `INVESTIGATION_TOOLS`, `STAGING_READ_TOOLS`, `PARALLEL_SAFE_TOOLS`), and publish data structures;
+1. `shared/tools.py` — public names, request/result protocol, tool sets (`EXECUTOR_TOOLS`, `PLAN_TOOLS`, `READ_TOOLS`, `MUTATION_TOOLS`, `STAGED_EDIT_TOOLS`, `PARALLEL_SAFE_TOOLS`), and publish data structures;
 2. `server/openrouter/agent.py` — model-facing JSON schemas and Plan/Agent tool selection;
 3. `executor/app.py` — dispatch to the real implementations.
 
-The nested investigation loop lives in `server/agent/runtime.py`; its Plan-tool allowlist is enforced in code there. Permissions are enforced by `executor/permissions.py`; resource defaults and hard ceilings are in `executor/config.py`. Update tests when any schema, mode rule, limit, result field, or dispatch behavior changes.
+The nested investigation loop lives in `server/agent/investigation.py`; its Plan-tool allowlist is enforced in code there. `server/agent/runtime.py` runs the parent loop, and `server/agent/tool_calls.py` holds the tool-call parsing and result bounding both share. Permissions are enforced by `executor/permissions.py`; resource defaults and hard ceilings are in `executor/config.py`. Update tests when any schema, mode rule, limit, result field, or dispatch behavior changes.
 
 ## Safely modifying tools
 

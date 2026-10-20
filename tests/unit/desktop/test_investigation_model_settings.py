@@ -86,7 +86,9 @@ def test_saved_investigation_model_survives_backend_reload(tmp_path: Path) -> No
         storage.close()
 
 
-def test_investigation_models_are_listed_and_filterable_without_catalog_metadata(tmp_path: Path) -> None:
+def test_investigation_models_are_listed_and_filterable_without_catalog_metadata(
+    tmp_path: Path,
+) -> None:
     storage = Storage(tmp_path / "settings.sqlite")
     try:
         storage.set_setting("investigation_model_id", "custom/investigator")

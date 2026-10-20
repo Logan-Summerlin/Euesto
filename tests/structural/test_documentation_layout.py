@@ -1,4 +1,5 @@
-"""Structural checks: one authoritative, predictably named location for every document."""
+"""Structural checks: one authoritative, predictably named location for every document and test."""
+
 from __future__ import annotations
 
 import os
@@ -18,7 +19,9 @@ def _root_documents() -> set[str]:
     return {
         path.name
         for path in ROOT.iterdir()
-        if path.is_file() and path.suffix.lower() in DOCUMENT_SUFFIXES and not path.name.startswith("requirements")
+        if path.is_file()
+        and path.suffix.lower() in DOCUMENT_SUFFIXES
+        and not path.name.startswith("requirements")
     }
 
 
@@ -29,33 +32,51 @@ def _documentation_files() -> list[Path]:
 
 
 def test_root_keeps_only_the_top_level_documents() -> None:
-    assert _root_documents() == ROOT_DOCUMENTS, "planning documents and roadmaps belong in docs/"
+    assert _root_documents() == ROOT_DOCUMENTS, (
+        "planning documents and roadmaps belong in docs/"
+    )
 
 
 def test_documentation_names_are_predictable() -> None:
     for path in sorted((ROOT / "docs").iterdir()):
-        assert DOCS_NAME.match(path.name) or path.name == "README.md", f"docs/{path.name} must be UPPER_SNAKE_CASE.md"
+        assert DOCS_NAME.match(path.name) or path.name == "README.md", (
+            f"docs/{path.name} must be UPPER_SNAKE_CASE.md"
+        )
     for path in sorted((ROOT / "archived-doc").iterdir()):
-        assert ARCHIVE_NAME.match(path.name) or path.name == "README.md", f"archived-doc/{path.name} must be lowercase-hyphenated .md"
+        assert ARCHIVE_NAME.match(path.name) or path.name == "README.md", (
+            f"archived-doc/{path.name} must be lowercase-hyphenated .md"
+        )
     for path in _documentation_files():
         assert " " not in path.name, path
-        assert not EMBEDDED_DATE.search(path.name), f"{path.name}: put dates in commit history or CHANGELOG.md"
+        assert not EMBEDDED_DATE.search(path.name), (
+            f"{path.name}: put dates in commit history or CHANGELOG.md"
+        )
 
 
 def test_every_living_plan_is_indexed_once_in_docs() -> None:
     index = (ROOT / "docs" / "README.md").read_text(encoding="utf-8")
-    plans = sorted(path.name for path in (ROOT / "docs").glob("*.md") if path.stem.endswith("_PLAN") or path.name == "ROADMAP.md")
+    plans = sorted(
+        path.name
+        for path in (ROOT / "docs").glob("*.md")
+        if path.stem.endswith("_PLAN") or path.name == "ROADMAP.md"
+    )
     assert "ROADMAP.md" in plans
     for name in plans:
         assert f"]({name})" in index, f"docs/README.md must index {name}"
     stray = []
     for directory, dirnames, filenames in os.walk(ROOT):
-        dirnames[:] = [name for name in dirnames if not name.startswith(".") and name not in {"venv", "node_modules", "__pycache__"}]
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if not name.startswith(".") and name not in {"venv", "node_modules", "__pycache__"}
+        ]
         if Path(directory) in {ROOT / "docs", ROOT / "archived-doc"}:
             continue
         for filename in filenames:
             path = Path(directory) / filename
-            if path.suffix.lower() in DOCUMENT_SUFFIXES and ("plan" in path.stem.lower() or "roadmap" in path.stem.lower()):
+            if path.suffix.lower() in DOCUMENT_SUFFIXES and (
+                "plan" in path.stem.lower() or "roadmap" in path.stem.lower()
+            ):
                 stray.append(path.relative_to(ROOT).as_posix())
     assert not stray, f"plans live only in docs/ (or archived-doc/ once superseded): {stray}"
 
@@ -65,6 +86,15 @@ def test_every_archived_document_is_indexed() -> None:
     for path in sorted((ROOT / "archived-doc").glob("*.md")):
         if path.name != "README.md":
             assert f"`{path.name}`" in index, f"archived-doc/README.md must list {path.name}"
+
+
+def test_tests_live_in_uniquely_named_domain_files() -> None:
+    tests = ROOT / "tests"
+    assert not list(tests.glob("test_*.py")), (
+        "tests belong in tests/<tier>/ or tests/unit/<domain>/"
+    )
+    names = [path.name for path in tests.rglob("test_*.py")]
+    assert len(names) == len(set(names)), "test file names must be unique across test folders"
 
 
 def test_relative_documentation_links_resolve() -> None:

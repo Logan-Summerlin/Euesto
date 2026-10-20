@@ -1,5 +1,5 @@
 from src.models import Message
-from src.transcript import assemble_activities, assemble_transcript, events_for_branch
+from src.transcript import TranscriptActivity, assemble_activities, assemble_transcript
 
 
 def _message(message_id: int, role: str, parent: int | None = None) -> Message:
@@ -42,11 +42,16 @@ def test_activity_is_assigned_to_the_active_assistant_branch() -> None:
             },
         ],
     )
-    events = events_for_branch(
+    transcript = assemble_transcript(
         [_message(1, "user"), _message(2, "assistant"), _message(3, "assistant", 2)],
         activities,
     )
-    assert [event["run_id"] for event in events] == ["run-a"]
+    with_activity = [
+        (item["messageId"], item["activity"]) for item in transcript if item["activity"]
+    ]
+    assert [
+        (message_id, [row["key"] for row in rows]) for message_id, rows in with_activity
+    ] == [(3, ["run-a:1"])]
 
 
 def test_legacy_activity_remains_visible_without_a_run_row() -> None:
@@ -61,7 +66,9 @@ def test_legacy_activity_remains_visible_without_a_run_row() -> None:
             }
         ],
     )
-    assert events_for_branch([_message(1, "user")], activities)[0]["run_id"] == "old"
+    transcript = assemble_transcript([_message(1, "user")], activities)
+    assert transcript[0]["key"] == "legacy-activity" and transcript[0]["legacy"] is True
+    assert [row["key"] for row in transcript[0]["activity"]] == ["old:1"]
 
 
 def test_publication_failure_is_distinct_from_agent_run_failure() -> None:
@@ -84,3 +91,40 @@ def test_publication_failure_is_distinct_from_agent_run_failure() -> None:
     assert transcript[1]["activity"][0]["title"] == "Host publication unavailable"
     assert transcript[1]["activity"][0]["attention"] is True
     assert "Run failed" not in transcript[1]["activitySummary"]
+
+
+def _tool_activity(
+    run_id: str, assistant_id: int | None, parent_id: int, tool: str
+) -> TranscriptActivity:
+    event = {
+        "run_id": run_id,
+        "event_id": 1,
+        "type": "tool.requested",
+        "payload": {"tool": tool, "request_id": f"{run_id}-call"},
+    }
+    return TranscriptActivity(
+        run_id=run_id,
+        assistant_message_id=assistant_id,
+        parent_message_id=parent_id,
+        events=(event,),
+    )
+
+
+def test_incomplete_run_activity_falls_back_to_parent_user_turn() -> None:
+    transcript = assemble_transcript(
+        [_message(10, "user")], [_tool_activity("run-1", None, 10, "write")]
+    )
+
+    assert transcript[0]["messageId"] == 10
+    assert transcript[0]["activitySummary"] == "1 tool call"
+    assert transcript[0]["activity"][0]["title"] == "write"
+
+
+def test_completed_run_activity_stays_on_assistant_turn() -> None:
+    transcript = assemble_transcript(
+        [_message(10, "user"), _message(11, "assistant", 10)],
+        [_tool_activity("run-2", 11, 10, "edit")],
+    )
+
+    assert transcript[0]["activity"] == []
+    assert transcript[1]["activitySummary"] == "1 tool call"

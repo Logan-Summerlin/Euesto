@@ -70,7 +70,9 @@ def compact_agent_context(
     # exchanges. A lone tool result would be rejected by OpenAI-compatible providers.
     removed = 0
     index = 0
-    while estimate_message_tokens(compacted) > max_tokens and index < max(0, len(compacted) - keep_recent):
+    while estimate_message_tokens(compacted) > max_tokens and index < max(
+        0, len(compacted) - keep_recent
+    ):
         message = compacted[index]
         if message.get("role") == "system":
             index += 1
@@ -93,7 +95,9 @@ def compact_agent_context(
             protected_from = max(0, len(compacted) - keep_recent)
             continue
         if message.get("role") in {"user", "assistant"}:
-            summaries.append(f"{message.get('role')}: {str(message.get('content') or '')[:240]}")
+            summaries.append(
+                f"{message.get('role')}: {str(message.get('content') or '')[:240]}"
+            )
             del compacted[index]
             removed += 1
             protected_from = max(0, len(compacted) - keep_recent)
@@ -116,7 +120,8 @@ def compact_agent_context(
         item = compacted[index]
         compacted[index] = {
             **item,
-            "content": "[Context excerpt] " + _bounded_excerpt(str(item.get("content") or ""), 600),
+            "content": "[Context excerpt] "
+            + _bounded_excerpt(str(item.get("content") or ""), 600),
         }
     return compacted
 

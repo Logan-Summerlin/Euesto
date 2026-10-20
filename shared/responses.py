@@ -23,6 +23,17 @@ class GatewayStatus:
     capabilities: tuple[dict[str, Any], ...] = ()
     resumable_runs: tuple[str, ...] = ()
 
+    def serves_workspace(self, identity: str | None) -> bool:
+        """Whether the gateway and its executor are ready to run Plan and Agent on ``identity``."""
+        return bool(
+            self.ready
+            and self.executor_present
+            and self.executor_status == "ready"
+            and identity
+            and self.active_workspace == identity
+            and {"plan", "agent"}.issubset(self.supported_modes)
+        )
+
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["event_versions"] = list(self.event_versions)
@@ -44,9 +55,13 @@ class GatewayStatus:
             model_catalog_age_seconds=optional_float(data.get("model_catalog_age_seconds")),
             executor_present=bool(data.get("executor_present")),
             executor_status=str(data.get("executor_status") or "unavailable"),
-            active_workspace=(str(data["active_workspace"]) if data.get("active_workspace") else None),
+            active_workspace=(
+                str(data["active_workspace"]) if data.get("active_workspace") else None
+            ),
             openrouter_key_configured=bool(data.get("openrouter_key_configured")),
-            capabilities=tuple(dict(item) for item in data.get("capabilities") or () if isinstance(item, dict)),
+            capabilities=tuple(
+                dict(item) for item in data.get("capabilities") or () if isinstance(item, dict)
+            ),
             resumable_runs=tuple(str(item) for item in data.get("resumable_runs") or ()),
         )
 

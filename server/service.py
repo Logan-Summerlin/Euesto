@@ -11,7 +11,13 @@ from shared.events import EventEnvelope
 from shared.permissions import PermissionDecision
 from shared.requests import AgentRunRequest, ChatRequest
 from shared.responses import GatewayStatus
-from shared.tools import MUTATION_TOOLS, PLAN_TOOLS, PublicationReceipt, PublishManifest
+from shared.tools import (
+    EXECUTOR_TOOLS,
+    MUTATION_TOOLS,
+    PLAN_TOOLS,
+    PublicationReceipt,
+    PublishManifest,
+)
 
 from .agent.approvals import ApprovalCoordinator
 from .agent.runtime import AgentRuntime
@@ -55,20 +61,18 @@ class GatewayService:
         self.approvals = ApprovalCoordinator()
         self.executor = (
             ExecutorClient(config.executor_socket, config.executor_token)
-            if config.executor_socket and config.executor_token else None
+            if config.executor_socket and config.executor_token
+            else None
         )
         self.agent_runtime = (
             AgentRuntime(
                 self.executor,
                 self.approvals,
                 self._append,
-                lambda workspace: tuple(self.journal.permission_rules(workspace)),
-                self._save_snapshot,
-                self._save_session,
-                lambda rule_id: self.journal.touch_permission_rule(rule_id, utc_now()),
-                lambda run_id: bool(
-                    self._pause_events.get(run_id) and self._pause_events[run_id].is_set()
-                ),
+                rules_loader=lambda workspace: tuple(self.journal.permission_rules(workspace)),
+                snapshot_saver=self._save_snapshot,
+                session_saver=self._save_session,
+                pause_requested=self._pause_requested,
             )
             if self.executor
             else None
@@ -82,7 +86,9 @@ class GatewayService:
     def configure_client_key(self, api_key: str) -> None:
         value = api_key.strip()
         if len(value) < 8:
-            raise GatewayServiceError("provider.invalid_key", "Enter a valid OpenRouter API key.")
+            raise GatewayServiceError(
+                "provider.invalid_key", "Enter a valid OpenRouter API key."
+            )
         self._client_openrouter_key = value
 
     def clear_client_key(self) -> None:
@@ -90,14 +96,12 @@ class GatewayService:
 
     def status(self) -> GatewayStatus:
         executor_ready = bool(
-            self.agent_runtime and self.config.workspace_id and self.config.executor_socket
+            self.agent_runtime
+            and self.config.workspace_id
+            and self.config.executor_socket
             and self.config.executor_socket.exists()
         )
-        local_tools = (
-            ("read", "write", "edit", "apply_patch", "bash", "grep", "find", "ls", "status")
-            if executor_ready
-            else ()
-        )
+        local_tools = EXECUTOR_TOOLS if executor_ready else ()
         capabilities = tuple(
             {
                 "name": name,
@@ -109,30 +113,25 @@ class GatewayService:
             for name in local_tools
         )
         if executor_ready:
-            capabilities += (
+            capabilities += tuple(
                 {
-                    "name": "agent_accept_edits",
+                    "name": name,
                     "kind": "approval_policy",
                     "modes": ["agent"],
                     "requires_approval": False,
                     "custom": False,
-                },
-                {
-                    "name": "agent_auto",
-                    "kind": "approval_policy",
-                    "modes": ["agent"],
-                    "requires_approval": False,
-                    "custom": False,
-                },
+                }
+                for name in ("agent_accept_edits", "agent_auto")
             )
-        if executor_ready and self.config.workspace_id:
             capabilities += discover_custom_capabilities(
                 self.journal.load_workspace_config(self.config.workspace_id)
             )
         return GatewayStatus(
             ready=True,
             supported_tools=(
-                "openrouter:web_search", "openrouter:web_fetch", "openrouter:datetime",
+                "openrouter:web_search",
+                "openrouter:web_fetch",
+                "openrouter:datetime",
                 *local_tools,
             ),
             supported_modes=("chat", "plan", "agent") if executor_ready else ("chat",),
@@ -166,7 +165,21 @@ class GatewayService:
                 status=409,
             ) from exc
 
-    async def mark_staging_published(self, workspace_id: str, manifest: PublicationReceipt) -> dict[str, Any]:
+    async def _staging_environment(self, executor: ExecutorClient) -> dict[str, Any]:
+        status = await executor.status()
+        environment = status.get("environment") if isinstance(status, dict) else {}
+        if not isinstance(environment, dict):
+            raise GatewayServiceError(
+                "staging.inspect_failed",
+                "The executor returned invalid staging status.",
+                retryable=True,
+                status=409,
+            )
+        return environment
+
+    async def mark_staging_published(
+        self, workspace_id: str, manifest: PublicationReceipt
+    ) -> dict[str, Any]:
         executor = self._active_executor(workspace_id)
         if manifest.workspace_id != workspace_id:
             raise GatewayServiceError(
@@ -184,11 +197,18 @@ class GatewayService:
                 status=409,
             ) from exc
 
-    async def publication_batch(self, workspace_id: str, run_id: str, publication_id: str, batch_index: int) -> PublishManifest:
+    async def publication_batch(
+        self, workspace_id: str, run_id: str, publication_id: str, batch_index: int
+    ) -> PublishManifest:
         """Build the next batch of a multi-batch publication from the changes still pending."""
         executor = self._active_executor(workspace_id)
         try:
-            return await executor.manifest(run_id, str(uuid.uuid4()), publication_id=publication_id, batch_index=batch_index)
+            return await executor.manifest(
+                run_id,
+                str(uuid.uuid4()),
+                publication_id=publication_id,
+                batch_index=batch_index,
+            )
         except Exception as exc:
             raise GatewayServiceError(
                 "staging.manifest_failed",
@@ -198,26 +218,17 @@ class GatewayService:
             ) from exc
 
     async def inspect_staging(self, workspace_id: str) -> dict[str, Any]:
-        executor = self._active_executor(workspace_id)
-        status = await executor.status()
-        environment = status.get("environment") if isinstance(status, dict) else {}
-        if not isinstance(environment, dict):
-            raise GatewayServiceError(
-                "staging.inspect_failed",
-                "The executor returned invalid staging status.",
-                retryable=True,
-                status=409,
-            )
+        environment = await self._staging_environment(self._active_executor(workspace_id))
         snapshot = environment.get("agent_snapshot")
         if not isinstance(snapshot, dict):
             snapshot = {}
+        dirty = bool(environment.get("unpublished_changes"))
         return {
             "request_id": "staging-status",
             "ok": True,
-            "output": "Staging is dirty." if environment.get("unpublished_changes") else "Staging is clean.",
+            "output": "Staging is dirty." if dirty else "Staging is clean.",
             "data": {
-                "unpublished_changes": bool(environment.get("unpublished_changes")),
-                "total_known": int(snapshot.get("file_count") or 0),
+                "unpublished_changes": dirty,
                 "snapshot_id": snapshot.get("snapshot_id"),
                 "file_count": int(snapshot.get("file_count") or 0),
                 "total_bytes": int(snapshot.get("total_bytes") or 0),
@@ -238,25 +249,35 @@ class GatewayService:
         timestamp = utc_now()
         self.journal.create_run(run_id, "chat", timestamp)
         self._register_run(run_id)
-        await self._append(run_id, "run.created", {"mode": "chat", "client_request_id": request.client_request_id})
-        self._tasks[run_id] = asyncio.create_task(self._run_chat(run_id, request), name=f"chat-{run_id}")
+        await self._append(
+            run_id,
+            "run.created",
+            {"mode": "chat", "client_request_id": request.client_request_id},
+        )
+        self._tasks[run_id] = asyncio.create_task(
+            self._run_chat(run_id, request), name=f"chat-{run_id}"
+        )
         return run_id
 
     async def start_agent(self, request: AgentRunRequest) -> str:
         if not self.openrouter_key:
-            raise GatewayServiceError("provider.key_required", "Configure an OpenRouter key first.", status=409)
+            raise GatewayServiceError(
+                "provider.key_required", "Configure an OpenRouter key first.", status=409
+            )
         if not self.agent_runtime or request.workspace_id != self.config.workspace_id:
-            raise GatewayServiceError("workspace.invalid", "Recreate the executor for the selected workspace.", status=409)
+            raise GatewayServiceError(
+                "workspace.invalid",
+                "Recreate the executor for the selected workspace.",
+                status=409,
+            )
         if request.approval_policy == "auto" and not request.investigation_model_id:
             assert self.executor is not None
-            inspection = await self.executor.status()
-            environment = inspection.get("environment") if isinstance(inspection, dict) else {}
-            if not isinstance(environment, dict):
-                raise GatewayServiceError("staging.inspect_failed", "The executor returned invalid staging status.", retryable=True, status=409)
+            environment = await self._staging_environment(self.executor)
             if environment.get("unpublished_changes"):
                 raise GatewayServiceError(
                     "staging.not_clean",
-                    "Auto requires clean staging. Review, publish, or discard existing staged changes first.",
+                    "Auto requires clean staging. Review, publish, or discard existing staged "
+                    "changes first.",
                     status=409,
                 )
         if request.workspace_config:
@@ -264,7 +285,10 @@ class GatewayService:
                 request.workspace_id, request.workspace_config, utc_now()
             )
         else:
-            request = replace(request, workspace_config=self.journal.load_workspace_config(request.workspace_id))
+            request = replace(
+                request,
+                workspace_config=self.journal.load_workspace_config(request.workspace_id),
+            )
         run_id = str(uuid.uuid4())
         timestamp = utc_now()
         self.journal.create_run(run_id, request.mode, timestamp)
@@ -311,19 +335,31 @@ class GatewayService:
     async def resume_agent(self, run_id: str) -> bool:
         if not self.openrouter_key or self.agent_runtime is None:
             raise GatewayServiceError(
-                "agent.unavailable", "Configure the key and executor before resuming.", status=409
+                "agent.unavailable",
+                "Configure the key and executor before resuming.",
+                status=409,
             )
         if run_id in self._tasks:
             return False
         run = self.journal.get_run(run_id)
         snapshot = self.journal.load_run_snapshot(run_id)
-        if not run or run.get("state") != "paused" or not snapshot or not snapshot["safe_to_resume"]:
-            raise GatewayServiceError("run.not_resumable", "Run is not at a safe resume point.", status=409)
-        request = AgentRunRequest.from_dict(snapshot["request"])
+        if (
+            not run
+            or run.get("state") != "paused"
+            or not snapshot
+            or not snapshot["safe_to_resume"]
+        ):
+            raise GatewayServiceError(
+                "run.not_resumable", "Run is not at a safe resume point.", status=409
+            )
         # Session approval tiers never survive a resume; the user re-enables them explicitly.
-        request = replace(request, approval_policy="prompt")
+        request = replace(
+            AgentRunRequest.from_dict(snapshot["request"]), approval_policy="prompt"
+        )
         if request.workspace_id != self.config.workspace_id:
-            raise GatewayServiceError("workspace.invalid", "Resume requires the original workspace.", status=409)
+            raise GatewayServiceError(
+                "workspace.invalid", "Resume requires the original workspace.", status=409
+            )
         self._register_run(run_id)
         self._tasks[run_id] = asyncio.create_task(
             self._run_agent(
@@ -342,14 +378,24 @@ class GatewayService:
         try:
             parsed = PermissionDecision(decision)
         except ValueError as exc:
-            raise GatewayServiceError("approval.invalid", "Unknown approval decision.", status=422) from exc
+            raise GatewayServiceError(
+                "approval.invalid", "Unknown approval decision.", status=422
+            ) from exc
         if parsed == PermissionDecision.ASK:
-            raise GatewayServiceError("approval.invalid_scope", "That approval scope is unavailable.", status=422)
-        pending = self.approvals.get(run_id, approval_id)
+            raise GatewayServiceError(
+                "approval.invalid_scope", "That approval scope is unavailable.", status=422
+            )
         if parsed == PermissionDecision.ALLOW_RULE:
+            pending = self.approvals.get(run_id, approval_id)
             if not pending or not pending.request or not pending.workspace_id:
-                raise GatewayServiceError("approval.invalid_scope", "Publish approvals cannot become saved rules.", status=422)
-            self.journal.save_permission_rule(self.journal.rule_for_request(pending.request, pending.workspace_id))
+                raise GatewayServiceError(
+                    "approval.invalid_scope",
+                    "Publish approvals cannot become saved rules.",
+                    status=422,
+                )
+            self.journal.save_permission_rule(
+                self.journal.rule_for_request(pending.request, pending.workspace_id)
+            )
         return self.approvals.resolve(run_id, approval_id, parsed)
 
     async def cancel(self, run_id: str) -> bool:
@@ -378,7 +424,9 @@ class GatewayService:
         event.set()
         return True
 
-    async def events(self, run_id: str, after_id: int = 0) -> AsyncIterator[EventEnvelope | None]:
+    async def events(
+        self, run_id: str, after_id: int = 0
+    ) -> AsyncIterator[EventEnvelope | None]:
         if self.journal.get_run(run_id) is None:
             raise GatewayServiceError("run.not_found", "Run not found.", status=404)
         cursor = max(0, after_id)
@@ -392,7 +440,9 @@ class GatewayService:
             condition = self._conditions.setdefault(run_id, asyncio.Condition())
             try:
                 async with condition:
-                    if self.journal.events_after(run_id, cursor) or self.journal.is_terminal(run_id):
+                    if self.journal.events_after(run_id, cursor) or self.journal.is_terminal(
+                        run_id
+                    ):
                         continue
                     await asyncio.wait_for(condition.wait(), timeout=15.0)
             except TimeoutError:
@@ -419,12 +469,21 @@ class GatewayService:
         cancel_event = self._cancel_events[run_id]
         key = self.openrouter_key
         if key is None:
-            await self._append(run_id, "run.failed", {"code": "provider.key_required", "message": "OpenRouter key unavailable.", "retryable": False})
+            await self._append(
+                run_id,
+                "run.failed",
+                {
+                    "code": "provider.key_required",
+                    "message": "OpenRouter key unavailable.",
+                    "retryable": False,
+                },
+            )
             return
         try:
             await self._append(run_id, "run.started", {"mode": "chat"})
             await self._append(run_id, "model.requested", {"model": request.model})
-            async for provider_event in self.provider_factory().stream_chat(request, key, cancel_event):
+            stream = self.provider_factory().stream_chat(request, key, cancel_event)
+            async for provider_event in stream:
                 if provider_event.text:
                     await self._append(run_id, "model.delta", {"text": provider_event.text})
                 if provider_event.done:
@@ -451,7 +510,11 @@ class GatewayService:
             await self._append(run_id, "model.failed", payload)
             await self._append(run_id, "run.failed", payload)
         except Exception:
-            payload = {"code": "gateway.internal", "message": "The gateway could not complete the request.", "retryable": False}
+            payload = {
+                "code": "gateway.internal",
+                "message": "The gateway could not complete the request.",
+                "retryable": False,
+            }
             await self._append(run_id, "model.failed", payload)
             await self._append(run_id, "run.failed", payload)
         finally:
@@ -469,7 +532,15 @@ class GatewayService:
     ) -> None:
         key = self.openrouter_key
         if key is None or self.agent_runtime is None:
-            await self._append(run_id, "run.failed", {"code": "agent.unavailable", "message": "Agent runtime unavailable.", "retryable": False})
+            await self._append(
+                run_id,
+                "run.failed",
+                {
+                    "code": "agent.unavailable",
+                    "message": "Agent runtime unavailable.",
+                    "retryable": False,
+                },
+            )
             return
         try:
             await self.agent_runtime.run(
@@ -483,7 +554,14 @@ class GatewayService:
             )
         except asyncio.CancelledError:
             if not self.journal.is_terminal(run_id):
-                await self._append(run_id, "run.cancelled", {"partial_output_preserved": True, "staging_preserved_until_executor_stop": True})
+                await self._append(
+                    run_id,
+                    "run.cancelled",
+                    {
+                        "partial_output_preserved": True,
+                        "staging_preserved_until_executor_stop": True,
+                    },
+                )
         finally:
             self._forget_run(run_id)
 
@@ -517,13 +595,44 @@ class GatewayService:
         self._cancel_events.pop(run_id, None)
         self._pause_events.pop(run_id, None)
 
-    def _save_snapshot(self, run_id: str, request: dict[str, Any], messages: list[dict[str, Any]], visible_messages: list[dict[str, Any]], budget: dict[str, Any], safe_to_resume: bool) -> None:
-        self.journal.save_run_snapshot(run_id, request, messages, visible_messages, budget, safe_to_resume=safe_to_resume, updated_at=utc_now())
+    def _pause_requested(self, run_id: str) -> bool:
+        event = self._pause_events.get(run_id)
+        return bool(event and event.is_set())
 
-    def _save_session(self, session_id: str, workspace_id: str, mode: str, internal_messages: list[dict[str, Any]], visible_messages: list[dict[str, Any]]) -> None:
-        self.journal.save_agent_session(session_id, workspace_id, mode, internal_messages, visible_messages, utc_now())
+    def _save_snapshot(
+        self,
+        run_id: str,
+        request: dict[str, Any],
+        messages: list[dict[str, Any]],
+        visible_messages: list[dict[str, Any]],
+        budget: dict[str, Any],
+        safe_to_resume: bool,
+    ) -> None:
+        self.journal.save_run_snapshot(
+            run_id,
+            request,
+            messages,
+            visible_messages,
+            budget,
+            safe_to_resume=safe_to_resume,
+            updated_at=utc_now(),
+        )
 
-    async def _append(self, run_id: str, event_type: str, payload: dict[str, Any]) -> EventEnvelope:
+    def _save_session(
+        self,
+        session_id: str,
+        workspace_id: str,
+        mode: str,
+        internal_messages: list[dict[str, Any]],
+        visible_messages: list[dict[str, Any]],
+    ) -> None:
+        self.journal.save_agent_session(
+            session_id, workspace_id, mode, internal_messages, visible_messages, utc_now()
+        )
+
+    async def _append(
+        self, run_id: str, event_type: str, payload: dict[str, Any]
+    ) -> EventEnvelope:
         event = self.journal.append(run_id, event_type, utc_now(), payload)
         condition = self._conditions.get(run_id)
         if condition:

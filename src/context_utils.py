@@ -11,8 +11,13 @@ def estimate_tokens(text: str) -> int:
 
 def context_source(system_prompt: str, messages: Iterable[Any]) -> list[dict[str, Any]]:
     """The active branch as chat messages, tagged with their ids for compaction."""
-    source: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}] if system_prompt else []
-    source.extend({"role": item.role, "content": item.content, "_message_id": item.id} for item in messages)
+    source: list[dict[str, Any]] = (
+        [{"role": "system", "content": system_prompt}] if system_prompt else []
+    )
+    source.extend(
+        {"role": item.role, "content": item.content, "_message_id": item.id}
+        for item in messages
+    )
     return source
 
 
@@ -26,7 +31,14 @@ def compact_messages(
     source = [dict(item) for item in messages]
     before = sum(estimate_tokens(str(item.get("content") or "")) for item in source)
     if before <= max_tokens:
-        return [{key: value for key, value in item.items() if key != "_message_id"} for item in source], "", []
+        return (
+            [
+                {key: value for key, value in item.items() if key != "_message_id"}
+                for item in source
+            ],
+            "",
+            [],
+        )
     system = [source[0]] if source and source[0].get("role") == "system" else []
     body = source[len(system) :]
     recent: list[dict[str, Any]] = []

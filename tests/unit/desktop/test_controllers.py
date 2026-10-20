@@ -2,6 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from src.controllers import ConversationController, GenerationController
+from src.desktop.conversations import usage_text
 from src.models import ModelOption
 from src.storage import Storage
 
@@ -46,8 +47,11 @@ def test_generation_controller_persists_compaction_and_assistant_link(tmp_path: 
         {"prompt_tokens": 3, "completion_tokens": 2, "actual_model": "model/a"}
     )
 
-    run = storage.generation_run("run-1")
-    assert run is not None
+    [run] = [
+        item
+        for item in storage.list_generation_runs(conversation.id)
+        if item["run_id"] == "run-1"
+    ]
     assert run["status"] == "completed"
     assert run["parent_message_id"] == user.id
     assert run["assistant_message_id"] == assistant_id
@@ -83,3 +87,16 @@ def test_generation_queue_survives_each_new_run(tmp_path: Path) -> None:
     controller.begin("conversation", 2, "model/a", "chat")
     assert controller.next_input().text == "second"  # type: ignore[union-attr]
     storage.close()
+
+
+def test_run_status_and_usage_summary_use_the_same_wording() -> None:
+    status = GenerationController.format_usage(
+        {"prompt_tokens": 1_000, "completion_tokens": 234, "cached_tokens": 5, "cost": 0.0012},
+        cancelled=False,
+    )
+    summary = usage_text(
+        {"input_tokens": 1_000, "output_tokens": 234, "cached_tokens": 5, "cost": 0.0012}
+    )
+
+    assert status == "Done · 1,234 tokens · 5 cached · $0.001200"
+    assert summary == "1,234 tokens · 5 cached · $0.001200"

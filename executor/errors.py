@@ -31,13 +31,32 @@ TOOL_TIMEOUT = "tool.timeout"
 IO_INTERNAL = "io.internal"
 TOOL_INTERNAL = "tool.internal"
 
-ERROR_CODES = frozenset({
-    INVALID_ARGUMENTS, PATH_MISSING, PATH_INVALID_TYPE, PATH_INVALID, PATH_UNSAFE, LIMIT_EXCEEDED,
-    INVALID_UTF8, WORKING_DIRECTORY_INVALID, COMMAND_INVALID_ARGUMENTS, STAGING_CONFLICT,
-    STAGING_SHRINK_WARNING, EDIT_NO_MATCH, EDIT_TOO_MANY_MATCHES, EDIT_TOO_FEW_MATCHES,
-    EDIT_MALFORMED_CONTEXT, APPLY_PATCH_MALFORMED, CHECKPOINT_CORRUPT, CHECKPOINT_NOT_FOUND,
-    PERMISSION_DENIED, TOOL_TIMEOUT, IO_INTERNAL, TOOL_INTERNAL,
-})
+ERROR_CODES = frozenset(
+    {
+        INVALID_ARGUMENTS,
+        PATH_MISSING,
+        PATH_INVALID_TYPE,
+        PATH_INVALID,
+        PATH_UNSAFE,
+        LIMIT_EXCEEDED,
+        INVALID_UTF8,
+        WORKING_DIRECTORY_INVALID,
+        COMMAND_INVALID_ARGUMENTS,
+        STAGING_CONFLICT,
+        STAGING_SHRINK_WARNING,
+        EDIT_NO_MATCH,
+        EDIT_TOO_MANY_MATCHES,
+        EDIT_TOO_FEW_MATCHES,
+        EDIT_MALFORMED_CONTEXT,
+        APPLY_PATCH_MALFORMED,
+        CHECKPOINT_CORRUPT,
+        CHECKPOINT_NOT_FOUND,
+        PERMISSION_DENIED,
+        TOOL_TIMEOUT,
+        IO_INTERNAL,
+        TOOL_INTERNAL,
+    }
+)
 
 _CAPACITY_ERRNOS = frozenset({errno.ENOSPC, errno.EDQUOT, errno.EFBIG})
 
@@ -63,7 +82,9 @@ _ABSOLUTE_PATH = re.compile(r"(?:[A-Za-z]:[\\/]|\\\\[^\s,;)]*|/)[^\s,;)]*")
 
 
 def safe_message(value: object) -> str:
-    return _ABSOLUTE_PATH.sub("<workspace-path>", str(value or "The executor rejected the request."))[:2_000]
+    return _ABSOLUTE_PATH.sub(
+        "<workspace-path>", str(value or "The executor rejected the request.")
+    )[:2_000]
 
 
 def classify_error(exc: BaseException) -> ExecutorToolError:
@@ -85,10 +106,14 @@ def classify_error(exc: BaseException) -> ExecutorToolError:
     if isinstance(exc, FileNotFoundError):
         return ExecutorToolError(PATH_MISSING, "The path does not exist.")
     if isinstance(exc, IsADirectoryError | NotADirectoryError):
-        return ExecutorToolError(PATH_INVALID_TYPE, "The path is not the expected file or directory type.")
+        return ExecutorToolError(
+            PATH_INVALID_TYPE, "The path is not the expected file or directory type."
+        )
     if isinstance(exc, OSError):
         if exc.errno in _CAPACITY_ERRNOS:
-            return ExecutorToolError(LIMIT_EXCEEDED, "The staging volume has no capacity left for this operation.")
+            return ExecutorToolError(
+                LIMIT_EXCEEDED, "The staging volume has no capacity left for this operation."
+            )
         return ExecutorToolError(IO_INTERNAL, "The executor could not complete the operation.")
     if isinstance(exc, ValueError | TypeError):
         return ExecutorToolError(INVALID_ARGUMENTS, safe_message(exc))

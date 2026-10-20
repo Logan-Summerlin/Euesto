@@ -11,7 +11,6 @@ import httpx
 
 from shared.coercion import optional_float, optional_int
 from shared.requests import ChatRequest
-from shared.tools import openrouter_tools
 
 from .errors import ProviderError
 
@@ -132,6 +131,29 @@ def build_payload(request: ChatRequest) -> dict[str, Any]:
     if options.get("stop") and "stop" in supported:
         payload["stop"] = [str(item) for item in options["stop"] if str(item)][:8]
     return payload
+
+
+def openrouter_tools(enabled: dict[str, bool]) -> list[dict[str, Any]]:
+    """The OpenRouter-hosted server tools enabled in the composer."""
+    tools: list[dict[str, Any]] = []
+    if enabled.get("web_search"):
+        tools.append(
+            {
+                "type": "openrouter:web_search",
+                "parameters": {
+                    "search_context_size": "low",
+                    "max_total_results": 12,
+                    "max_results": 4,
+                },
+            }
+        )
+    if enabled.get("web_fetch"):
+        tools.append(
+            {"type": "openrouter:web_fetch", "parameters": {"max_content_tokens": 3000}}
+        )
+    if enabled.get("datetime"):
+        tools.append({"type": "openrouter:datetime"})
+    return tools
 
 
 def provider_routing(value: dict[str, Any]) -> dict[str, Any]:

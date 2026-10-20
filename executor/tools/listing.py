@@ -1,11 +1,13 @@
 """Pagination cursors and listing lines shared by the read-only tools."""
+
 from __future__ import annotations
 
 import base64
 import binascii
 from pathlib import Path
 
-from ..errors import INVALID_ARGUMENTS, ExecutorToolError
+from ..errors import INVALID_ARGUMENTS, PATH_INVALID_TYPE, ExecutorToolError
+from ..paths import safe_path
 
 MAX_CURSOR_OFFSET = 100_000
 
@@ -24,14 +26,36 @@ def decode_cursor(value: object, tool: str, *, maximum: int | None = MAX_CURSOR_
     except (ValueError, UnicodeError, binascii.Error):
         raise ExecutorToolError(INVALID_ARGUMENTS, f"Invalid {tool} result cursor") from None
     if offset < 0 or (maximum is not None and offset > maximum):
-        raise ExecutorToolError(INVALID_ARGUMENTS, f"{tool.capitalize()} result cursor is outside the bounded pagination range")
+        raise ExecutorToolError(
+            INVALID_ARGUMENTS,
+            f"{tool.capitalize()} result cursor is outside the bounded pagination range",
+        )
     return offset
+
+
+def listing_directory(root: Path, arguments: dict, allowed: frozenset[str], tool: str) -> Path:
+    """Validate a listing tool's arguments and resolve its directory ``path`` (default ``.``)."""
+    if set(arguments) - allowed:
+        raise ExecutorToolError(INVALID_ARGUMENTS, f"Unknown {tool} arguments")
+    relative = arguments.get("path", ".")
+    if not isinstance(relative, str):
+        raise ExecutorToolError(INVALID_ARGUMENTS, f"{tool} path must be a string")
+    directory = safe_path(root, relative, must_exist=True)
+    if not directory.is_dir():
+        raise ExecutorToolError(PATH_INVALID_TYPE, f"{tool} target is not a directory")
+    return directory
 
 
 def requested_results(arguments: dict, default: int) -> int:
     requested = arguments.get("max_results", default)
-    if not isinstance(requested, int) or isinstance(requested, bool) or not 1 <= requested <= 2000:
-        raise ExecutorToolError(INVALID_ARGUMENTS, "max_results must be an integer from 1 to 2000")
+    if (
+        not isinstance(requested, int)
+        or isinstance(requested, bool)
+        or not 1 <= requested <= 2000
+    ):
+        raise ExecutorToolError(
+            INVALID_ARGUMENTS, "max_results must be an integer from 1 to 2000"
+        )
     return requested
 
 

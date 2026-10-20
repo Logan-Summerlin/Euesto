@@ -31,9 +31,7 @@ class TrayService:
         menu.addAction("Quit", close)
         self.icon.setContextMenu(menu)
         self.icon.setToolTip("Local OpenRouter Chat · Ctrl+Alt+Space")
-        self.icon.activated.connect(
-            lambda reason: self._activated(reason, toggle_visibility)
-        )
+        self.icon.activated.connect(lambda reason: self._activated(reason, toggle_visibility))
         self.icon.show()
 
     @staticmethod

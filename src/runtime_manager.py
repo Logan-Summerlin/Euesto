@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -16,6 +17,8 @@ from queue import Empty, Queue
 import httpx
 from PySide6.QtCore import QObject, QThread, Signal
 
+from shared.responses import GatewayStatus
+
 from .gateway_client import DEFAULT_GATEWAY_URL
 from .workspace_broker import canonical_workspace, workspace_id
 
@@ -29,6 +32,8 @@ EGRESS_MODE_ENV = "LOCAL_CHAT_EXECUTOR_EGRESS"
 EGRESS_OVERLAY = "compose.egress.yaml"
 IMAGE_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9./_:@-]{0,511}$")
 IMAGE_DIGEST_PATTERN = re.compile(r"@sha256:[0-9a-f]{64}$")
+DOCKER_INFO = ["info", "--format", "{{.ServerVersion}}"]
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 class RuntimeErrorMessage(RuntimeError):
@@ -57,14 +62,20 @@ class RuntimeImages:
         try:
             data = json.loads(manifest.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise RuntimeErrorMessage(f"The bundled Docker image manifest is invalid: {exc}") from exc
+            raise RuntimeErrorMessage(
+                f"The bundled Docker image manifest is invalid: {exc}"
+            ) from exc
         if not isinstance(data, dict):
             raise RuntimeErrorMessage("The bundled Docker image manifest must be an object.")
         if data.get("schema_version") != 1:
-            raise RuntimeErrorMessage("The bundled Docker image manifest has an unsupported version.")
+            raise RuntimeErrorMessage(
+                "The bundled Docker image manifest has an unsupported version."
+            )
         gateway = _image_ref(data.get("gateway"), "gateway")
         executor = _image_ref(data.get("executor"), "executor")
-        if not IMAGE_DIGEST_PATTERN.search(gateway) or not IMAGE_DIGEST_PATTERN.search(executor):
+        if not IMAGE_DIGEST_PATTERN.search(gateway) or not IMAGE_DIGEST_PATTERN.search(
+            executor
+        ):
             raise RuntimeErrorMessage("The bundled Docker image manifest is not digest-pinned.")
         return cls(gateway, executor, True)
 
@@ -95,32 +106,29 @@ def bundle_root() -> Path:
 
 
 def locate_docker() -> Path | None:
-    candidates: list[Path] = []
     found = shutil.which("docker")
-    if found:
-        candidates.append(Path(found))
-    if sys.platform == "win32":
-        program_files = os.environ.get("ProgramFiles")
-        local_app_data = os.environ.get("LOCALAPPDATA")
-        if program_files:
-            candidates.append(Path(program_files) / "Docker" / "Docker" / "resources" / "bin" / "docker.exe")
-        if local_app_data:
-            candidates.append(Path(local_app_data) / "Docker" / "resources" / "bin" / "docker.exe")
-    return next((path for path in candidates if path.is_file()), None)
+    return _first_file(
+        [Path(found)] if found else [],
+        ("ProgramFiles", "Docker/Docker/resources/bin/docker.exe"),
+        ("LOCALAPPDATA", "Docker/resources/bin/docker.exe"),
+    )
 
 
 def locate_docker_desktop() -> Path | None:
-    if sys.platform != "win32":
-        return None
-    candidates: list[Path] = []
-    program_files = os.environ.get("ProgramFiles")
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    if program_files:
-        candidates.append(Path(program_files) / "Docker" / "Docker" / "Docker Desktop.exe")
-    if local_app_data:
-        candidates.append(
-            Path(local_app_data) / "Programs" / "DockerDesktop" / "Docker Desktop.exe"
-        )
+    return _first_file(
+        [],
+        ("ProgramFiles", "Docker/Docker/Docker Desktop.exe"),
+        ("LOCALAPPDATA", "Programs/DockerDesktop/Docker Desktop.exe"),
+    )
+
+
+def _first_file(candidates: list[Path], *windows_paths: tuple[str, str]) -> Path | None:
+    """The first existing file among ``candidates`` and, on Windows, ``(env root, path)`` pairs."""
+    if sys.platform == "win32":
+        for variable, relative in windows_paths:
+            root = os.environ.get(variable)
+            if root:
+                candidates.append(Path(root, *relative.split("/")))
     return next((path for path in candidates if path.is_file()), None)
 
 
@@ -133,33 +141,34 @@ def create_session_tokens(session_dir: Path) -> tuple[str, str]:
     return gateway_token, executor_token
 
 
-def compose_base_args(compose_file: Path, *, project_name: str = PROJECT_NAME, overlays: tuple[Path, ...] = ()) -> list[str]:
-    arguments = [
-        "compose",
-        "--project-name",
-        project_name,
-        "--file",
-        str(compose_file),
-    ]
+def compose_base_args(compose_file: Path, *, overlays: tuple[Path, ...] = ()) -> list[str]:
+    arguments = ["compose", "--project-name", PROJECT_NAME, "--file", str(compose_file)]
     for overlay in overlays:
         arguments.extend(("--file", str(overlay)))
     return arguments
 
 
-def egress_overlays(bundle: Path, *, prebuilt: bool, environ: dict[str, str] | None = None) -> tuple[Path, ...]:
+def egress_overlays(
+    bundle: Path, *, prebuilt: bool, environ: dict[str, str] | None = None
+) -> tuple[Path, ...]:
     """Compose overlays for the opt-in allowlisted-egress executor profile.
 
     The default (``LOCAL_CHAT_EXECUTOR_EGRESS`` unset, ``none``, or ``off``) adds nothing, so the
     executor keeps ``network_mode: none``. ``allowlisted`` adds ``docker/compose.egress.yaml``
     (developer bundles only while the profile is a prototype); any other value fails closed.
     """
-    mode = (os.environ if environ is None else environ).get(EGRESS_MODE_ENV, "").strip().casefold()
+    mode = (
+        (os.environ if environ is None else environ).get(EGRESS_MODE_ENV, "").strip().casefold()
+    )
     if mode in {"", "none", "off"}:
         return ()
     if mode != "allowlisted":
         raise RuntimeErrorMessage(f"{EGRESS_MODE_ENV} must be 'allowlisted' or unset.")
     if prebuilt:
-        raise RuntimeErrorMessage("Allowlisted executor egress is a developer prototype and is not available with release images.")
+        raise RuntimeErrorMessage(
+            "Allowlisted executor egress is a developer prototype and is not available "
+            "with release images."
+        )
     overlay = bundle / "docker" / EGRESS_OVERLAY
     if not overlay.is_file():
         raise RuntimeErrorMessage("The allowlisted egress Compose overlay is missing.")
@@ -176,11 +185,21 @@ def _image_ref(value: object, name: str) -> str:
 def _write_secret(path: Path, value: str) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(value, encoding="utf-8", newline="")
-    try:
+    with contextlib.suppress(OSError):
         os.chmod(temporary, 0o600)
-    except OSError:
-        pass
     os.replace(temporary, path)
+
+
+def _spawn_detached(command: list[str], **options: object) -> None:
+    """Start a process that outlives the app, without a console window or output pipes."""
+    subprocess.Popen(
+        command,
+        close_fds=True,
+        creationflags=CREATE_NO_WINDOW | getattr(subprocess, "DETACHED_PROCESS", 0),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        **options,
+    )
 
 
 class RuntimeWorker(QThread):
@@ -216,17 +235,16 @@ class RuntimeWorker(QThread):
         try:
             if not self.compose_file.is_file():
                 raise RuntimeErrorMessage("The bundled Docker Compose file is missing.")
-            self.overlays = egress_overlays(self.bundle, prebuilt=self.images.prebuilt) if self.target.workspace else ()
+            if self.target.workspace:
+                self.overlays = egress_overlays(self.bundle, prebuilt=self.images.prebuilt)
             self.docker = locate_docker()
             if self.docker is None:
                 raise RuntimeErrorMessage(
                     "Docker Desktop is not installed or docker.exe is unavailable. "
                     "Install Docker Desktop using Linux containers, then try again."
                 )
-            gateway_token, executor_token = create_session_tokens(
-                self.data_dir / "gateway-session"
-            )
-            self.secret_values = (gateway_token, executor_token)
+            self.secret_values = create_session_tokens(self.data_dir / "gateway-session")
+            gateway_token = self.secret_values[0]
             self.environment = self._compose_environment()
             self.progress.emit("starting", "Checking Docker Desktop…")
             self._ensure_docker_ready()
@@ -252,9 +270,7 @@ class RuntimeWorker(QThread):
 
             self.progress.emit("checking", "Waiting for the selected workspace to be ready…")
             self._wait_for_readiness(gateway_token)
-            self.succeeded.emit(
-                RuntimeResult(self.target, gateway_token)
-            )
+            self.succeeded.emit(RuntimeResult(self.target, gateway_token))
         except RuntimeErrorMessage as exc:
             if not self.stop_event.is_set():
                 self.failed.emit(str(exc))
@@ -280,51 +296,41 @@ class RuntimeWorker(QThread):
         return environment
 
     def _ensure_docker_ready(self) -> None:
-        assert self.docker is not None
-        try:
-            self._run(["info", "--format", "{{.ServerVersion}}"], timeout=8)
-        except RuntimeErrorMessage:
+        if not self._docker_responds():
             desktop = locate_docker_desktop()
             if desktop is None:
                 raise RuntimeErrorMessage(
                     "Docker Desktop is installed incorrectly or is not running. "
                     "Start Docker Desktop and try again."
-                ) from None
-            self.progress.emit("starting", "Starting Docker Desktop…")
-            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
-                subprocess, "DETACHED_PROCESS", 0
-            )
-            try:
-                subprocess.Popen(
-                    [str(desktop)],
-                    close_fds=True,
-                    creationflags=flags,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
                 )
+            self.progress.emit("starting", "Starting Docker Desktop…")
+            try:
+                _spawn_detached([str(desktop)])
             except OSError as exc:
                 raise RuntimeErrorMessage(f"Could not start Docker Desktop: {exc}") from exc
-
-        deadline = time.monotonic() + DOCKER_START_TIMEOUT_SECONDS
-        while time.monotonic() < deadline:
-            self._check_stopped()
-            try:
-                self._run(["info", "--format", "{{.ServerVersion}}"], timeout=8)
-            except RuntimeErrorMessage:
+            deadline = time.monotonic() + DOCKER_START_TIMEOUT_SECONDS
+            while not self._docker_responds():
+                self._check_stopped()
+                if time.monotonic() >= deadline:
+                    raise RuntimeErrorMessage(
+                        "Docker Desktop did not become ready within two minutes. "
+                        "Open Docker Desktop, confirm Linux containers are enabled, and retry."
+                    )
                 time.sleep(1)
-                continue
-            try:
-                self._run(["compose", "version"], timeout=8)
-            except RuntimeErrorMessage as exc:
-                raise RuntimeErrorMessage(
-                    "Docker Compose is not available in this Docker Desktop installation. "
-                    f"Update Docker Desktop and retry. ({exc})"
-                ) from exc
-            return
-        raise RuntimeErrorMessage(
-            "Docker Desktop did not become ready within two minutes. "
-            "Open Docker Desktop, confirm Linux containers are enabled, and retry."
-        )
+        try:
+            self._run(["compose", "version"], timeout=8)
+        except RuntimeErrorMessage as exc:
+            raise RuntimeErrorMessage(
+                "Docker Compose is not available in this Docker Desktop installation. "
+                f"Update Docker Desktop and retry. ({exc})"
+            ) from exc
+
+    def _docker_responds(self) -> bool:
+        try:
+            self._run(DOCKER_INFO, timeout=8)
+        except RuntimeErrorMessage:
+            return False
+        return True
 
     def _compose(
         self, arguments: list[str], *, timeout: float, allow_failure: bool = False
@@ -335,15 +341,8 @@ class RuntimeWorker(QThread):
             allow_failure=allow_failure,
         )
 
-    def _run(
-        self,
-        arguments: list[str],
-        *,
-        timeout: float,
-        allow_failure: bool = False,
-    ) -> str:
+    def _run(self, arguments: list[str], *, timeout: float, allow_failure: bool = False) -> str:
         assert self.docker is not None
-        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         try:
             process = subprocess.Popen(
                 [str(self.docker), *arguments],
@@ -354,7 +353,7 @@ class RuntimeWorker(QThread):
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                creationflags=flags,
+                creationflags=CREATE_NO_WINDOW,
             )
         except OSError as exc:
             raise RuntimeErrorMessage(f"Could not run Docker: {exc}") from exc
@@ -394,11 +393,8 @@ class RuntimeWorker(QThread):
             except Empty:
                 continue
         reader.join(timeout=1)
-        while True:
-            try:
-                output.append(chunks.get_nowait())
-            except Empty:
-                break
+        while not chunks.empty():
+            output.append(chunks.get_nowait())
         text = "".join(output)
         if process.returncode and not allow_failure:
             raise RuntimeErrorMessage(self._command_error(arguments, text))
@@ -431,27 +427,29 @@ class RuntimeWorker(QThread):
                     health = client.get(f"{DEFAULT_GATEWAY_URL}/health")
                     if health.status_code != 200:
                         raise RuntimeErrorMessage("Gateway health endpoint is not ready.")
-                    status_response = client.get(f"{DEFAULT_GATEWAY_URL}/v1/status", headers=headers)
+                    status_response = client.get(
+                        f"{DEFAULT_GATEWAY_URL}/v1/status", headers=headers
+                    )
                     if status_response.status_code == 401:
                         raise RuntimeErrorMessage("Gateway credentials were rejected.")
                     status_response.raise_for_status()
-                    status = status_response.json()
-                if not isinstance(status, dict) or not status.get("ready"):
+                    payload = status_response.json()
+                status = GatewayStatus.from_dict(payload) if isinstance(payload, dict) else None
+                if status is None or not status.ready:
                     last_detail = "Gateway is still starting."
-                elif self.target.workspace:
-                    active = str(status.get("active_workspace") or "")
-                    supported = {str(value) for value in status.get("supported_modes") or ()}
-                    if (
-                        active == self.target.workspace_identity
-                        and status.get("executor_present") is True
-                        and status.get("executor_status") == "ready"
-                        and {"plan", "agent"}.issubset(supported)
-                    ):
-                        return
-                    last_detail = "The isolated executor is still preparing the workspace."
-                else:
+                elif not self.target.workspace:
                     return
-            except (httpx.HTTPError, OSError, ValueError, RuntimeErrorMessage) as exc:
+                elif status.serves_workspace(self.target.workspace_identity):
+                    return
+                else:
+                    last_detail = "The isolated executor is still preparing the workspace."
+            except (
+                httpx.HTTPError,
+                OSError,
+                TypeError,
+                ValueError,
+                RuntimeErrorMessage,
+            ) as exc:
                 last_detail = str(exc)
             self.progress.emit("checking", last_detail)
             time.sleep(1)
@@ -477,13 +475,10 @@ class RuntimeManager(QObject):
         super().__init__(parent)
         self.data_dir = Path(data_dir)
         self.bundle = bundle_root()
-        self.require_manifest = bool(getattr(sys, "frozen", False))
         self.image_error = ""
         self.images: RuntimeImages | None = None
         try:
-            self.images = RuntimeImages.for_bundle(
-                self.bundle, require_manifest=self.require_manifest
-            )
+            self.images = RuntimeImages.for_bundle(self.bundle)
         except RuntimeErrorMessage as exc:
             self.image_error = str(exc)
         self.worker: RuntimeWorker | None = None
@@ -494,11 +489,8 @@ class RuntimeManager(QObject):
         self.stop_worker()
         self.target = target
         self.setupStarted.emit()
-        if self.image_error:
-            self._failed(self.image_error)
-            return
         if self.images is None:
-            self._failed("The local Docker image configuration is unavailable.")
+            self._failed(self.image_error)
             return
         worker = RuntimeWorker(
             bundle=self.bundle,
@@ -531,33 +523,27 @@ class RuntimeManager(QObject):
         compose_file = self.bundle / "docker" / "compose.yaml"
         if docker is None or not compose_file.is_file():
             return
-        environment = os.environ.copy()
-        environment["LOCAL_CHAT_SECRETS_DIR"] = str(self.data_dir / "gateway-session")
-        try:
-            overlays = egress_overlays(self.bundle, prebuilt=False) if target and target.workspace else ()
-        except RuntimeErrorMessage:
-            overlays = ()
-        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
-            subprocess, "DETACHED_PROCESS", 0
-        )
-        try:
-            subprocess.Popen(
+        environment = {
+            **os.environ,
+            "LOCAL_CHAT_SECRETS_DIR": str(self.data_dir / "gateway-session"),
+        }
+        agent = bool(target and target.workspace)
+        overlays: tuple[Path, ...] = ()
+        if agent:
+            with contextlib.suppress(RuntimeErrorMessage):
+                overlays = egress_overlays(self.bundle, prebuilt=False)
+        with contextlib.suppress(OSError):
+            _spawn_detached(
                 [
                     str(docker),
                     *compose_base_args(compose_file, overlays=overlays),
-                    *( ["--profile", "agent"] if target and target.workspace else [] ),
+                    *(["--profile", "agent"] if agent else []),
                     "down",
                     "--remove-orphans",
                 ],
                 cwd=str(self.bundle),
                 env=environment,
-                close_fds=True,
-                creationflags=flags,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
             )
-        except OSError:
-            pass
 
     def _ready(self, result: object) -> None:
         self.ready.emit(result)
@@ -575,15 +561,14 @@ class RuntimeManager(QObject):
 
 
 def _redact_output(
-    output: str,
-    environment: dict[str, str],
-    secret_values: tuple[str, ...] = (),
+    output: str, environment: dict[str, str], secret_values: tuple[str, ...] = ()
 ) -> str:
     value = output.strip()
-    for secret in (
-        *(environment.get(key, "") for key in ("LOCAL_CHAT_GATEWAY_TOKEN", "LOCAL_CHAT_EXECUTOR_TOKEN")),
-        *secret_values,
-    ):
+    environment_secrets = (
+        environment.get(key, "")
+        for key in ("LOCAL_CHAT_GATEWAY_TOKEN", "LOCAL_CHAT_EXECUTOR_TOKEN")
+    )
+    for secret in (*environment_secrets, *secret_values):
         if secret:
             value = value.replace(secret, "[REDACTED]")
     for token_name in ("gateway_token.txt", "executor_token.txt"):

@@ -10,7 +10,7 @@ from executor.paths import UnsafePath, assert_unique_paths, normalize_relative, 
 from executor.staging import sha256_file
 from executor.tools.edit import edit
 from executor.tools.find import find
-from executor.tools.grep import search_text
+from executor.tools.grep import grep
 from executor.tools.ls import ls
 from executor.tools.read import read
 from executor.tools.write import write
@@ -43,7 +43,9 @@ def test_read_binary_invalid_utf8_and_ranges_are_rejected(tmp_path: Path) -> Non
     with pytest.raises(ValueError, match="valid UTF-8"):
         read(root, {"path": "invalid"}, max_bytes=100)
     (root / "lines").write_text("one\ntwo\nthree\n", encoding="utf-8")
-    text, metadata = read(root, {"path": "lines", "start_line": 2, "end_line": 2}, max_bytes=100)
+    text, metadata = read(
+        root, {"path": "lines", "start_line": 2, "end_line": 2}, max_bytes=100
+    )
     assert text == "two"
     assert metadata["start_line"] == 2
 
@@ -51,16 +53,49 @@ def test_read_binary_invalid_utf8_and_ranges_are_rejected(tmp_path: Path) -> Non
 def test_write_edit_hash_occurrence_result_and_shrink_guards(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
-    write(root, {"path": "file.txt", "content": "alpha\nbeta\n"}, max_bytes=100, max_checkpoint_bytes=100_000_000)
+    write(
+        root,
+        {"path": "file.txt", "content": "alpha\nbeta\n"},
+        max_bytes=100,
+        max_checkpoint_bytes=100_000_000,
+    )
     with pytest.raises(ValueError, match="Staging hash conflict"):
-        write(root, {"path": "file.txt", "content": "x", "expected_sha256": "0" * 64}, max_bytes=100, max_checkpoint_bytes=100_000_000)
+        write(
+            root,
+            {"path": "file.txt", "content": "x", "expected_sha256": "0" * 64},
+            max_bytes=100,
+            max_checkpoint_bytes=100_000_000,
+        )
     old_hash = sha256_file(root / "file.txt")
-    _, result = edit(root, {"path": "file.txt", "old_str": "beta", "new_str": "gamma", "expected_occurrences": 1, "expected_sha256": old_hash}, max_target_bytes=100, max_result_bytes=100, max_checkpoint_bytes=100_000_000)
+    _, result = edit(
+        root,
+        {
+            "path": "file.txt",
+            "old_str": "beta",
+            "new_str": "gamma",
+            "expected_occurrences": 1,
+            "expected_sha256": old_hash,
+        },
+        max_target_bytes=100,
+        max_result_bytes=100,
+        max_checkpoint_bytes=100_000_000,
+    )
     assert result["old_sha256"] == old_hash
     with pytest.raises(ValueError, match="occurrence conflict"):
-        edit(root, {"path": "file.txt", "old_str": "missing", "new_str": "x"}, max_target_bytes=100, max_result_bytes=100, max_checkpoint_bytes=100_000_000)
+        edit(
+            root,
+            {"path": "file.txt", "old_str": "missing", "new_str": "x"},
+            max_target_bytes=100,
+            max_result_bytes=100,
+            max_checkpoint_bytes=100_000_000,
+        )
     with pytest.raises(ValueError, match="mutation limit"):
-        write(root, {"path": "large", "content": "x" * 101}, max_bytes=100, max_checkpoint_bytes=100_000_000)
+        write(
+            root,
+            {"path": "large", "content": "x" * 101},
+            max_bytes=100,
+            max_checkpoint_bytes=100_000_000,
+        )
     large = root / "large-edit"
     large.write_text("line\n" * 50, encoding="utf-8")
     with pytest.raises(Exception, match="shrink"):
@@ -72,7 +107,13 @@ def test_search_scan_budget_and_pagination_metadata(tmp_path: Path) -> None:
     root.mkdir()
     (root / "small.txt").write_text("needle\n", encoding="utf-8")
     (root / "large.txt").write_text("needle\n" * 20, encoding="utf-8")
-    output, metadata = search_text(root, {"path": ".", "query": "needle", "max_results": 1}, max_bytes=20, max_results=1)
+    output, metadata = grep(
+        root,
+        {"path": ".", "query": "needle", "max_results": 1},
+        max_scan_bytes=20,
+        max_output_bytes=10_000,
+        max_results=1,
+    )
     assert "small.txt:1:needle" in output
     assert metadata["files_skipped_too_large"] == 1
     assert metadata["files_searched"] == 1
@@ -86,10 +127,16 @@ def test_find_and_ls_pagination_traversal_and_secret_filtering(tmp_path: Path) -
         (root / f"file{index}.txt").write_text("x", encoding="utf-8")
     (root / ".env").write_text("secret", encoding="utf-8")
     first, meta = find(root, {"path": ".", "glob": "*.txt", "max_results": 2}, max_results=2)
-    second, _ = find(root, {"path": ".", "glob": "*.txt", "max_results": 2, "cursor": meta["next_cursor"]}, max_results=2)
+    second, _ = find(
+        root,
+        {"path": ".", "glob": "*.txt", "max_results": 2, "cursor": meta["next_cursor"]},
+        max_results=2,
+    )
     assert meta["truncated"] and set(first.splitlines()).isdisjoint(second.splitlines())
     first, meta = ls(root, {"path": ".", "max_results": 2}, max_results=2)
-    second, _ = ls(root, {"path": ".", "max_results": 2, "cursor": meta["next_cursor"]}, max_results=2)
+    second, _ = ls(
+        root, {"path": ".", "max_results": 2, "cursor": meta["next_cursor"]}, max_results=2
+    )
     assert meta["truncated"] and set(first.splitlines()).isdisjoint(second.splitlines())
     assert ".env" not in first and ".env" not in second
     with pytest.raises(UnsafePath):
@@ -119,8 +166,14 @@ def test_path_traversal_links_hard_links_and_secret_restrictions(tmp_path: Path)
         read(root, {"path": "hard"}, max_bytes=100)
 
 
-def test_budget_iteration_tool_wall_and_cost_exhaustion_and_remaining_reporting(monkeypatch: pytest.MonkeyPatch) -> None:
-    for expected, attribute, value in (("iteration", "iterations", 3), ("tool-call", "tool_calls", 3), ("cost", "cost", 2.0)):
+def test_budget_iteration_tool_wall_and_cost_exhaustion_and_remaining_reporting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for expected, attribute, value in (
+        ("iteration", "iterations", 3),
+        ("tool-call", "tool_calls", 3),
+        ("cost", "cost", 2.0),
+    ):
         budget = RunBudget(2, 5, 1.0, max_tool_calls=2)
         setattr(budget, attribute, value)
         with pytest.raises(BudgetExceededError, match=expected):
@@ -141,7 +194,9 @@ def test_budget_iteration_tool_wall_and_cost_exhaustion_and_remaining_reporting(
         budget.check()
 
 
-def test_reparse_point_security_contract_and_hashes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_reparse_point_security_contract_and_hashes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     root = tmp_path / "root"
     root.mkdir()
     target = root / "target"

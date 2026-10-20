@@ -35,7 +35,7 @@ pytest --co                          # inspect collection
 
 Qt Quick rendering tests (`tests/ui/test_transcript_qml.py`) are `slow`: they load QML through an offscreen `QQmlApplicationEngine` and skip when PySide6/Qt Quick cannot load (on Linux, install `libegl1`). Every test must be discoverable through `testpaths`; CI must use marker expressions, never curated file lists or test-count allowlists.
 
-New tests are placed by domain: `tests/unit/<domain>/` (`desktop`, `egress`, `executor`, `gateway`, `publication`), `tests/ui/` for Qt tests, `tests/docker/` for container tests, and `tests/structural/` for structural checks. The remaining flat `tests/*.py` files move into these folders as they are touched; `integration/` and `security/` folders are created when their first test moves.
+Tests are placed by domain: `tests/unit/<domain>/` (`desktop`, `egress`, `executor`, `gateway`, `publication`, `shared`), `tests/ui/` for Qt tests, `tests/docker/` for container tests, and `tests/structural/` for structural and documentation checks. No test lives directly in `tests/`, and test file names are unique across folders (the folders are not packages); `tests/structural/test_documentation_layout.py` enforces both.
 
 ## Async test policy
 
@@ -55,7 +55,7 @@ This is the one authoritative list of check commands; other documents link here.
 pytest -m "not slow and not docker"
 pytest -m "slow and not docker"
 pytest -m docker
-ruff check .
+ruff check . && ruff format --check .
 python -m compileall -q app.py src server shared executor egress tests scripts
 pyside6-qmllint qml/Main.qml qml/Sidebar.qml qml/Transcript.qml qml/Composer.qml
 python scripts/qml_smoke.py

@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import asyncio
+
+from server.agent import runtime as runtime_module
 from server.agent.context import compact_agent_context, estimate_message_tokens
+from server.agent.runtime import AgentRuntime
+from server.openrouter.agent import AgentTurn
+from shared.requests import AgentRunRequest
 
 
 def _turn(index: int) -> list[dict]:
-    call = {"id": f"c{index}", "type": "function", "function": {"name": "read", "arguments": '{"path":"a.py"}'}}
+    call = {
+        "id": f"c{index}",
+        "type": "function",
+        "function": {"name": "read", "arguments": '{"path":"a.py"}'},
+    }
     return [
         {"role": "assistant", "content": f"step {index}", "tool_calls": [call]},
         {"role": "tool", "tool_call_id": f"c{index}", "content": "x" * 5_000},
@@ -27,3 +37,48 @@ def test_large_context_is_bounded_without_orphaning_tool_results() -> None:
     call_ids = {call["id"] for item in compacted for call in item.get("tool_calls") or ()}
     assert all(item["tool_call_id"] in call_ids for item in compacted if item["role"] == "tool")
     assert compacted[-1]["role"] == "tool" and compacted[-1]["tool_call_id"] == "c11"
+
+
+def test_resumed_run_refreshes_rather_than_duplicates_executor_context(monkeypatch) -> None:
+    sent: list[list[dict]] = []
+
+    class Executor:
+        async def status(self):
+            return {
+                "workspace_id": "workspace",
+                "environment": {"workspace_root": ".", "limits": {}},
+            }
+
+    async def fake_agent_turn(model, messages, *args, **kwargs):
+        sent.append(list(messages))
+        return AgentTurn(
+            "done", (), {"role": "assistant", "content": "done"}, {"total_tokens": 1}
+        )
+
+    async def append(*_args):
+        return None
+
+    monkeypatch.setattr(runtime_module, "agent_turn", fake_agent_turn)
+    request = AgentRunRequest(
+        model="m",
+        messages=({"role": "user", "content": "go"},),
+        mode="plan",
+        workspace_id="workspace",
+    )
+    saved = [
+        {"role": "system", "content": "LOCAL EXECUTOR CONTEXT (saved before the pause)"},
+        {"role": "user", "content": "go"},
+    ]
+
+    asyncio.run(
+        AgentRuntime(Executor(), None, append).run(
+            "run-1", request, "key", initial_messages=saved, resumed=True
+        )
+    )
+
+    contexts = [
+        item["content"]
+        for item in sent[0]
+        if str(item.get("content") or "").startswith("LOCAL EXECUTOR CONTEXT")
+    ]
+    assert len(contexts) == 1 and "saved before the pause" not in contexts[0]

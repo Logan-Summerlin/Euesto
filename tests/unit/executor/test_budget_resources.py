@@ -8,7 +8,6 @@ from types import SimpleNamespace
 import pytest
 
 from executor.checkpoints import create_checkpoint
-from executor.config import ExecutorConfig
 from executor.errors import ExecutorToolError
 from server.agent.budgets import (
     EXTENDED_CODING_PROFILE,
@@ -21,12 +20,7 @@ from server.agent.budgets import (
 from server.agent.runtime import AgentRuntime
 from shared.requests import AgentRunRequest
 from shared.tools import ToolResult
-
-
-def make_config(tmp_path: Path, **overrides: object) -> ExecutorConfig:
-    values: dict[str, object] = {"source_root": tmp_path / "source", "work_root": tmp_path / "work", "socket_path": tmp_path / "executor.sock", "token": "x" * 32, "workspace_id": "test-workspace"}
-    values.update(overrides)
-    return ExecutorConfig(**values)  # type: ignore[arg-type]
+from tests.helpers import executor_config
 
 
 def test_standard_coding_profile_is_bounded_and_above_legacy_tool_limit() -> None:
@@ -42,16 +36,23 @@ def test_profile_above_two_x_requires_one_time_session_approval() -> None:
     assert requires_budget_approval(LARGE_CODING_PROFILE)
 
 
-def test_checkpoint_budget_is_checked_against_staging_and_temp_headroom(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_checkpoint_budget_is_checked_against_staging_and_temp_headroom(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     work = tmp_path / "work"
     work.mkdir()
     (work / "file.txt").write_bytes(b"x" * 100)
-    monkeypatch.setattr("executor.checkpoints.shutil.disk_usage", lambda _path: SimpleNamespace(total=1_000_000_200))
+    monkeypatch.setattr(
+        "executor.checkpoints.shutil.disk_usage",
+        lambda _path: SimpleNamespace(total=1_000_000_200),
+    )
     with pytest.raises(ExecutorToolError, match="combined /work resource budget"):
         create_checkpoint(work, max_total_bytes=100)
 
 
-def test_checkpoint_fails_when_current_staging_exceeds_checkpoint_budget(tmp_path: Path) -> None:
+def test_checkpoint_fails_when_current_staging_exceeds_checkpoint_budget(
+    tmp_path: Path,
+) -> None:
     work = tmp_path / "work"
     work.mkdir()
     (work / "file.txt").write_bytes(b"x" * 10)
@@ -70,8 +71,9 @@ def test_executor_staging_limit_can_exhaust_before_gateway_budget(tmp_path: Path
     source = tmp_path / "source"
     source.mkdir()
     (source / "large.txt").write_bytes(b"x" * 20)
-    config = make_config(tmp_path, source_root=source, max_staging_bytes=10, max_checkpoint_bytes=10)
+    config = executor_config(source, max_staging_bytes=10, max_checkpoint_bytes=10)
     from executor.staging import seed_staging
+
     with pytest.raises(RuntimeError, match="staging limits"):
         seed_staging(config)
 
@@ -79,16 +81,24 @@ def test_executor_staging_limit_can_exhaust_before_gateway_budget(tmp_path: Path
 class _FakeExecutor:
     def __init__(self) -> None:
         self.request = None
+
     async def execute(self, request):
         self.request = request
-        return ToolResult(request.request_id, True, "ok", {"workspace_status": {"staged": False}})
+        return ToolResult(
+            request.request_id, True, "ok", {"workspace_status": {"staged": False}}
+        )
+
     async def status(self):
-        return {"workspace_id": "workspace", "environment": {"workspace_root": ".", "limits": {}}}
+        return {
+            "workspace_id": "workspace",
+            "environment": {"workspace_root": ".", "limits": {}},
+        }
 
 
 class _FakeApprovals:
     async def wait(self, *_args, **_kwargs):
         from shared.permissions import PermissionDecision
+
         return PermissionDecision.ALLOW_RUN
 
 
@@ -96,10 +106,28 @@ async def _assert_bash_timeout_clamp() -> None:
     executor = _FakeExecutor()
     runtime = AgentRuntime(executor, _FakeApprovals(), lambda *_args: asyncio.sleep(0))
     runtime._tool_result_bytes["run"] = 0
-    request = AgentRunRequest(model="test-model", messages=({"role": "user", "content": "run bash"},), mode="agent", workspace_id="workspace", approval_policy="auto")
+    request = AgentRunRequest(
+        model="test-model",
+        messages=({"role": "user", "content": "run bash"},),
+        mode="agent",
+        workspace_id="workspace",
+        approval_policy="auto",
+    )
     budget = RunBudget.from_profile("coding")
     budget.started = time.monotonic() - (budget.max_wall_seconds - 17)
-    await runtime._execute_tool_call("run", request, {"id": "call", "function": {"name": "bash", "arguments": '{"command":"true","timeout_seconds":300}'}}, [], budget)
+    await runtime._execute_tool_call(
+        "run",
+        request,
+        {
+            "id": "call",
+            "function": {
+                "name": "bash",
+                "arguments": '{"command":"true","timeout_seconds":300}',
+            },
+        },
+        [],
+        budget,
+    )
     assert executor.request is not None
     assert 1 <= executor.request.arguments["timeout_seconds"] <= 17
 

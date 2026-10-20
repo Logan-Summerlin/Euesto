@@ -39,7 +39,9 @@ class GatewayHealthWorker(QThread):
 
     def run(self) -> None:
         if not self.connection.token:
-            self.complete.emit(HealthResult(HealthState.DISCONNECTED, "Gateway token not configured"))
+            self.complete.emit(
+                HealthResult(HealthState.DISCONNECTED, "Gateway token not configured")
+            )
             return
         try:
             status = GatewayClient(self.connection).status()
@@ -49,4 +51,8 @@ class GatewayHealthWorker(QThread):
             self.complete.emit(HealthResult(HealthState.DISCONNECTED, str(exc)))
         else:
             state = HealthState.READY if status.ready else HealthState.DEGRADED
-            self.complete.emit(HealthResult(state, "Gateway ready" if status.ready else "Gateway degraded", status))
+            self.complete.emit(
+                HealthResult(
+                    state, "Gateway ready" if status.ready else "Gateway degraded", status
+                )
+            )

@@ -11,6 +11,7 @@ APP_NAME = "LocalOpenRouterChat"
 KEYRING_SERVICE = "Local OpenRouter Chat"
 KEYRING_USERNAME = "openrouter-api-key"
 GATEWAY_KEYRING_USERNAME = "gateway-session-token"
+MIN_GATEWAY_TOKEN_BYTES = 32
 
 
 def app_data_dir() -> Path:
@@ -29,12 +30,16 @@ def database_path() -> Path:
     return app_data_dir() / "chat.sqlite3"
 
 
-def get_api_key() -> str | None:
+def _keyring_value(username: str) -> str | None:
     try:
-        value = keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME)
+        value = keyring.get_password(KEYRING_SERVICE, username)
     except KeyringError:
         return None
     return value.strip() if value else None
+
+
+def get_api_key() -> str | None:
+    return _keyring_value(KEYRING_USERNAME)
 
 
 def save_api_key(api_key: str) -> None:
@@ -45,11 +50,7 @@ def save_api_key(api_key: str) -> None:
 
 
 def get_gateway_token() -> str | None:
-    try:
-        value = keyring.get_password(KEYRING_SERVICE, GATEWAY_KEYRING_USERNAME)
-    except KeyringError:
-        return None
-    return value.strip() if value else None
+    return _keyring_value(GATEWAY_KEYRING_USERNAME)
 
 
 def get_gateway_session_token() -> str | None:
@@ -60,12 +61,11 @@ def get_gateway_session_token() -> str | None:
         value = path.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeError):
         return None
-    return value if len(value.encode("utf-8")) >= 32 else None
+    return value if len(value.encode("utf-8")) >= MIN_GATEWAY_TOKEN_BYTES else None
 
 
 def save_gateway_token(token: str) -> None:
     value = token.strip()
-    if len(value.encode("utf-8")) < 32:
+    if len(value.encode("utf-8")) < MIN_GATEWAY_TOKEN_BYTES:
         raise ValueError("Gateway token must contain at least 256 bits")
     keyring.set_password(KEYRING_SERVICE, GATEWAY_KEYRING_USERNAME, value)
-

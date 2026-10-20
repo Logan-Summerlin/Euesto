@@ -1,5 +1,7 @@
 # Harness Validation Environment Plan
 
+> **Archived.** Phases 1–3 and 6 are done and the rest are partly done; the five open items in *Status* below are carried into `docs/ROADMAP.md`. Paths below are as they were when the plan was written (for example, the harness tests now live in `tests/structural/test_validation_harness.py`).
+
 ## Purpose
 
 Make every documented Euesto validation check runnable from the coding harness and reproducible in CI, without provider credentials or unrestricted network access. The supported checks are:

@@ -10,19 +10,21 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import BinaryIO
 
 from shared.tools import PUBLISH_BATCH_MAX_BYTES, PUBLISH_BATCH_MAX_OPERATIONS, PublishOperation
 
 from .config import ExecutorConfig
 from .errors import LIMIT_EXCEEDED, ExecutorToolError
 from .paths import (
-    SECRET_PARTS,
-    STAGING_EXCLUDED_PARTS,
     UnsafePath,
     assert_unique_paths,
+    is_hidden_part,
     is_secret_path,
     is_staging_excluded,
 )
+
+HASH_CHUNK_BYTES = 128 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,8 +68,17 @@ class WorkspaceChange:
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(128 * 1024), b""):
+        for chunk in iter(lambda: handle.read(HASH_CHUNK_BYTES), b""):
             digest.update(chunk)
+    return digest.hexdigest()
+
+
+def copy_with_sha256(reader: BinaryIO, writer: BinaryIO) -> str:
+    """Copy *reader* into *writer* and return the digest of exactly the bytes written."""
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: reader.read(HASH_CHUNK_BYTES), b""):
+        digest.update(chunk)
+        writer.write(chunk)
     return digest.hexdigest()
 
 
@@ -119,16 +130,11 @@ def _trusted(entry: tuple[_Signature, str, int] | None, signature: _Signature) -
     return entry[1] if last_change + RACY_WINDOW_NS <= entry[2] else None
 
 
-def _copy_and_hash(source: Path, destination: Path) -> str:
-    """Copy a regular file and return the digest of exactly the bytes written."""
-    digest = hashlib.sha256()
+def _copy_source_file(source: Path, destination: Path) -> str:
+    """Copy a source file without following a link; return the digest of the bytes written."""
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
-    descriptor = os.open(source, flags)
-    with os.fdopen(descriptor, "rb") as reader, destination.open("wb") as writer:
-        for chunk in iter(lambda: reader.read(128 * 1024), b""):
-            digest.update(chunk)
-            writer.write(chunk)
-    return digest.hexdigest()
+    with os.fdopen(os.open(source, flags), "rb") as reader, destination.open("wb") as writer:
+        return copy_with_sha256(reader, writer)
 
 
 def seed_staging(config: ExecutorConfig) -> Snapshot:
@@ -184,7 +190,7 @@ def seed_staging(config: ExecutorConfig) -> Snapshot:
             destination = work / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             observed = time.time_ns()
-            digest = _copy_and_hash(path, destination)
+            digest = _copy_source_file(path, destination)
             os.chmod(destination, stat.S_IMODE(mode))
             hashes[relative] = digest
             sizes[relative] = size
@@ -229,18 +235,24 @@ def advance_published_staging(
         value = current.get(operation.path)
         if operation.operation == "delete":
             if value is not None:
-                raise RuntimeError(f"Published delete no longer matches staging: {operation.path}")
+                raise RuntimeError(
+                    f"Published delete no longer matches staging: {operation.path}"
+                )
             hashes.pop(operation.path, None)
             sizes.pop(operation.path, None)
             modes.pop(operation.path, None)
             continue
-        if value is None or value[0] != operation.staged_sha256 or (operation.staged_mode is not None and value[2] != operation.staged_mode):
-            raise RuntimeError(f"Published staging no longer matches the manifest: {operation.path}")
-        hashes[operation.path] = value[0]
-        sizes[operation.path] = value[1]
-        modes[operation.path] = value[2]
-    updated = Snapshot(str(uuid.uuid4()), hashes, sum(sizes.values()), sizes, modes)
-    return updated
+        matches = (
+            value is not None
+            and value[0] == operation.staged_sha256
+            and operation.staged_mode in (None, value[2])
+        )
+        if not matches:
+            raise RuntimeError(
+                f"Published staging no longer matches the manifest: {operation.path}"
+            )
+        hashes[operation.path], sizes[operation.path], modes[operation.path] = value
+    return Snapshot(str(uuid.uuid4()), hashes, sum(sizes.values()), sizes, modes)
 
 
 def visible_files(root: Path) -> dict[str, tuple[str, int, int]]:
@@ -264,7 +276,7 @@ def visible_files(root: Path) -> dict[str, tuple[str, int, int]]:
             relative = prefix + entry.name
             info = entry.stat(follow_symlinks=False)
             mode = info.st_mode
-            hidden = _hidden_name(entry.name)
+            hidden = is_hidden_part(entry.name)
             if stat.S_ISLNK(mode):
                 if hidden and not entry.is_dir():
                     continue
@@ -290,19 +302,11 @@ def visible_files(root: Path) -> dict[str, tuple[str, int, int]]:
     return result
 
 
-def _hidden_name(name: str) -> bool:
-    """Whether one path segment is secret, staging-excluded, or executor metadata."""
-    folded = name.casefold()
-    return (
-        folded in SECRET_PARTS
-        or folded.startswith(".env")
-        or folded in STAGING_EXCLUDED_PARTS
-        or name.startswith(".local-chat-")
-    )
-
-
-
-def refresh_visible_files(root: Path, base: dict[str, tuple[str, int, int]], paths: Sequence[str]) -> dict[str, tuple[str, int, int]]:
+def refresh_visible_files(
+    root: Path,
+    base: dict[str, tuple[str, int, int]],
+    paths: Sequence[str],
+) -> dict[str, tuple[str, int, int]]:
     """Update a recent ``visible_files`` listing for only the given relative paths.
 
     Callers must know that nothing else changed since ``base`` was captured (for example a
@@ -311,7 +315,7 @@ def refresh_visible_files(root: Path, base: dict[str, tuple[str, int, int]], pat
     """
     current = dict(base)
     for relative in paths:
-        if any(_hidden_name(part) for part in relative.split("/")):
+        if any(is_hidden_part(part) for part in relative.split("/")):
             current.pop(relative, None)
             continue
         path = root.joinpath(*relative.split("/"))
@@ -329,7 +333,11 @@ def refresh_visible_files(root: Path, base: dict[str, tuple[str, int, int]], pat
     return current
 
 
-def workspace_changes(snapshot: Snapshot, work_root: Path, current: dict[str, tuple[str, int, int]] | None = None) -> list[WorkspaceChange]:
+def workspace_changes(
+    snapshot: Snapshot,
+    work_root: Path,
+    current: dict[str, tuple[str, int, int]] | None = None,
+) -> list[WorkspaceChange]:
     """Compare the current staged files with the last publication baseline."""
     if current is None:
         current = visible_files(work_root)
@@ -337,19 +345,28 @@ def workspace_changes(snapshot: Snapshot, work_root: Path, current: dict[str, tu
     changes: list[WorkspaceChange] = []
     for relative in paths:
         base_hash = snapshot.hashes.get(relative)
-        current_value = current.get(relative)
-        staged_hash = current_value[0] if current_value else None
         base_mode = snapshot.modes.get(relative)
-        staged_mode = current_value[2] if current_value else None
+        staged_hash, staged_size, staged_mode = current.get(relative, (None, None, None))
         if staged_hash == base_hash and base_mode == staged_mode:
             continue
-        if current_value is None:
+        if staged_hash is None:
             operation = "delete"
         elif base_hash is None:
             operation = "create"
         else:
             operation = "update"
-        changes.append(WorkspaceChange(relative, operation, base_hash, staged_hash, snapshot.sizes.get(relative), current_value[1] if current_value else None, base_mode, staged_mode))
+        changes.append(
+            WorkspaceChange(
+                relative,
+                operation,
+                base_hash,
+                staged_hash,
+                snapshot.sizes.get(relative),
+                staged_size,
+                base_mode,
+                staged_mode,
+            )
+        )
     return changes
 
 
@@ -366,8 +383,16 @@ def publication_batches(changes: Sequence[WorkspaceChange]) -> list[list[Workspa
     for change in changes:
         item_size = 0 if change.operation == "delete" else int(change.staged_size_bytes or 0)
         if item_size > PUBLISH_BATCH_MAX_BYTES:
-            raise ExecutorToolError(LIMIT_EXCEEDED, f"Staged file exceeds the {PUBLISH_BATCH_MAX_BYTES}-byte publication batch limit: {change.path}")
-        if current and (len(current) >= PUBLISH_BATCH_MAX_OPERATIONS or size + item_size > PUBLISH_BATCH_MAX_BYTES):
+            raise ExecutorToolError(
+                LIMIT_EXCEEDED,
+                f"Staged file exceeds the {PUBLISH_BATCH_MAX_BYTES}-byte publication batch limit: "
+                f"{change.path}",
+            )
+        full = (
+            len(current) >= PUBLISH_BATCH_MAX_OPERATIONS
+            or size + item_size > PUBLISH_BATCH_MAX_BYTES
+        )
+        if current and full:
             batches.append(current)
             current, size = [], 0
         current.append(change)

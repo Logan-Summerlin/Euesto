@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased — Second simplification pass
+
+A further KISS/YAGNI pass over every layer, the tests, and the documentation. The ten-tool contract, model-facing prompts and result shapes, the publication protocol, and the security boundary are unchanged.
+
+**Fixes**
+
+- Gateway errors on streamed requests (chat streams, agent events) are reported again; the client decoded the unread body and raised `httpx.ResponseNotRead` instead.
+- "Review staged changes" no longer always reports 0 changes; it reports whether staging differs from the workspace baseline and the staged snapshot's size.
+- A resumed agent run sends the model one, refreshed, `LOCAL EXECUTOR CONTEXT` message instead of the saved one plus a new one.
+- Skills that need `status` or `investigate_repository` are rejected in Plan mode, matching the Plan tool set; the executor-accepted `read` `offset` and `find`/`ls` `cursor` arguments are now declared in the tool schemas.
+- The run status line, transcript metadata, and usage dialog word token and cost totals the same way (`1,234 tokens · 5 cached · $0.001200`).
+
+**Removed** (each was unreachable or only ever sent its default)
+
+- Per-request agent budget fields (`max_iterations`, `max_tool_calls`, `max_wall_seconds`, `max_cost`); budgets come only from the selected profile. A run paused before this change cannot be resumed after it; start it again.
+- Model aliases (no UI could create one); existing databases keep an empty `model_aliases` table.
+- `WorkspaceBroker.undo`, the permission-rule `last_used_at`/`rule_used` path, thirteen event types nothing emitted, the gateway inspection's duplicate `total_known`, and bridge members QML never used (`approvalPolicy`, `usage`, `saveModelAlias`, `checkGateway`, `resumableRuns`).
+
+**Simplification**
+
+- **Shared:** one executor tool set (`EXECUTOR_TOOLS`) and an explicit `READ_TOOLS` replace single-member sets and an alias; one relative-path normalizer; `GatewayStatus.serves_workspace` is the single readiness check for both the runtime worker and the desktop.
+- **Executor:** one `checkpointed` context manager gives `write`, `edit`, `apply_patch`, and `bash` the same checkpoint-and-rollback path (bash also rolls back and kills its process group on any unexpected failure); staging and checkpoints share one hashed-copy loop and one hidden-path rule; `search_text` is merged into `grep`.
+- **Gateway:** `server/agent/runtime.py` keeps the parent loop; the nested investigation loop moves to `server/agent/investigation.py` and the shared tool-call parsing and result bounding to `server/agent/tool_calls.py`. Tool schemas are built from small helpers.
+- **Desktop:** one request helper in the gateway client, a shared stream-worker base, one storage update path, a single parents-first pass for JSON import (previously quadratic on deep trees), one credential check for every run entry point, one request-options parser, and shared Docker lookup/spawn helpers in the runtime manager.
+- **Tests:** every flat `tests/*.py` file moved into `tests/unit/<domain>/` (adding `shared/`) or `tests/structural/`, enforced by a structural test; duplicate baseline and completion tests merged; one `tests/helpers.executor_config` replaces about twenty per-file factories. New regression tests cover each fix above and malformed JSON imports.
+- **Formatting:** the repository is `ruff format`-formatted, the `ruff` validation tier also runs `ruff format --check .`, and the E701/E702 lint ignores are dropped.
+- **Documentation:** the harness validation plan is archived as `archived-doc/harness-validation-plan.md` with its open items in `docs/ROADMAP.md`; `docs/TESTING.md`, `docs/CONTRIBUTING.md`, and `AGENTS.md` describe the test layout and formatter.
+
 ## Unreleased — Repository investigation reliability and model selection
 
 - `investigate_repository` now always returns a summary unless the provider fails before any evidence is gathered. Fixed: tool calls left unanswered when the nested loop stopped mid-turn (providers rejected the synthesis request); the nested wall-time limit aborting the loop with no summary instead of reserving time for synthesis; a paid final answer being discarded when it pushed usage over the nested cost cap; nested results sharing, and being starved by, the parent run's 512,000-byte result ledger; unbounded nested context; empty final answers accepted as summaries; and no retry for transient provider errors. Mid-conversation synthesis instructions are sent as `user` messages, reasoning is sent back with tool calls, and provider error text is included in failures. Results report `stop_reason`.

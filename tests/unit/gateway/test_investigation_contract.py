@@ -18,11 +18,15 @@ from shared.investigation import (
 )
 from shared.permissions import PermissionDecision, resolve_permission
 from shared.requests import DEFAULT_INVESTIGATION_MODEL, AgentRunRequest
-from shared.tools import INVESTIGATION_TOOLS, READ_TOOLS, ToolRequest, ToolResult
+from shared.tools import MUTATION_TOOLS, READ_TOOLS, ToolRequest, ToolResult
 
 
 def _investigation_schema() -> dict:
-    return next(item for item in LOCAL_TOOL_SCHEMAS if item["function"]["name"] == "investigate_repository")
+    return next(
+        item
+        for item in LOCAL_TOOL_SCHEMAS
+        if item["function"]["name"] == "investigate_repository"
+    )
 
 
 def _request() -> AgentRunRequest:
@@ -36,7 +40,12 @@ def _request() -> AgentRunRequest:
 
 
 def _turn(content: str = "", calls: tuple[dict, ...] = ()) -> AgentTurn:
-    return AgentTurn(content=content, tool_calls=calls, message={"role": "assistant", "content": content}, usage={})
+    return AgentTurn(
+        content=content,
+        tool_calls=calls,
+        message={"role": "assistant", "content": content},
+        usage={},
+    )
 
 
 def _call(call_id: str, name: str, arguments: dict) -> dict:
@@ -50,8 +59,14 @@ class RecordingExecutor:
     async def execute(self, request):
         self.requests.append((request.tool, dict(request.arguments)))
         if request.tool == "grep":
-            return ToolResult(request.request_id, True, output="src/app.py:12:def main():\nsrc/util.py:3:import os")
-        return ToolResult(request.request_id, True, output=f"contents of {request.arguments.get('path')}")
+            return ToolResult(
+                request.request_id,
+                True,
+                output="src/app.py:12:def main():\nsrc/util.py:3:import os",
+            )
+        return ToolResult(
+            request.request_id, True, output=f"contents of {request.arguments.get('path')}"
+        )
 
 
 def _run(monkeypatch, turns: list[AgentTurn], arguments: dict, executor=None):
@@ -66,13 +81,22 @@ def _run(monkeypatch, turns: list[AgentTurn], arguments: dict, executor=None):
     async def append(_run_id, event_type, payload):
         events.append((event_type, payload))
 
-    monkeypatch.setattr("server.agent.runtime.agent_turn", fake_agent_turn)
+    monkeypatch.setattr("server.agent.investigation.agent_turn", fake_agent_turn)
     executor = executor or RecordingExecutor()
     runtime = AgentRuntime(executor, object(), append)
     runtime._api_keys["run"] = "test-key"
     runtime._tool_result_bytes["run"] = 0
     messages: list[dict[str, object]] = []
-    asyncio.run(runtime._investigate_repository("run", _request(), "parent", json.dumps(arguments), messages, RunBudget(10, 120, 1.0, 10, "test")))
+    asyncio.run(
+        runtime._investigate_repository(
+            "run",
+            _request(),
+            "parent",
+            json.dumps(arguments),
+            messages,
+            RunBudget(10, 120, 1.0, 10, "test"),
+        )
+    )
     return json.loads(str(messages[-1]["content"])), prompts, events, executor
 
 
@@ -89,7 +113,9 @@ def test_investigation_repository_schema_accepts_query_and_inspected_paths() -> 
 
 def test_repository_investigation_uses_the_request_as_the_child_prompt(monkeypatch) -> None:
     query = "Find the entry point and explain how requests reach the agent runtime."
-    result, prompts, _events, _executor = _run(monkeypatch, [_turn("investigation complete")], {"query": query})
+    result, prompts, _events, _executor = _run(
+        monkeypatch, [_turn("investigation complete")], {"query": query}
+    )
     assert len(prompts) == 1
     assert query in prompts[0][-1]["content"]
     assert "already inspected" not in prompts[0][-1]["content"]
@@ -100,23 +126,43 @@ def test_repository_investigation_uses_the_request_as_the_child_prompt(monkeypat
 
 def test_inspected_paths_are_not_reread_and_skips_are_logged(monkeypatch) -> None:
     turns = [
-        _turn(calls=(
-            _call("c1", "read", {"path": "src/app.py"}),
-            _call("c2", "ls", {"path": "./src/"}),
-            _call("c3", "read", {"path": "src/other.py"}),
-            _call("c4", "grep", {"query": "main", "path": "src"}),
-        )),
+        _turn(
+            calls=(
+                _call("c1", "read", {"path": "src/app.py"}),
+                _call("c2", "ls", {"path": "./src/"}),
+                _call("c3", "read", {"path": "src/other.py"}),
+                _call("c4", "grep", {"query": "main", "path": "src"}),
+            )
+        ),
         _turn('{"summary": "done", "findings": []}'),
     ]
-    result, prompts, events, executor = _run(monkeypatch, turns, {"query": "q", "inspected_paths": ["src/app.py", "src"]})
+    result, prompts, events, executor = _run(
+        monkeypatch, turns, {"query": "q", "inspected_paths": ["src/app.py", "src"]}
+    )
 
     # The executor never sees the already-inspected paths; new work still runs.
-    assert executor.requests == [("read", {"path": "src/other.py"}), ("grep", {"query": "main", "path": "src"})]
+    assert executor.requests == [
+        ("read", {"path": "src/other.py"}),
+        ("grep", {"query": "main", "path": "src"}),
+    ]
     assert "src/app.py, src" in prompts[0][-1]["content"]
-    skipped_calls = [payload for kind, payload in events if kind == "subagent.tool_call" and payload.get("skipped")]
-    assert [item["request"]["arguments"]["path"] for item in skipped_calls] == ["src/app.py", "./src/"]
-    skipped_results = [payload["result"] for kind, payload in events if kind == "subagent.tool_result" and payload.get("skipped")]
-    assert {item["error_code"] for item in skipped_results} == {"investigation.already_inspected"}
+    skipped_calls = [
+        payload
+        for kind, payload in events
+        if kind == "subagent.tool_call" and payload.get("skipped")
+    ]
+    assert [item["request"]["arguments"]["path"] for item in skipped_calls] == [
+        "src/app.py",
+        "./src/",
+    ]
+    skipped_results = [
+        payload["result"]
+        for kind, payload in events
+        if kind == "subagent.tool_result" and payload.get("skipped")
+    ]
+    assert {item["error_code"] for item in skipped_results} == {
+        "investigation.already_inspected"
+    }
     assert result["skipped_paths"] == ["src/app.py", "src"]
     assert result["files_examined"] == ["src", "src/other.py"]
 
@@ -133,27 +179,41 @@ def test_investigation_returns_structured_findings(monkeypatch) -> None:
         ],
     }
     turns = [
-        _turn(calls=(_call("c1", "read", {"path": "src/app.py"}), _call("c2", "grep", {"query": "import"}))),
+        _turn(
+            calls=(
+                _call("c1", "read", {"path": "src/app.py"}),
+                _call("c2", "grep", {"query": "import"}),
+            )
+        ),
         _turn("Here is my report.\n```json\n" + json.dumps(report) + "\n```"),
     ]
-    result, _prompts, events, _executor = _run(monkeypatch, turns, {"query": "where do requests enter?"})
+    result, _prompts, events, _executor = _run(
+        monkeypatch, turns, {"query": "where do requests enter?"}
+    )
 
     assert result["structured"] is True
     assert result["summary"] == "Requests enter through main()."
     assert result["findings"] == [
         {"file": "src/app.py", "line": 12, "justification": "defines main()", "observed": True},
         {"file": "src/util.py", "line": 3, "justification": "imports os", "observed": True},
-        {"file": "docs/never_read.md", "line": None, "justification": "from memory", "observed": False},
+        {
+            "file": "docs/never_read.md",
+            "line": None,
+            "justification": "from memory",
+            "observed": False,
+        },
     ]
     completed = next(payload for kind, payload in events if kind == "subagent.completed")
     assert completed["findings"] == result["findings"]
 
 
 def test_forced_synthesis_also_requests_structured_report(monkeypatch) -> None:
-    monkeypatch.setattr("server.agent.runtime.INVESTIGATION_MAX_TOOL_CALLS", 2)
+    monkeypatch.setattr("server.agent.investigation.INVESTIGATION_MAX_TOOL_CALLS", 2)
     turns = [
         _turn(calls=(_call("c1", "read", {"path": "a.py"}),)),
-        _turn('{"summary": "a.py holds it", "findings": [{"file": "a.py", "line": 2, "justification": "x"}]}'),
+        _turn(
+            '{"summary": "a.py holds it", "findings": [{"file": "a.py", "line": 2, "justification": "x"}]}'
+        ),
     ]
     result, prompts, _events, _executor = _run(monkeypatch, turns, {"query": "q"})
     assert result["truncated"] is True and result["structured"] is True
@@ -167,7 +227,13 @@ def test_forced_synthesis_also_requests_structured_report(monkeypatch) -> None:
         ({"query": "q", "inspected_paths": "src"}, "array"),
         ({"query": "q", "inspected_paths": ["/etc/passwd"]}, "relative"),
         ({"query": "q", "inspected_paths": ["../outside"]}, "relative"),
-        ({"query": "q", "inspected_paths": [f"f{i}" for i in range(MAX_INSPECTED_PATHS + 1)]}, "at most"),
+        (
+            {
+                "query": "q",
+                "inspected_paths": [f"f{i}" for i in range(MAX_INSPECTED_PATHS + 1)],
+            },
+            "at most",
+        ),
         ({"query": "q", "path_hint": ["src"]}, "Unknown"),
     ],
 )
@@ -180,9 +246,17 @@ def test_malformed_investigation_arguments_fail_closed(monkeypatch, arguments, m
 
 def test_report_parser_handles_prose_bare_json_and_bounds() -> None:
     assert parse_investigation_report("Just prose.") == ("Just prose.", (), False)
-    summary, findings, structured = parse_investigation_report('Preamble {"findings": [{"file": "a.py", "justification": "j"}]} tail')
+    summary, findings, structured = parse_investigation_report(
+        'Preamble {"findings": [{"file": "a.py", "justification": "j"}]} tail'
+    )
     assert structured and summary == "Preamble  tail" and findings[0].line is None
-    many = {"summary": "s", "findings": [{"file": f"f{i}.py", "line": i + 1, "justification": "j"} for i in range(MAX_FINDINGS + 10)]}
+    many = {
+        "summary": "s",
+        "findings": [
+            {"file": f"f{i}.py", "line": i + 1, "justification": "j"}
+            for i in range(MAX_FINDINGS + 10)
+        ],
+    }
     assert len(parse_investigation_report(json.dumps(many))[1]) == MAX_FINDINGS
 
 
@@ -198,25 +272,37 @@ def test_reinspection_target_only_covers_read_and_ls() -> None:
 
 
 def test_investigation_is_read_only_and_auto_safe() -> None:
-    request = ToolRequest("r", "run", "investigate_repository", "agent", {"query": "find architecture"})
+    request = ToolRequest(
+        "r", "run", "investigate_repository", "agent", {"query": "find architecture"}
+    )
     assert request.tool in READ_TOOLS
-    assert request.tool in INVESTIGATION_TOOLS
+    assert request.tool not in MUTATION_TOOLS
     assert resolve_permission(request, "workspace") == PermissionDecision.ALLOW_RUN
 
 
 def test_nested_event_family_is_replayable() -> None:
-    for event_type in ("subagent.started", "subagent.tool_call", "subagent.tool_result", "subagent.completed", "subagent.failed"):
-        event = EventEnvelope(1, "run", event_type, "2025-01-01T00:00:00Z", {"parent_tool_call_id": "call"})
+    for event_type in (
+        "subagent.started",
+        "subagent.tool_call",
+        "subagent.tool_result",
+        "subagent.completed",
+        "subagent.failed",
+    ):
+        event = EventEnvelope(
+            1, "run", event_type, "2025-01-01T00:00:00Z", {"parent_tool_call_id": "call"}
+        )
         assert EventEnvelope.from_dict(event.to_dict()).type == event_type
 
 
 @pytest.mark.parametrize("supplied", [{}, {"investigation_model_id": ""}])
 def test_agent_requests_default_a_missing_or_blank_investigation_model(supplied: dict) -> None:
-    request = AgentRunRequest.from_dict({
-        "model": "vendor/model",
-        "mode": "agent",
-        "workspace_id": "workspace",
-        "messages": [{"role": "user", "content": "inspect the repository"}],
-        **supplied,
-    })
+    request = AgentRunRequest.from_dict(
+        {
+            "model": "vendor/model",
+            "mode": "agent",
+            "workspace_id": "workspace",
+            "messages": [{"role": "user", "content": "inspect the repository"}],
+            **supplied,
+        }
+    )
     assert request.investigation_model_id == DEFAULT_INVESTIGATION_MODEL

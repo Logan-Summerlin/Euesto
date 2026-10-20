@@ -1,4 +1,5 @@
 """Error codes are chosen at the throw site and never inferred from message wording."""
+
 from __future__ import annotations
 
 import ast
@@ -11,11 +12,11 @@ import pytest
 
 from executor import errors
 from executor.app import ExecutorService
-from executor.config import ExecutorConfig
 from executor.errors import ERROR_CODES, ExecutorToolError, classify_error
 from executor.paths import UnsafePath
 from executor.permissions import enforce_capability
 from shared.tools import ToolRequest
+from tests.helpers import executor_config
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -31,20 +32,55 @@ SCENARIOS = [
     ("read", "agent", {"path": "a.txt", "max_bytes": 0}, "request.invalid_arguments"),
     ("write", "agent", {"path": "dir", "content": "x"}, "path.invalid_type"),
     ("write", "agent", {"path": "new/deep.txt", "content": "x"}, "path.missing"),
-    ("write", "agent", {"path": "a.txt", "content": "x", "expected_sha256": "0" * 64}, "staging.conflict"),
+    (
+        "write",
+        "agent",
+        {"path": "a.txt", "content": "x", "expected_sha256": "0" * 64},
+        "staging.conflict",
+    ),
     ("write", "agent", {"path": "big.txt", "content": "x" * 200}, "limit.exceeded"),
     ("edit", "agent", {"path": "a.txt", "old_str": "absent", "new_str": "x"}, "edit.no_match"),
-    ("edit", "agent", {"path": "a.txt", "old_str": "l", "new_str": "L"}, "edit.too_many_matches"),
-    ("edit", "agent", {"path": "a.txt", "old_str": "", "new_str": "x"}, "edit.malformed_context"),
+    (
+        "edit",
+        "agent",
+        {"path": "a.txt", "old_str": "l", "new_str": "L"},
+        "edit.too_many_matches",
+    ),
+    (
+        "edit",
+        "agent",
+        {"path": "a.txt", "old_str": "", "new_str": "x"},
+        "edit.malformed_context",
+    ),
     ("edit", "agent", {"path": "dir", "old_str": "x", "new_str": "y"}, "path.invalid_type"),
     ("apply_patch", "agent", {"operations": []}, "apply_patch.malformed"),
-    ("apply_patch", "agent", {"operations": [{"operation": "delete", "path": "missing.txt"}]}, "path.missing"),
+    (
+        "apply_patch",
+        "agent",
+        {"operations": [{"operation": "delete", "path": "missing.txt"}]},
+        "path.missing",
+    ),
     ("bash", "agent", {"command": ""}, "command.invalid_arguments"),
     ("bash", "agent", {"command": "true", "working_directory": 5}, "working_directory.invalid"),
-    ("bash", "agent", {"command": "true", "working_directory": "a.txt"}, "working_directory.invalid"),
-    ("bash", "agent", {"command": "true", "env": {"PATH": "/tmp"}}, "command.invalid_arguments"),
+    (
+        "bash",
+        "agent",
+        {"command": "true", "working_directory": "a.txt"},
+        "working_directory.invalid",
+    ),
+    (
+        "bash",
+        "agent",
+        {"command": "true", "env": {"PATH": "/tmp"}},
+        "command.invalid_arguments",
+    ),
     ("bash", "agent", {"command": "true", "env": {"OK": "\x00"}}, "command.invalid_arguments"),
-    ("bash", "agent", {"command": "true", "timeout_seconds": "slow"}, "command.invalid_arguments"),
+    (
+        "bash",
+        "agent",
+        {"command": "true", "timeout_seconds": "slow"},
+        "command.invalid_arguments",
+    ),
     ("bash", "agent", {"command": "cat", "stdin": "x" * 200}, "limit.exceeded"),
     ("grep", "agent", {"query": ""}, "request.invalid_arguments"),
     ("find", "agent", {"path": "a.txt"}, "path.invalid_type"),
@@ -62,18 +98,18 @@ def _service(tmp_path: Path) -> ExecutorService:
     (source / "a.txt").write_text("hello world\n", encoding="utf-8")
     (source / "bin.dat").write_bytes(b"\x00\xff\x00binary")
     (source / "dir" / "b.txt").write_text("b\n", encoding="utf-8")
-    config = ExecutorConfig(
-        source_root=source, work_root=tmp_path / "work", socket_path=tmp_path / "executor.sock",
-        token="t" * 43, workspace_id="workspace", max_write_bytes=100, max_bash_stdin_bytes=100,
+    return ExecutorService(
+        executor_config(source, max_write_bytes=100, max_bash_stdin_bytes=100)
     )
-    return ExecutorService(config)
 
 
 def _codes(tmp_path: Path) -> list[tuple[str, str]]:
     service = _service(tmp_path)
     observed = []
     for index, (tool, mode, arguments, _expected) in enumerate(SCENARIOS):
-        result = asyncio.run(service.execute(ToolRequest(f"r{index}", "run", tool, mode, arguments)))
+        result = asyncio.run(
+            service.execute(ToolRequest(f"r{index}", "run", tool, mode, arguments))
+        )
         assert not result.ok, (tool, arguments)
         observed.append((result.error_code, result.output))
     return observed
@@ -85,7 +121,9 @@ def test_every_error_path_reports_its_documented_code(tmp_path: Path) -> None:
     assert set(codes) <= ERROR_CODES
 
 
-def test_codes_are_independent_of_message_wording(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_codes_are_independent_of_message_wording(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Reword every message the executor raises (and the sanitized text of foreign
     exceptions); every error path must still report exactly the same code."""
     original = ExecutorToolError.__init__
@@ -104,22 +142,41 @@ def test_codes_are_independent_of_message_wording(tmp_path: Path, monkeypatch: p
 
 def test_classify_error_never_reads_message_text() -> None:
     # Words the old substring classifier keyed on no longer affect foreign exceptions.
-    for text in ("file not found", "exceeds the limit", "not valid utf-8", "working directory", "stdin command", "hash conflict", "shrink", "is a directory"):
+    for text in (
+        "file not found",
+        "exceeds the limit",
+        "not valid utf-8",
+        "working directory",
+        "stdin command",
+        "hash conflict",
+        "shrink",
+        "is a directory",
+    ):
         assert classify_error(ValueError(text)).code == "request.invalid_arguments"
         assert classify_error(RuntimeError(text)).code == "tool.internal"
-    assert classify_error(ExecutorToolError("path.missing", "totally unrelated words")).code == "path.missing"
+    assert (
+        classify_error(ExecutorToolError("path.missing", "totally unrelated words")).code
+        == "path.missing"
+    )
     assert classify_error(FileNotFoundError(errno.ENOENT, "whatever")).code == "path.missing"
-    assert classify_error(IsADirectoryError(errno.EISDIR, "whatever")).code == "path.invalid_type"
+    assert (
+        classify_error(IsADirectoryError(errno.EISDIR, "whatever")).code == "path.invalid_type"
+    )
     assert classify_error(OSError(errno.ENOSPC, "whatever")).code == "limit.exceeded"
     assert classify_error(OSError(errno.EIO, "file not found")).code == "io.internal"
     assert classify_error(PermissionError("x")).code == "permission.denied"
     assert classify_error(TimeoutError("x")).code == "tool.timeout"
-    assert classify_error(UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")).code == "file.invalid_utf8"
+    assert (
+        classify_error(UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")).code
+        == "file.invalid_utf8"
+    )
     assert classify_error(KeyError("x")).code == "tool.internal"
 
 
 def test_safe_message_redacts_drive_unc_and_multiple_paths() -> None:
-    message = r"C:\\Users\\alice\\secret.txt and /srv/work/file.py plus \\server\\share\\private.txt"
+    message = (
+        r"C:\\Users\\alice\\secret.txt and /srv/work/file.py plus \\server\\share\\private.txt"
+    )
     safe = errors.safe_message(message)
     assert "C:\\" not in safe and "/srv/" not in safe
     assert "<workspace-path>" in safe
@@ -130,7 +187,13 @@ def test_typed_exception_families_carry_codes() -> None:
     assert UnsafePath("anything at all").code == "path.unsafe"
     assert isinstance(UnsafePath("x"), ValueError)
     plan_write = ToolRequest.__new__(ToolRequest)
-    for name, value in {"request_id": "r", "run_id": "run", "tool": "write", "mode": "plan", "arguments": {}}.items():
+    for name, value in {
+        "request_id": "r",
+        "run_id": "run",
+        "tool": "write",
+        "mode": "plan",
+        "arguments": {},
+    }.items():
         object.__setattr__(plan_write, name, value)
     with pytest.raises(ExecutorToolError) as raised:
         enforce_capability(plan_write)
@@ -156,14 +219,20 @@ def _enclosing_functions(tree: ast.AST) -> dict[ast.AST, str]:
 
 
 def test_every_tool_path_raise_names_a_documented_code() -> None:
-    constants = {name for name in dir(errors) if name.isupper() and getattr(errors, name) in ERROR_CODES}
+    constants = {
+        name for name in dir(errors) if name.isupper() and getattr(errors, name) in ERROR_CODES
+    }
     problems = []
     for path in sorted((ROOT / "executor").rglob("*.py")):
         relative = path.relative_to(ROOT).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"))
         owners = _enclosing_functions(tree)
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Raise) or not isinstance(node.exc, ast.Call) or not isinstance(node.exc.func, ast.Name):
+            if (
+                not isinstance(node, ast.Raise)
+                or not isinstance(node.exc, ast.Call)
+                or not isinstance(node.exc.func, ast.Name)
+            ):
                 continue
             name = node.exc.func.id
             if name in TYPED_EXCEPTIONS:
@@ -171,12 +240,24 @@ def test_every_tool_path_raise_names_a_documented_code() -> None:
                 if name == "ExecutorToolError":
                     # The code is a named constant (or forwarded from an already-typed cause).
                     named = isinstance(first, ast.Name) and first.id in constants
-                    forwarded = isinstance(first, ast.Name) and first.id == "code" or isinstance(first, ast.Attribute) and first.attr == "code"
+                    forwarded = (
+                        isinstance(first, ast.Name)
+                        and first.id == "code"
+                        or isinstance(first, ast.Attribute)
+                        and first.attr == "code"
+                    )
                     if not (named or forwarded):
                         problems.append(f"{relative}:{node.lineno} {name} without a named code")
                 continue
-            if name.endswith("Error") and name not in TYPE_CLASSIFIED and relative not in UNTYPED_MODULES:
-                if relative == "executor/staging.py" and owners.get(node) in UNTYPED_STAGING_FUNCTIONS:
+            if (
+                name.endswith("Error")
+                and name not in TYPE_CLASSIFIED
+                and relative not in UNTYPED_MODULES
+            ):
+                if (
+                    relative == "executor/staging.py"
+                    and owners.get(node) in UNTYPED_STAGING_FUNCTIONS
+                ):
                     continue
                 problems.append(f"{relative}:{node.lineno} raises untyped {name}")
     assert problems == []

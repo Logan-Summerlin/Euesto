@@ -15,6 +15,7 @@ from .models import (
     Message,
     ModelOption,
     model_context_length,
+    usage_labels,
 )
 from .storage import Storage
 
@@ -141,7 +142,9 @@ class GenerationController:
         catalog: list[ModelOption],
     ) -> PreparedGeneration:
         context_limit = int(model_context_length(model, catalog) * 0.8)
-        messages, summary, covered = compact_messages(context_source(conversation.system_prompt, context_messages), context_limit)
+        messages, summary, covered = compact_messages(
+            context_source(conversation.system_prompt, context_messages), context_limit
+        )
         if covered:
             existing = self.storage.list_compactions(conversation.id)
             if not existing or existing[-1].get("covered_message_ids") != covered:
@@ -256,21 +259,16 @@ class GenerationController:
 
     @staticmethod
     def format_usage(usage: dict[str, object], cancelled: bool) -> str:
-        prompt = optional_int(usage.get("prompt_tokens")) or 0
-        completion = optional_int(usage.get("completion_tokens")) or 0
-        cached = optional_int(usage.get("cached_tokens")) or 0
-        reasoning = optional_int(usage.get("reasoning_tokens")) or 0
-        cost = optional_float(usage.get("cost"))
-        parts = ["Stopped" if cancelled else "Done"]
-        if prompt or completion:
-            parts.append(f"{prompt + completion:,} tokens")
-        if cached:
-            parts.append(f"{cached:,} cached")
-        if reasoning:
-            parts.append(f"{reasoning:,} reasoning")
-        if cost is not None:
-            parts.append(f"${cost:.6f}")
-        return " · ".join(parts)
+        tokens = (optional_int(usage.get("prompt_tokens")) or 0) + (
+            optional_int(usage.get("completion_tokens")) or 0
+        )
+        labels = usage_labels(
+            tokens,
+            optional_float(usage.get("cost")),
+            optional_int(usage.get("cached_tokens")),
+            optional_int(usage.get("reasoning_tokens")),
+        )
+        return " · ".join(["Stopped" if cancelled else "Done", *labels])
 
 
 def _short_title(text: str) -> str:

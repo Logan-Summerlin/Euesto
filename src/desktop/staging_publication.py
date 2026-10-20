@@ -45,13 +45,17 @@ class StagingPublicationService(QObject):
 
     # -- publication -------------------------------------------------------------------
 
-    def handle_manifest(self, payload: object, *, token: str, auto: bool, auto_authorized: bool) -> None:
+    def handle_manifest(
+        self, payload: object, *, token: str, auto: bool, auto_authorized: bool
+    ) -> None:
         """Publish or ask to publish a manifest announced by an agent run."""
         try:
             manifest = PublishManifest.from_dict(payload)  # type: ignore[arg-type]
             if auto:
                 if not auto_authorized:
-                    raise ValueError("Auto publication is not authorized by this desktop session")
+                    raise ValueError(
+                        "Auto publication is not authorized by this desktop session"
+                    )
                 self.start_publication(manifest, auto=True)
             else:
                 self.confirm_publication(manifest, token)
@@ -60,9 +64,15 @@ class StagingPublicationService(QObject):
             self.host.stateChanged.emit()
             self.host.errorRequested.emit("Publication blocked", str(exc))
 
-    def start_publication(self, value: object, *, auto: bool, client: GatewayClient | None = None) -> None:
+    def start_publication(
+        self, value: object, *, auto: bool, client: GatewayClient | None = None
+    ) -> None:
         try:
-            manifest = value if isinstance(value, PublishManifest) else PublishManifest.from_dict(value)  # type: ignore[arg-type]
+            manifest = (
+                value
+                if isinstance(value, PublishManifest)
+                else PublishManifest.from_dict(value)
+            )  # type: ignore[arg-type]
             workspace = self.host.runtime.workspace_path
             if not workspace:
                 raise BrokerError("Select the workspace that produced this manifest first")
@@ -73,13 +83,19 @@ class StagingPublicationService(QObject):
                 client = GatewayClient(connection) if connection else None
             if auto and client is None:
                 raise BrokerError("Auto publication requires the local gateway")
-            worker = PublicationWorker(manifest, Path(workspace), self._recovery_root(), reseed_client=client)
+            worker = PublicationWorker(
+                manifest, Path(workspace), self._recovery_root(), reseed_client=client
+            )
             self.publication_worker = worker
             self.active_publication = (manifest, auto)
             worker.complete.connect(self._on_publication_complete)
             worker.failed.connect(self._on_publication_failed)
             worker.finished.connect(self._on_publication_finished)
-            position = f" (batch {manifest.batch_index} of {manifest.batch_count})" if manifest.batch_count > 1 else ""
+            position = (
+                f" (batch {manifest.batch_index} of {manifest.batch_count})"
+                if manifest.batch_count > 1
+                else ""
+            )
             self.host.set_status(f"Publishing validated staged changes{position}…")
             worker.start()
         except (BrokerError, OSError, TypeError, ValueError) as exc:
@@ -88,7 +104,9 @@ class StagingPublicationService(QObject):
                 self.host.stateChanged.emit()
             self.host.errorRequested.emit("Publication blocked", str(exc))
 
-    def confirm_publication(self, manifest: PublishManifest, token: str, *, detail: str = "") -> None:
+    def confirm_publication(
+        self, manifest: PublishManifest, token: str, *, detail: str = ""
+    ) -> None:
         if manifest.batch_count > 1:
             title = f"Publish batch {manifest.batch_index} of {manifest.batch_count}?"
             body = (
@@ -112,14 +130,22 @@ class StagingPublicationService(QObject):
     def _on_publication_complete(self, result: dict[str, Any]) -> None:
         completed = result.get("completed_paths") or ()
         checkpoint = str(result.get("checkpoint_id") or "")
-        batch = f" (batch {result['batch_index']} of {result['batch_count']})" if int(result.get("batch_count") or 1) > 1 else ""
-        self.host.set_status(f"Published {len(completed)} file(s){batch}; checkpoint {checkpoint[:8]}")
+        batch = (
+            f" (batch {result['batch_index']} of {result['batch_count']})"
+            if int(result.get("batch_count") or 1) > 1
+            else ""
+        )
+        self.host.set_status(
+            f"Published {len(completed)} file(s){batch}; checkpoint {checkpoint[:8]}"
+        )
         if result.get("reseed_error"):
             self.host.generation.stop_auto()
             progress = f" {result['progress']}" if result.get("progress") else ""
             self.host.errorRequested.emit(
                 "Published, but Auto stopped",
-                "Host files were updated, but staging could not be reseeded: " + str(result["reseed_error"]) + progress,
+                "Host files were updated, but staging could not be reseeded: "
+                + str(result["reseed_error"])
+                + progress,
             )
         elif result.get("next_batch_error"):
             self.host.generation.stop_auto()
@@ -135,8 +161,16 @@ class StagingPublicationService(QObject):
                 self.host.generation.stop_auto()
                 self.host.errorRequested.emit("Publication blocked", str(exc))
             else:
-                auto = bool(self.active_publication and self.active_publication[1] and self.host.generation.auto_mode)
-                client = self.publication_worker.continuation_client if self.publication_worker else None
+                auto = bool(
+                    self.active_publication
+                    and self.active_publication[1]
+                    and self.host.generation.auto_mode
+                )
+                client = (
+                    self.publication_worker.continuation_client
+                    if self.publication_worker
+                    else None
+                )
                 self.next_publication = (following, auto, client)
         self.host.stateChanged.emit()
 
@@ -197,9 +231,13 @@ class StagingPublicationService(QObject):
     def _discard(self) -> None:
         connection = self.host.runtime.connection()
         if not connection or not self.host.runtime.workspace_path:
-            self.host.errorRequested.emit("Workspace runtime required", "Select a ready workspace first.")
+            self.host.errorRequested.emit(
+                "Workspace runtime required", "Select a ready workspace first."
+            )
             return
-        worker = StagingWorker(GatewayClient(connection), self.host.runtime.identity(), "discard")
+        worker = StagingWorker(
+            GatewayClient(connection), self.host.runtime.identity(), "discard"
+        )
         self.discard_worker = worker
         worker.complete.connect(self._on_discarded)
         worker.failed.connect(self._on_discard_failed)
@@ -209,7 +247,10 @@ class StagingPublicationService(QObject):
 
     @Slot(dict)
     def _on_discarded(self, result: dict[str, Any]) -> None:
-        self.host.set_status("Staging reseeded" + (f" · {int(result.get('file_count') or 0):,} files" if result else ""))
+        self.host.set_status(
+            "Staging reseeded"
+            + (f" · {int(result.get('file_count') or 0):,} files" if result else "")
+        )
 
     @Slot(str)
     def _on_discard_failed(self, message: str) -> None:
@@ -227,9 +268,13 @@ class StagingPublicationService(QObject):
             return
         connection = self.host.runtime.connection()
         if not connection:
-            self.host.errorRequested.emit("Workspace runtime required", "Select a ready workspace first.")
+            self.host.errorRequested.emit(
+                "Workspace runtime required", "Select a ready workspace first."
+            )
             return
-        worker = StagingWorker(GatewayClient(connection), self.host.runtime.identity(), "inspect")
+        worker = StagingWorker(
+            GatewayClient(connection), self.host.runtime.identity(), "inspect"
+        )
         self.inspect_worker = worker
         worker.complete.connect(self._on_inspected)
         worker.failed.connect(self._on_inspect_failed)
@@ -240,9 +285,7 @@ class StagingPublicationService(QObject):
     @Slot(dict)
     def _on_inspected(self, result: dict[str, Any]) -> None:
         self.host.infoRequested.emit("Staged workspace review", describe_staged_changes(result))
-        data = result.get("data") if isinstance(result.get("data"), dict) else {}
-        changes = data.get("changes") if isinstance(data.get("changes"), list) else []
-        self.host.set_status(f"Reviewed {len(changes)} staged change(s)")
+        self.host.set_status("Staging reviewed")
 
     @Slot(str)
     def _on_inspect_failed(self, message: str) -> None:
@@ -257,10 +300,19 @@ class StagingPublicationService(QObject):
 
 
 def describe_staged_changes(result: dict[str, Any]) -> str:
+    """Summarize a staging inspection: whether staging differs from the published baseline.
+
+    Inspection reads executor status rather than running a tool, so it reports the staged
+    snapshot's size, not a per-file list; the publication review shows each changed file.
+    """
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
-    changes = data.get("changes") if isinstance(data.get("changes"), list) else []
-    lines = [f"Staged changes: {len(changes)} shown"]
-    lines.extend(f"{item.get('operation', '?')}: {item.get('path', '?')}" for item in changes[:500] if isinstance(item, dict))
-    if data.get("truncated"):
-        lines.append("More changes are available through the bounded cursor.")
-    return "\n".join(lines)
+    if data.get("unpublished_changes"):
+        state = (
+            "Staging has unpublished changes. Publishing shows each changed file for review; "
+            "discarding resets staging to the workspace."
+        )
+    else:
+        state = "Staging is clean: it matches the workspace baseline."
+    files = int(data.get("file_count") or 0)
+    size = int(data.get("total_bytes") or 0)
+    return f"{state}\nStaged snapshot: {files:,} files, {size:,} bytes."

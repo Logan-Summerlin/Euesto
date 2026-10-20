@@ -12,6 +12,7 @@ Each service owns one job and its state; ``DesktopBridge`` only exposes them to 
 - ``StagingPublicationService`` — staged-change review/discard and reviewed, batched host
   publication.
 """
+
 from .conversations import ConversationService
 from .generation import GenerationService
 from .host import BridgeHost

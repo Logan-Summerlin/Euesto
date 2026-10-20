@@ -35,22 +35,28 @@ class GatewayConfig:
 
     @classmethod
     def from_environment(cls) -> GatewayConfig:
-        token_file = Path(os.environ.get("LOCAL_CHAT_GATEWAY_TOKEN_FILE", "/run/secrets/gateway_token"))
-        token = _read_secret(token_file)
-        if not token:
-            # This variable is intentionally a test/development escape hatch. Compose uses a secret.
-            token = os.environ.get("LOCAL_CHAT_GATEWAY_TOKEN", "").strip()
-        openrouter_file = Path(
-            os.environ.get("LOCAL_CHAT_OPENROUTER_KEY_FILE", "/run/secrets/openrouter_key")
-        )
+        # The plain token variable is a test/development escape hatch; Compose uses a secret.
+        token = _secret_file("LOCAL_CHAT_GATEWAY_TOKEN_FILE", "/run/secrets/gateway_token")
         return cls(
-            session_token=token,
-            journal_path=Path(os.environ.get("LOCAL_CHAT_JOURNAL_PATH", "/data/gateway.sqlite3")),
-            container_openrouter_key=_read_secret(openrouter_file),
-            executor_socket=Path(os.environ.get("LOCAL_CHAT_EXECUTOR_SOCKET", "/run/ipc/executor.sock")),
-            executor_token=_read_secret(Path(os.environ.get("LOCAL_CHAT_EXECUTOR_TOKEN_FILE", "/run/secrets/executor_token"))),
+            session_token=token or os.environ.get("LOCAL_CHAT_GATEWAY_TOKEN", "").strip(),
+            journal_path=_path("LOCAL_CHAT_JOURNAL_PATH", "/data/gateway.sqlite3"),
+            container_openrouter_key=_secret_file(
+                "LOCAL_CHAT_OPENROUTER_KEY_FILE", "/run/secrets/openrouter_key"
+            ),
+            executor_socket=_path("LOCAL_CHAT_EXECUTOR_SOCKET", "/run/ipc/executor.sock"),
+            executor_token=_secret_file(
+                "LOCAL_CHAT_EXECUTOR_TOKEN_FILE", "/run/secrets/executor_token"
+            ),
             workspace_id=os.environ.get("LOCAL_CHAT_WORKSPACE_ID", "").strip() or None,
         )
+
+
+def _path(variable: str, default: str) -> Path:
+    return Path(os.environ.get(variable, default))
+
+
+def _secret_file(variable: str, default: str) -> str | None:
+    return _read_secret(_path(variable, default))
 
 
 def _read_secret(path: Path) -> str | None:

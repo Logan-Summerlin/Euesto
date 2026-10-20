@@ -32,7 +32,12 @@ class ModelCatalog:
 
 
 def filter_model_entries(
-    entries: list[dict[str, Any]], query: str, text_only: bool, max_price: float, max_rank: int, year: int
+    entries: list[dict[str, Any]],
+    query: str,
+    text_only: bool,
+    max_price: float,
+    max_rank: int,
+    year: int,
 ) -> list[dict[str, Any]]:
     """Apply the model-browser filters. A negative price, or a non-positive rank or year, disables that filter."""
     query = query.strip().casefold()
@@ -40,7 +45,12 @@ def filter_model_entries(
     for item in entries:
         if text_only and not item.get("textCompatible", False):
             continue
-        if query not in " ".join(str(item.get(key) or "") for key in ("id", "label", "description")).casefold():
+        if (
+            query
+            not in " ".join(
+                str(item.get(key) or "") for key in ("id", "label", "description")
+            ).casefold()
+        ):
             continue
         price, rank = item.get("price"), item.get("rank")
         if max_price >= 0 and (price is None or float(price) > max_price):

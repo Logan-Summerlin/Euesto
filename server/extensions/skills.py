@@ -64,7 +64,9 @@ def parse_skill(text: str, *, scope: str) -> Skill:
     return Skill(name, description[:1000], instructions.strip(), required, references, scope)
 
 
-def render_skill_context(skills: tuple[dict[str, object], ...], available_tools: set[str]) -> str:
+def render_skill_context(
+    skills: tuple[dict[str, object], ...], available_tools: set[str]
+) -> str:
     rendered: list[str] = []
     seen: set[str] = set()
     for raw in sorted(skills, key=lambda item: str(item.get("name") or "")):
@@ -77,7 +79,11 @@ def render_skill_context(skills: tuple[dict[str, object], ...], available_tools:
             raise ValueError("Malformed or duplicate skill")
         if any(tool not in available_tools for tool in required):
             raise ValueError(f"Skill {name} requires unavailable tools")
-        if not description or not instructions or len(instructions.encode("utf-8")) > MAX_SKILL_BYTES:
+        if (
+            not description
+            or not instructions
+            or len(instructions.encode("utf-8")) > MAX_SKILL_BYTES
+        ):
             raise ValueError("Malformed skill content")
         seen.add(name)
         rendered.append(

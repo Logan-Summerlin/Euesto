@@ -61,21 +61,43 @@ class EgressPolicy:
         if not normalized:
             raise ValueError("The egress allowlist must name at least one host")
         object.__setattr__(self, "allowed_hosts", normalized)
-        if not self.allowed_ports or any(not 1 <= int(port) <= 65_535 for port in self.allowed_ports):
+        if not self.allowed_ports or any(
+            not 1 <= int(port) <= 65_535 for port in self.allowed_ports
+        ):
             raise ValueError("Allowed egress ports must be between 1 and 65535")
-        if min(self.max_connections, self.max_connections_per_minute, self.max_header_bytes, self.max_tunnel_bytes) < 1:
+        if (
+            min(
+                self.max_connections,
+                self.max_connections_per_minute,
+                self.max_header_bytes,
+                self.max_tunnel_bytes,
+            )
+            < 1
+        ):
             raise ValueError("Egress limits must be positive")
 
     @classmethod
     def from_environment(cls, environ: dict[str, str] | None = None) -> EgressPolicy:
         env = os.environ if environ is None else environ
-        hosts = tuple(item for item in env.get("LOCAL_CHAT_EGRESS_ALLOWED_HOSTS", ",".join(DEFAULT_ALLOWED_HOSTS)).split(",") if item.strip())
-        ports = tuple(int(item) for item in env.get("LOCAL_CHAT_EGRESS_ALLOWED_PORTS", "443").split(",") if item.strip())
+        hosts = tuple(
+            item
+            for item in env.get(
+                "LOCAL_CHAT_EGRESS_ALLOWED_HOSTS", ",".join(DEFAULT_ALLOWED_HOSTS)
+            ).split(",")
+            if item.strip()
+        )
+        ports = tuple(
+            int(item)
+            for item in env.get("LOCAL_CHAT_EGRESS_ALLOWED_PORTS", "443").split(",")
+            if item.strip()
+        )
         return cls(
             allowed_hosts=hosts,
             allowed_ports=ports,
             max_connections=int(env.get("LOCAL_CHAT_EGRESS_MAX_CONNECTIONS", "32")),
-            max_connections_per_minute=int(env.get("LOCAL_CHAT_EGRESS_MAX_CONNECTIONS_PER_MINUTE", "240")),
+            max_connections_per_minute=int(
+                env.get("LOCAL_CHAT_EGRESS_MAX_CONNECTIONS_PER_MINUTE", "240")
+            ),
         )
 
     def host_allowed(self, host: str) -> bool:
@@ -131,7 +153,9 @@ async def resolve_public(host: str, port: int) -> list[str]:
     addresses = list(dict.fromkeys(str(info[4][0]) for info in infos))
     if not addresses:
         raise EgressDenied("resolution_failed", 502)
-    if any(not ipaddress.ip_address(address.split("%", 1)[0]).is_global for address in addresses):
+    if any(
+        not ipaddress.ip_address(address.split("%", 1)[0]).is_global for address in addresses
+    ):
         raise EgressDenied("non_public_address")
     return addresses
 
@@ -189,9 +213,18 @@ class EgressProxy:
             except (ConnectionError, OSError):
                 pass
 
-    async def _tunnel(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, client: str, started: float, state: dict[str, Decision]) -> None:
+    async def _tunnel(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        client: str,
+        started: float,
+        state: dict[str, Decision],
+    ) -> None:
         try:
-            head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=self.policy.header_timeout_seconds)
+            head = await asyncio.wait_for(
+                reader.readuntil(b"\r\n\r\n"), timeout=self.policy.header_timeout_seconds
+            )
         except asyncio.LimitOverrunError as exc:
             raise EgressDenied("headers_too_large", 431) from exc
         except asyncio.IncompleteReadError as exc:
@@ -206,11 +239,20 @@ class EgressProxy:
         decision = evaluate(request_line, self.policy)
         state["decision"] = decision
         if not decision.allowed:
-            status = 405 if decision.reason == "method_not_allowed" else 400 if decision.reason.startswith("malformed") else 403
+            status = (
+                405
+                if decision.reason == "method_not_allowed"
+                else 400
+                if decision.reason.startswith("malformed")
+                else 403
+            )
             raise EgressDenied(decision.reason, status)
         addresses = await self.resolver(decision.host, decision.port)
         try:
-            upstream_reader, upstream_writer = await asyncio.wait_for(self.connector(addresses[0], decision.port), timeout=self.policy.connect_timeout_seconds)
+            upstream_reader, upstream_writer = await asyncio.wait_for(
+                self.connector(addresses[0], decision.port),
+                timeout=self.policy.connect_timeout_seconds,
+            )
         except (OSError, TimeoutError) as exc:
             raise EgressDenied("upstream_unreachable", 502) from exc
         writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
@@ -219,19 +261,37 @@ class EgressProxy:
         deadline = started + self.policy.max_tunnel_seconds
         outcome = "closed"
         try:
-            outcome = await self._pump(reader, upstream_writer, writer, upstream_reader, counters, deadline)
+            outcome = await self._pump(
+                reader, upstream_writer, writer, upstream_reader, counters, deadline
+            )
         finally:
             upstream_writer.close()
-        self._log(True, "allowed", decision, client, started, bytes_up=counters["up"], bytes_down=counters["down"], outcome=outcome)
+        self._log(
+            True,
+            "allowed",
+            decision,
+            client,
+            started,
+            bytes_up=counters["up"],
+            bytes_down=counters["down"],
+            outcome=outcome,
+        )
 
-    async def _pump(self, client_reader, upstream_writer, client_writer, upstream_reader, counters, deadline) -> str:
-        async def copy(source: asyncio.StreamReader, sink: asyncio.StreamWriter, key: str) -> str:
+    async def _pump(
+        self, client_reader, upstream_writer, client_writer, upstream_reader, counters, deadline
+    ) -> str:
+        async def copy(
+            source: asyncio.StreamReader, sink: asyncio.StreamWriter, key: str
+        ) -> str:
             while True:
                 remaining = deadline - self.clock()
                 if remaining <= 0:
                     return "max_tunnel_seconds"
                 try:
-                    chunk = await asyncio.wait_for(source.read(65_536), timeout=min(self.policy.idle_timeout_seconds, remaining))
+                    chunk = await asyncio.wait_for(
+                        source.read(65_536),
+                        timeout=min(self.policy.idle_timeout_seconds, remaining),
+                    )
                 except TimeoutError:
                     return "idle_timeout"
                 if not chunk:
@@ -242,15 +302,28 @@ class EgressProxy:
                 sink.write(chunk)
                 await sink.drain()
 
-        tasks = [asyncio.create_task(copy(client_reader, upstream_writer, "up")), asyncio.create_task(copy(upstream_reader, client_writer, "down"))]
+        tasks = [
+            asyncio.create_task(copy(client_reader, upstream_writer, "up")),
+            asyncio.create_task(copy(upstream_reader, client_writer, "down")),
+        ]
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
-        results = [task.result() for task in done if not task.cancelled() and task.exception() is None]
+        results = [
+            task.result() for task in done if not task.cancelled() and task.exception() is None
+        ]
         return next((item for item in results if item != "closed"), "closed")
 
-    def _log(self, allowed: bool, reason: str, decision: Decision, client: str, started: float, **extra: object) -> None:
+    def _log(
+        self,
+        allowed: bool,
+        reason: str,
+        decision: Decision,
+        client: str,
+        started: float,
+        **extra: object,
+    ) -> None:
         entry: dict[str, object] = {
             "event": "egress.allowed" if allowed else "egress.denied",
             "reason": reason,
@@ -265,13 +338,27 @@ class EgressProxy:
         self.audit(entry)
 
     async def serve(self, host: str, port: int) -> asyncio.base_events.Server:
-        return await asyncio.start_server(self.handle, host, port, limit=self.policy.max_header_bytes)
+        return await asyncio.start_server(
+            self.handle, host, port, limit=self.policy.max_header_bytes
+        )
 
 
 async def _respond(writer: asyncio.StreamWriter, status: int) -> None:
-    reasons = {400: "Bad Request", 403: "Forbidden", 405: "Method Not Allowed", 429: "Too Many Requests", 431: "Request Header Fields Too Large", 502: "Bad Gateway", 503: "Service Unavailable"}
+    reasons = {
+        400: "Bad Request",
+        403: "Forbidden",
+        405: "Method Not Allowed",
+        429: "Too Many Requests",
+        431: "Request Header Fields Too Large",
+        502: "Bad Gateway",
+        503: "Service Unavailable",
+    }
     try:
-        writer.write(f"HTTP/1.1 {status} {reasons.get(status, 'Error')}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".encode("ascii"))
+        writer.write(
+            f"HTTP/1.1 {status} {reasons.get(status, 'Error')}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".encode(
+                "ascii"
+            )
+        )
         await writer.drain()
     except (ConnectionError, OSError, RuntimeError):
         pass
@@ -304,9 +391,16 @@ def main() -> None:
 
     async def run() -> None:
         server = await EgressProxy(policy).serve(host or "0.0.0.0", int(port))
-        stdout_audit({"event": "egress.started", "listen": listen, "allowed_hosts": list(policy.allowed_hosts), "allowed_ports": list(policy.allowed_ports), "timestamp": time.time()})
+        stdout_audit(
+            {
+                "event": "egress.started",
+                "listen": listen,
+                "allowed_hosts": list(policy.allowed_hosts),
+                "allowed_ports": list(policy.allowed_ports),
+                "timestamp": time.time(),
+            }
+        )
         async with server:
             await server.serve_forever()
 
     asyncio.run(run())
-

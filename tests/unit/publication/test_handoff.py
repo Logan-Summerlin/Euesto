@@ -31,7 +31,9 @@ def _manifest() -> SimpleNamespace:
     )
 
 
-def test_publication_handoff_marks_manifest_published_before_completion(monkeypatch, tmp_path: Path) -> None:
+def test_publication_handoff_marks_manifest_published_before_completion(
+    monkeypatch, tmp_path: Path
+) -> None:
     monkeypatch.setattr("src.workers.WorkspaceBroker", FakeBroker)
     gateway = FakeGateway()
     completed: list[dict] = []
@@ -53,7 +55,9 @@ def test_publication_handoff_marks_manifest_published_before_completion(monkeypa
     ]
 
 
-def test_publication_handoff_reports_baseline_failure_instead_of_claiming_clean(tmp_path: Path, monkeypatch) -> None:
+def test_publication_handoff_reports_baseline_failure_instead_of_claiming_clean(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setattr("src.workers.WorkspaceBroker", FakeBroker)
     gateway = FakeGateway()
     gateway.mark_staging_published = lambda _manifest: (_ for _ in ()).throw(

@@ -6,6 +6,13 @@ from typing import Any, Literal
 from .permissions import APPROVAL_POLICIES
 
 DEFAULT_INVESTIGATION_MODEL = "xiaomi/mimo-v2.5"
+# Hard ceiling on investigate_repository calls per parent turn; also the default budget.
+MAX_INVESTIGATION_CALLS = 4
+# Workspace configuration the desktop syncs to the gateway, and its serialized size bound.
+WORKSPACE_CONFIG_KEYS = frozenset(
+    {"instructions", "active_skills", "default_mode", "context_policy", "custom_tools"}
+)
+MAX_WORKSPACE_CONFIG_BYTES = 128_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,8 +63,14 @@ class ChatRequest:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ChatRequest:
         expected = {
-            "model", "messages", "options", "server_tools", "supported_parameters",
-            "client_request_id", "provider_preferences", "mode",
+            "model",
+            "messages",
+            "options",
+            "server_tools",
+            "supported_parameters",
+            "client_request_id",
+            "provider_preferences",
+            "mode",
         }
         unknown = set(data) - expected
         if unknown:
@@ -73,9 +86,13 @@ class ChatRequest:
                 if isinstance(item, dict)
             ),
             options=_object(data.get("options")),
-            server_tools={key: bool(value) for key, value in _object(data.get("server_tools")).items()},
-            supported_parameters=tuple(str(item) for item in data.get("supported_parameters") or ()),
-            client_request_id=str(data["client_request_id"]) if data.get("client_request_id") else None,
+            server_tools={
+                key: bool(value) for key, value in _object(data.get("server_tools")).items()
+            },
+            supported_parameters=tuple(
+                str(item) for item in data.get("supported_parameters") or ()
+            ),
+            client_request_id=str(data.get("client_request_id") or "") or None,
             provider_preferences=_object(data.get("provider_preferences")),
             mode=str(data.get("mode") or "chat"),
         )
@@ -99,34 +116,34 @@ class AgentRunRequest:
     context_limit_tokens: int = 100_000
     skills: tuple[dict[str, Any], ...] = ()
     workspace_config: dict[str, Any] = field(default_factory=dict)
-    max_iterations: int = 101
-    max_tool_calls: int = 100
-    max_wall_seconds: int = 900
-    max_cost: float = 1.0
     budget_profile: str = "coding"
     provider_preferences: dict[str, Any] = field(default_factory=dict)
     investigation_model_id: str | None = DEFAULT_INVESTIGATION_MODEL
-    investigation_call_budget: int = 4
+    investigation_call_budget: int = MAX_INVESTIGATION_CALLS
     approval_policy: Literal["prompt", "accept_edits", "auto"] = "prompt"
 
     def __post_init__(self) -> None:
-        if self.mode not in {"plan", "agent"} or not self.model.strip() or not self.workspace_id:
+        if (
+            self.mode not in {"plan", "agent"}
+            or not self.model.strip()
+            or not self.workspace_id
+        ):
             raise ValueError("Plan/Agent mode, model, and workspace identity are required")
         if not self.budget_profile.strip():
             raise ValueError("Agent budget profile is required")
-        if not isinstance(self.investigation_call_budget, int) or isinstance(self.investigation_call_budget, bool) or not 1 <= self.investigation_call_budget <= 4:
-            raise ValueError("Investigation call budget must be an integer from 1 to 4")
+        calls = self.investigation_call_budget
+        if (
+            not isinstance(calls, int)
+            or isinstance(calls, bool)
+            or not 1 <= calls <= MAX_INVESTIGATION_CALLS
+        ):
+            raise ValueError(
+                f"Investigation call budget must be an integer from 1 to {MAX_INVESTIGATION_CALLS}"
+            )
         if self.approval_policy not in APPROVAL_POLICIES:
             raise ValueError("Unknown agent approval policy")
         if self.mode != "agent" and self.approval_policy != "prompt":
             raise ValueError("Automatic approval is available only in Agent mode")
-        if (
-            not 1 <= self.max_iterations <= 1000
-            or not 1 <= self.max_tool_calls <= 2000
-            or not 10 <= self.max_wall_seconds <= 7200
-            or not 0 < self.max_cost <= 100
-        ):
-            raise ValueError("Agent budget is outside safe limits")
         if not self.messages or len(self.messages) > 500:
             raise ValueError("A bounded message context is required")
         total_message_bytes = 0
@@ -146,10 +163,17 @@ class AgentRunRequest:
             raise ValueError("Too many active skills")
         if any(not isinstance(item, dict) for item in self.skills):
             raise ValueError("Skills must be objects")
-        allowed_skill_fields = {"name", "description", "instructions", "required_tools", "references", "scope"}
+        allowed_skill_fields = {
+            "name",
+            "description",
+            "instructions",
+            "required_tools",
+            "references",
+            "scope",
+        }
         if any(set(item) - allowed_skill_fields for item in self.skills):
             raise ValueError("Skills contain unknown fields")
-        if len(repr(self.workspace_config).encode("utf-8")) > 128_000:
+        if len(repr(self.workspace_config).encode("utf-8")) > MAX_WORKSPACE_CONFIG_BYTES:
             raise ValueError("Workspace configuration is too large")
         _validate_provider_preferences(self.provider_preferences)
 
@@ -164,10 +188,6 @@ class AgentRunRequest:
             "context_limit_tokens": self.context_limit_tokens,
             "skills": [dict(item) for item in self.skills],
             "workspace_config": dict(self.workspace_config),
-            "max_iterations": self.max_iterations,
-            "max_tool_calls": self.max_tool_calls,
-            "max_wall_seconds": self.max_wall_seconds,
-            "max_cost": self.max_cost,
             "budget_profile": self.budget_profile,
             "provider_preferences": dict(self.provider_preferences),
             "investigation_model_id": self.investigation_model_id,
@@ -177,15 +197,26 @@ class AgentRunRequest:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> AgentRunRequest:
         expected = {
-            "model", "messages", "mode", "workspace_id", "approval_policy", "session_id",
-            "context_limit_tokens", "skills", "workspace_config", "max_iterations",
-            "max_tool_calls", "max_wall_seconds", "max_cost", "budget_profile",
-            "provider_preferences", "investigation_model_id", "investigation_call_budget",
+            "model",
+            "messages",
+            "mode",
+            "workspace_id",
+            "approval_policy",
+            "session_id",
+            "context_limit_tokens",
+            "skills",
+            "workspace_config",
+            "budget_profile",
+            "provider_preferences",
+            "investigation_model_id",
+            "investigation_call_budget",
         }
         if set(data) - expected:
             raise ValueError("Unknown agent run fields")
         messages = data.get("messages")
-        if not isinstance(messages, list) or any(not isinstance(item, dict) for item in messages):
+        if not isinstance(messages, list) or any(
+            not isinstance(item, dict) for item in messages
+        ):
             raise ValueError("messages must be an object array")
         return cls(
             model=str(data.get("model") or ""),
@@ -195,16 +226,17 @@ class AgentRunRequest:
             approval_policy=str(data.get("approval_policy") or "prompt"),
             session_id=str(data["session_id"]) if data.get("session_id") else None,
             context_limit_tokens=int(data.get("context_limit_tokens") or 100_000),
-            skills=tuple(dict(item) for item in data.get("skills") or () if isinstance(item, dict)),
+            skills=tuple(
+                dict(item) for item in data.get("skills") or () if isinstance(item, dict)
+            ),
             workspace_config=_object(data.get("workspace_config")),
-            max_iterations=int(data.get("max_iterations") or 101),
-            max_tool_calls=int(data.get("max_tool_calls") or 100),
-            max_wall_seconds=int(data.get("max_wall_seconds") or 900),
-            max_cost=float(data.get("max_cost") or 1.0),
             budget_profile=str(data.get("budget_profile") or "coding"),
             provider_preferences=_object(data.get("provider_preferences")),
-            investigation_model_id=str(data["investigation_model_id"]) if data.get("investigation_model_id") else DEFAULT_INVESTIGATION_MODEL,
-            investigation_call_budget=int(data.get("investigation_call_budget") or 4),
+            investigation_model_id=str(data.get("investigation_model_id") or "")
+            or DEFAULT_INVESTIGATION_MODEL,
+            investigation_call_budget=int(
+                data.get("investigation_call_budget") or MAX_INVESTIGATION_CALLS
+            ),
         )
 
 

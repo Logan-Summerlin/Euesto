@@ -3,6 +3,7 @@
 They need a Qt Quick runtime (offscreen platform, software scene graph), so they belong to
 the ``slow`` tier and skip cleanly where PySide6 cannot load.
 """
+
 from __future__ import annotations
 
 import os
@@ -134,7 +135,9 @@ ApplicationWindow {
     return engine, window
 
 
-def _destroy_transcript_window(qapp: QApplication, engine: QQmlApplicationEngine, window: QObject) -> None:
+def _destroy_transcript_window(
+    qapp: QApplication, engine: QQmlApplicationEngine, window: QObject
+) -> None:
     window.close()
     engine.deleteLater()
     qapp.processEvents()
@@ -156,7 +159,10 @@ def _find_all(window: QObject, name: str) -> list[QObject]:
 
 
 def _message_bodies(window: QObject, count: int) -> list[QObject]:
-    _wait_until(lambda: len(_find_all(window, "transcriptMessageBody")) == count, f"{count} message bodies")
+    _wait_until(
+        lambda: len(_find_all(window, "transcriptMessageBody")) == count,
+        f"{count} message bodies",
+    )
     return _find_all(window, "transcriptMessageBody")
 
 
@@ -179,7 +185,10 @@ def test_transcript_scroll_anchor_survives_a_tail_update(qapp: QApplication) -> 
     try:
         transcript, viewport = _viewport(window)
         _message_bodies(window, len(rows))
-        _wait_until(lambda: _height(viewport) > float(viewport.property("height")), "an overflowing transcript")
+        _wait_until(
+            lambda: _height(viewport) > float(viewport.property("height")),
+            "an overflowing transcript",
+        )
         initial_height = _height(viewport)
         transcript.setProperty("followingTail", False)
         viewport.setProperty("contentY", initial_height / 2)
@@ -205,26 +214,37 @@ def test_transcript_scroll_anchor_survives_a_tail_update(qapp: QApplication) -> 
 
         def at_tail() -> bool:
             expected = max(0.0, _height(viewport) - float(viewport.property("height")))
-            return _height(viewport) > stable_height and abs(float(viewport.property("contentY")) - expected) <= 1.0
+            return (
+                _height(viewport) > stable_height
+                and abs(float(viewport.property("contentY")) - expected) <= 1.0
+            )
 
         _wait_until(at_tail, "the view to follow the new tail")
     finally:
         _destroy_transcript_window(qapp, engine, window)
 
 
-def test_transcript_renders_long_content_after_an_existing_row_update(qapp: QApplication) -> None:
+def test_transcript_renders_long_content_after_an_existing_row_update(
+    qapp: QApplication,
+) -> None:
     backend = FakeBackend()
     rows = [_message(1, 1), _message(2, 1)]
     backend.model.replace(rows, reset=True)
     engine, window = _create_transcript_window(backend)
     try:
         bodies = _message_bodies(window, 2)
-        _wait_until(lambda: float(bodies[-1].property("contentHeight")) > 0, "the initial body to lay out")
+        _wait_until(
+            lambda: float(bodies[-1].property("contentHeight")) > 0,
+            "the initial body to lay out",
+        )
         before = float(bodies[-1].property("contentHeight"))
         updated = list(rows)
         updated[-1] = _message(2, 180)
         backend.model.replace(updated)
-        _wait_until(lambda: float(_message_bodies(window, 2)[-1].property("contentHeight")) > before, "the updated body to grow")
+        _wait_until(
+            lambda: float(_message_bodies(window, 2)[-1].property("contentHeight")) > before,
+            "the updated body to grow",
+        )
         after = _message_bodies(window, 2)[-1]
         content_height = float(after.property("contentHeight"))
         assert float(after.property("height")) == pytest.approx(content_height, abs=1.0)
@@ -234,7 +254,9 @@ def test_transcript_renders_long_content_after_an_existing_row_update(qapp: QApp
         _destroy_transcript_window(qapp, engine, window)
 
 
-def test_transcript_keeps_all_rows_after_repeated_scroll_and_height_updates(qapp: QApplication) -> None:
+def test_transcript_keeps_all_rows_after_repeated_scroll_and_height_updates(
+    qapp: QApplication,
+) -> None:
     backend = FakeBackend()
     rows = [_message(index, (2, 5, 18, 3)[index % 4]) for index in range(1, 61)]
     backend.model.replace(rows, reset=True)
@@ -247,7 +269,9 @@ def test_transcript_keeps_all_rows_after_repeated_scroll_and_height_updates(qapp
         initial_height = _height(viewport)
         transcript.setProperty("followingTail", False)
         for fraction in (0.0, 0.23, 0.61, 1.0, 0.38, 0.0, 1.0):
-            viewport.setProperty("contentY", max(0.0, _height(viewport) - viewport_height) * fraction)
+            viewport.setProperty(
+                "contentY", max(0.0, _height(viewport) - viewport_height) * fraction
+            )
             qapp.processEvents()
         changed = list(rows)
         changed[10] = _message(11, 45)
@@ -255,7 +279,9 @@ def test_transcript_keeps_all_rows_after_repeated_scroll_and_height_updates(qapp
         backend.model.replace(changed)
         _wait_until(lambda: _height(viewport) > initial_height, "the updated rows to grow")
         for fraction in (1.0, 0.0, 0.5, 0.17, 0.83, 0.0, 1.0):
-            viewport.setProperty("contentY", max(0.0, _height(viewport) - viewport_height) * fraction)
+            viewport.setProperty(
+                "contentY", max(0.0, _height(viewport) - viewport_height) * fraction
+            )
             qapp.processEvents()
         bodies = _message_bodies(window, len(changed))
         assert all(float(body.property("height")) > 0 for body in bodies)
@@ -270,12 +296,20 @@ def test_transcript_empty_state_and_streaming_rows(qapp: QApplication) -> None:
     try:
         repeater = window.findChild(QObject, "transcriptRepeater")
         assert repeater is not None and int(repeater.property("count")) == 0
-        backend.model.replace([_message(1, 2), _message(2, 1, streaming=True, content="partial", html="<p>partial</p>")])
+        backend.model.replace(
+            [
+                _message(1, 2),
+                _message(2, 1, streaming=True, content="partial", html="<p>partial</p>"),
+            ]
+        )
         _wait_until(lambda: int(repeater.property("count")) == 2, "two delegates")
         bodies = _message_bodies(window, 2)
         assert "partial" in str(bodies[-1].property("text"))
         backend.model.replace([_message(1, 2), _message(2, 3)])
-        _wait_until(lambda: "line 2" in str(_message_bodies(window, 2)[-1].property("text")), "the completed row to replace the streaming row")
+        _wait_until(
+            lambda: "line 2" in str(_message_bodies(window, 2)[-1].property("text")),
+            "the completed row to replace the streaming row",
+        )
         backend.model.replace([], reset=True)
         _wait_until(lambda: int(repeater.property("count")) == 0, "the transcript to clear")
     finally:

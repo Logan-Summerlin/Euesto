@@ -1,7 +1,9 @@
 """Desktop selection of the Agent approval tier (prompt / accept_edits / auto)."""
+
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,6 +16,7 @@ try:
 except ImportError as exc:  # pragma: no cover - Qt unavailable
     pytest.skip(f"Desktop Qt bridge unavailable: {exc}", allow_module_level=True)
 
+from shared.responses import GatewayStatus
 from src.storage import Storage
 from src.workspace_broker import workspace_id
 
@@ -27,7 +30,7 @@ def bridge(tmp_path: Path):
     backend.runtime.health_timer.stop()
     backend.runtime.workspace_path = str(workspace.resolve())
     backend.runtime.state = "manual"
-    backend.runtime.last_status = SimpleNamespace(
+    backend.runtime.last_status = GatewayStatus(
         ready=True,
         executor_present=True,
         executor_status="ready",
@@ -49,7 +52,7 @@ def bridge(tmp_path: Path):
 
 def test_accept_edits_requires_confirmation_and_selects_the_middle_tier(bridge) -> None:
     backend, confirmations, errors = bridge
-    assert backend.approvalPolicy == "prompt"
+    assert backend.generation.approval_policy() == "prompt"
     assert backend.acceptEditsAvailable is True
 
     backend.requestAcceptEdits(True)
@@ -57,24 +60,24 @@ def test_accept_edits_requires_confirmation_and_selects_the_middle_tier(bridge) 
     assert backend.acceptEditsEnabled is False  # not until the user confirms
     backend.resolveConfirmation(confirmations[0], True)
     assert backend.acceptEditsEnabled is True
-    assert backend.approvalPolicy == "accept_edits"
+    assert backend.generation.approval_policy() == "accept_edits"
 
     # Auto supersedes the middle tier while enabled; turning Auto off falls back to it.
     backend.requestAutoMode(True)
     backend.resolveConfirmation(confirmations[-1], True)
-    assert backend.approvalPolicy == "auto"
+    assert backend.generation.approval_policy() == "auto"
     backend.requestAutoMode(False)
-    assert backend.approvalPolicy == "accept_edits"
+    assert backend.generation.approval_policy() == "accept_edits"
 
     backend.requestAcceptEdits(False)
-    assert backend.approvalPolicy == "prompt"
+    assert backend.generation.approval_policy() == "prompt"
 
 
 def test_declined_confirmation_keeps_prompting(bridge) -> None:
     backend, confirmations, _errors = bridge
     backend.requestAcceptEdits(True)
     backend.resolveConfirmation(confirmations[0], False)
-    assert backend.approvalPolicy == "prompt"
+    assert backend.generation.approval_policy() == "prompt"
 
 
 def test_accept_edits_resets_on_mode_change(bridge) -> None:
@@ -82,12 +85,16 @@ def test_accept_edits_resets_on_mode_change(bridge) -> None:
     backend.requestAcceptEdits(True)
     backend.resolveConfirmation(confirmations[0], True)
     backend.selectMode("plan")
-    assert backend.approvalPolicy == "prompt" and backend.acceptEditsEnabled is False
+    assert (
+        backend.generation.approval_policy() == "prompt" and backend.acceptEditsEnabled is False
+    )
 
 
 def test_accept_edits_unavailable_without_gateway_capability(bridge) -> None:
     backend, confirmations, errors = bridge
-    backend.runtime.last_status.capabilities = ({"name": "agent_auto"},)
+    backend.runtime.last_status = replace(
+        backend.runtime.last_status, capabilities=({"name": "agent_auto"},)
+    )
     assert backend.acceptEditsAvailable is False
     backend.requestAcceptEdits(True)
     assert confirmations == [] and errors == ["Accept edits unavailable"]

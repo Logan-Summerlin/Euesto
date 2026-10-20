@@ -88,9 +88,7 @@ def test_qml_transcript_keeps_fifteen_tool_calls_inside_one_assistant_turn() -> 
     assert [item["kind"] for item in transcript] == ["user", "assistant"]
     assistant = transcript[1]
     assert len(assistant["activity"]) == 15
-    assert {
-        item["title"].split(" · ", 1)[0] for item in assistant["activity"]
-    } == {"read_file"}
+    assert {item["title"].split(" · ", 1)[0] for item in assistant["activity"]} == {"read_file"}
     assert all("detail" not in item for item in assistant["activity"])
     assert "15 tool calls" in assistant["activitySummary"]
     assert assistant["activityExpanded"] is False
@@ -158,12 +156,31 @@ def test_transcript_never_loads_tool_outputs_into_qml_activity(tmp_path: Path) -
     storage = Storage(tmp_path / "chat.sqlite3")
     conversation = storage.create_conversation("Chat", "model/a", "System")
     for event_id, event_type, payload in (
-        (1, "tool.requested", {"request_id": "call-1", "tool": "read_file", "arguments": {"path": "large.py"}}),
-        (2, "tool.completed", {"request_id": "call-1", "tool": "read_file", "output": "x" * 500_000}),
+        (
+            1,
+            "tool.requested",
+            {"request_id": "call-1", "tool": "read_file", "arguments": {"path": "large.py"}},
+        ),
+        (
+            2,
+            "tool.completed",
+            {"request_id": "call-1", "tool": "read_file", "output": "x" * 500_000},
+        ),
     ):
-        storage.save_run_event(conversation.id, SimpleNamespace(run_id="run-1", event_id=event_id, type=event_type, payload=payload, created_at="2026-08-09T00:00:00+00:00"))
+        storage.save_run_event(
+            conversation.id,
+            SimpleNamespace(
+                run_id="run-1",
+                event_id=event_id,
+                type=event_type,
+                payload=payload,
+                created_at="2026-08-09T00:00:00+00:00",
+            ),
+        )
 
-    events = storage.list_run_events(conversation.id, event_types=ACTIVITY_EVENT_TYPES, payload_keys=ACTIVITY_PAYLOAD_KEYS)
+    events = storage.list_run_events(
+        conversation.id, event_types=ACTIVITY_EVENT_TYPES, payload_keys=ACTIVITY_PAYLOAD_KEYS
+    )
     assert len(events) == 1
     event = events[0]
     assert event["run_id"] == "run-1"
@@ -189,8 +206,20 @@ def test_agent_worker_delivers_one_answer_and_drops_large_transport_events() -> 
     events = (
         EventEnvelope(1, "run-1", "model.delta", "2026-08-09T00:00:00Z", {"text": "hel"}),
         EventEnvelope(2, "run-1", "model.delta", "2026-08-09T00:00:01Z", {"text": "lo"}),
-        EventEnvelope(3, "run-1", "tool.output", "2026-08-09T00:00:02Z", {"request_id": "call-1", "tool": "read_file", "output": "x" * 50_000}),
-        EventEnvelope(4, "run-1", "tool.requested", "2026-08-09T00:00:03Z", {"request_id": "call-2", "tool": "write_file"}),
+        EventEnvelope(
+            3,
+            "run-1",
+            "tool.output",
+            "2026-08-09T00:00:02Z",
+            {"request_id": "call-1", "tool": "read_file", "output": "x" * 50_000},
+        ),
+        EventEnvelope(
+            4,
+            "run-1",
+            "tool.requested",
+            "2026-08-09T00:00:03Z",
+            {"request_id": "call-2", "tool": "write_file"},
+        ),
         EventEnvelope(5, "run-1", "usage.updated", "2026-08-09T00:00:04Z", {"tokens": 9}),
     )
     worker = AgentWorker(SimpleNamespace(cancel=lambda: None), lambda _stop: iter(events))
@@ -220,7 +249,9 @@ def test_agent_worker_flushes_partial_output_before_reporting_failure() -> None:
     assert (chunks, failures, worker.last_usage) == (["partial"], ["boom"], {})
 
 
-def test_active_local_gateway_token_is_discovered_without_manual_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_active_local_gateway_token_is_discovered_without_manual_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(settings, "app_data_dir", lambda: tmp_path)
     session_dir = tmp_path / "gateway-session"
     session_dir.mkdir()

@@ -1,4 +1,5 @@
 """Streaming UTF-8 text validation shared by ``read``, ``write``, and ``edit``."""
+
 from __future__ import annotations
 
 import codecs

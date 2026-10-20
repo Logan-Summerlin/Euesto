@@ -37,7 +37,9 @@ def test_coding_profile_defaults_are_explicit(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("name", ExecutorConfig.HARD_CEILINGS)
-def test_every_limit_is_positive_bounded_and_reports_its_effective_value(tmp_path: Path, name: str) -> None:
+def test_every_limit_is_positive_bounded_and_reports_its_effective_value(
+    tmp_path: Path, name: str
+) -> None:
     config = _config(tmp_path)
     status = config.limit_status(name, 10**12)
     assert status["configured"] == status["effective"] == getattr(config, name)
@@ -55,7 +57,12 @@ def test_staging_checkpoint_and_headroom_must_fit_together(tmp_path: Path) -> No
     assert config.required_capacity_bytes == 1_000_001_001
     # Each value fits its own ceiling, but together they leave no headroom below /work.
     with pytest.raises(ValueError, match="fit strictly below"):
-        _config(tmp_path, max_checkpoint_bytes=3_500_000_000, max_staging_bytes=3_500_000_000, work_capacity_bytes=8_000_000_000)
+        _config(
+            tmp_path,
+            max_checkpoint_bytes=3_500_000_000,
+            max_staging_bytes=3_500_000_000,
+            work_capacity_bytes=8_000_000_000,
+        )
 
 
 def test_actual_work_capacity_must_cover_the_resource_model(tmp_path: Path) -> None:
@@ -69,11 +76,19 @@ def test_actual_work_capacity_must_cover_the_resource_model(tmp_path: Path) -> N
 def test_effective_limit_reports_requested_configured_and_hard_values(tmp_path: Path) -> None:
     config = _config(tmp_path, max_read_bytes=1_000_000)
     status = config.limit_status("max_read_bytes", requested=2_000_000)
-    assert status == {"requested": 2_000_000, "configured": 1_000_000, "hard_ceiling": 8_000_000, "effective": 1_000_000, "source": "constructor"}
+    assert status == {
+        "requested": 2_000_000,
+        "configured": 1_000_000,
+        "hard_ceiling": 8_000_000,
+        "effective": 1_000_000,
+        "source": "constructor",
+    }
     assert config.effective_limit("max_read_bytes", 100_000) == 100_000
 
 
-def test_environment_profile_and_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_environment_profile_and_overrides(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     token_path = tmp_path / "token"
     token_path.write_text("x" * 32, encoding="utf-8")
     monkeypatch.setenv("LOCAL_CHAT_EXECUTOR_TOKEN_FILE", str(token_path))
@@ -90,7 +105,9 @@ def test_environment_profile_and_overrides(monkeypatch: pytest.MonkeyPatch, tmp_
     assert config.sources["max_write_bytes"] == "profile:small"
 
 
-def test_invalid_environment_values_are_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_invalid_environment_values_are_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     token_path = tmp_path / "token"
     token_path.write_text("x" * 32, encoding="utf-8")
     monkeypatch.setenv("LOCAL_CHAT_EXECUTOR_TOKEN_FILE", str(token_path))
@@ -123,7 +140,9 @@ def test_runtime_limit_status_contains_all_limit_sources(tmp_path: Path) -> None
     assert status["required_temp_headroom_bytes"]["configured"] == 1_000_000_000
 
 
-def test_coding_profile_is_the_constructor_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_coding_profile_is_the_constructor_defaults(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     token_path = tmp_path / "token"
     token_path.write_text("x" * 32, encoding="utf-8")
     monkeypatch.setenv("LOCAL_CHAT_EXECUTOR_TOKEN_FILE", str(token_path))
@@ -131,5 +150,7 @@ def test_coding_profile_is_the_constructor_defaults(monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("LOCAL_CHAT_EXECUTOR_PROFILE", "coding")
     profiled = ExecutorConfig.from_environment()
     defaults = _config(tmp_path)
-    assert {name: getattr(profiled, name) for name in ExecutorConfig.HARD_CEILINGS} == {name: getattr(defaults, name) for name in ExecutorConfig.HARD_CEILINGS}
+    assert {name: getattr(profiled, name) for name in ExecutorConfig.HARD_CEILINGS} == {
+        name: getattr(defaults, name) for name in ExecutorConfig.HARD_CEILINGS
+    }
     assert set(profiled.sources.values()) == {"profile:coding"}

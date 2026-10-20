@@ -18,6 +18,7 @@ from .host import BridgeHost
 
 MODES = ("chat", "plan", "agent")
 APPROVAL_DECISIONS = frozenset({"deny", "allow_once", "allow_run", "allow_rule"})
+TIER_UNAVAILABLE = "Select Agent mode with a ready, idle workspace and compatible gateway."
 
 
 class GenerationService(QObject):
@@ -56,38 +57,45 @@ class GenerationService(QObject):
     def stop_auto(self) -> None:
         self.auto_mode = False
 
-    def reset_for_workspace_change(self) -> None:
+    def _reset_tiers(self) -> None:
         self.auto_mode = False
         self.accept_edits = False
+
+    def reset_for_workspace_change(self) -> None:
+        self._reset_tiers()
         self.mode = "chat"
 
     def select_mode(self, mode: str) -> None:
         if mode not in MODES or self.running or self.host.staging.busy:
             return
-        runtime = self.host.runtime
-        if mode == "chat":
-            self.mode = mode
-            self.auto_mode = False
-            self.accept_edits = False
-            self.host.stateChanged.emit()
-            return
-        if not runtime.workspace_path:
-            self.host.errorRequested.emit("Workspace required", "Select one project workspace first.")
-            return
-        if not runtime.workspace_ready():
-            self.host.errorRequested.emit("Workspace is still preparing", runtime.detail or "Wait for the isolated executor to become ready, then try again.")
-            return
-        if not runtime.mode_available(mode):
-            self.host.errorRequested.emit(
-                "Workspace runtime unavailable",
-                "The isolated executor is not ready for the selected workspace. Retry the local runtime setup.",
-            )
+        if mode != "chat" and not self._workspace_mode_available(mode):
             return
         self.mode = mode
         if mode != "agent":
-            self.auto_mode = False
-            self.accept_edits = False
+            self._reset_tiers()
         self.host.stateChanged.emit()
+
+    def _workspace_mode_available(self, mode: str) -> bool:
+        runtime = self.host.runtime
+        if not runtime.workspace_path:
+            self.host.errorRequested.emit(
+                "Workspace required", "Select one project workspace first."
+            )
+        elif not runtime.workspace_ready():
+            self.host.errorRequested.emit(
+                "Workspace is still preparing",
+                runtime.detail
+                or "Wait for the isolated executor to become ready, then try again.",
+            )
+        elif not runtime.mode_available(mode):
+            self.host.errorRequested.emit(
+                "Workspace runtime unavailable",
+                "The isolated executor is not ready for the selected workspace. "
+                "Retry the local runtime setup.",
+            )
+        else:
+            return True
+        return False
 
     def _tier_available(self, capability: str) -> bool:
         runtime = self.host.runtime
@@ -105,7 +113,7 @@ class GenerationService(QObject):
             self.host.set_status("Auto disabled")
             return
         if not self._tier_available("agent_auto"):
-            self.host.errorRequested.emit("Auto unavailable", "Select Agent mode with a ready, idle workspace and compatible gateway.")
+            self.host.errorRequested.emit("Auto unavailable", TIER_UNAVAILABLE)
             return
 
         def enable() -> None:
@@ -128,18 +136,21 @@ class GenerationService(QObject):
             self.host.set_status("Staged edits require approval again")
             return
         if not self._tier_available("agent_accept_edits"):
-            self.host.errorRequested.emit("Accept edits unavailable", "Select Agent mode with a ready, idle workspace and compatible gateway.")
+            self.host.errorRequested.emit("Accept edits unavailable", TIER_UNAVAILABLE)
             return
 
         def enable() -> None:
             self.accept_edits = True
-            self.host.set_status("Staged edits are accepted without prompts for this Agent session")
+            self.host.set_status(
+                "Staged edits are accepted without prompts for this Agent session"
+            )
 
         self.host.confirm(
             f"enable-accept-edits:{self.host.runtime.workspace_path}",
             "Accept staged edits for this Agent session?",
             "write, edit, and apply_patch will change the private staged copy without asking. "
-            "Bash commands still require approval, and publishing to the host is still reviewed separately. "
+            "Bash commands still require approval, and publishing to the host is still reviewed "
+            "separately. "
             "This stops on resume, mode or workspace change, or app restart.",
             enable,
             self.host.stateChanged.emit,
@@ -168,10 +179,17 @@ class GenerationService(QObject):
             return text
         name, _, arguments = text[1:].partition(" ")
         name = name.casefold()
-        custom = next((item for item in self.storage.list_prompt_commands() if item["name"] == name), None)
+        custom = next(
+            (item for item in self.storage.list_prompt_commands() if item["name"] == name), None
+        )
         if custom:
             expanded = _expand_prompt_command(custom["template"], arguments)
-            self.host.confirm(f"command:{name}:{id(expanded)}", f"Run /{name}?", expanded[:8_000], lambda: self.start_user_turn(expanded))
+            self.host.confirm(
+                f"command:{name}:{id(expanded)}",
+                f"Run /{name}?",
+                expanded[:8_000],
+                lambda: self.start_user_turn(expanded),
+            )
             return None
         history = self.host.history
         actions = {
@@ -192,11 +210,21 @@ class GenerationService(QObject):
             self.host.set_status(f"Unknown command: /{name}")
         return None
 
-    def _credentials(self, title: str, detail: str) -> tuple[str, GatewayConnection] | None:
+    def _credentials(self) -> tuple[str, GatewayConnection] | None:
+        """The API key and gateway connection a run needs, or ``None`` after reporting the gap."""
         api_key = get_api_key()
+        if not api_key:
+            self.host.errorRequested.emit(
+                "OpenRouter API key required",
+                "Open Settings → Connection and store an API key.",
+            )
+            return None
         connection = self.host.runtime.connection()
-        if not api_key or not connection:
-            self.host.errorRequested.emit(title, detail)
+        if connection is None:
+            self.host.errorRequested.emit(
+                "Gateway connection required",
+                "Open Settings → Connection and store the local gateway token.",
+            )
             return None
         return api_key, connection
 
@@ -206,54 +234,69 @@ class GenerationService(QObject):
         if conversation is None:
             history.new_conversation()
             conversation = history.current()
-        api_key = get_api_key()
-        if not api_key:
-            self.host.errorRequested.emit("OpenRouter API key required", "Open Settings → Connection and store an API key.")
-            return
-        connection = self.host.runtime.connection()
-        if connection is None:
-            self.host.errorRequested.emit("Gateway connection required", "Open Settings → Connection and store the local gateway token.")
+        credentials = self._credentials()
+        if credentials is None:
             return
         assert conversation is not None
-        had_user = any(item.role == "user" for item in self.storage.list_all_messages(conversation.id))
+        messages = self.storage.list_all_messages(conversation.id)
+        had_user = any(item.role == "user" for item in messages)
         model = history.current_model()
         message = history.controller.add_user_turn(conversation.id, text, model)
         if not had_user:
             history.load(conversation.id)
         history.refresh_transcript()
-        self.start_generation(api_key, connection, model, message.id, self.storage.list_messages(conversation.id))
+        context = self.storage.list_messages(conversation.id)
+        self.start_generation(*credentials, model, message.id, context)
 
     def edit_message(self, message_id: int, value: str) -> None:
         original = self.storage.get_message(message_id)
         if self.running or original is None or original.role != "user" or not value.strip():
             return
-        credentials = self._credentials("Connection required", "Configure the gateway and API key first.")
+        credentials = self._credentials()
         if credentials is None:
             return
         edited = self.storage.edit_user_message(message_id, value.strip())
         self.host.history.refresh_transcript(force_reset=True)
-        self.start_generation(*credentials, self.host.history.current_model(), edited.id, self.storage.list_messages(original.conversation_id))
+        context = self.storage.list_messages(original.conversation_id)
+        self.start_generation(
+            *credentials, self.host.history.current_model(), edited.id, context
+        )
 
     def regenerate_message(self, message_id: int) -> None:
         original = self.storage.get_message(message_id)
         if self.running or original is None or original.role != "assistant":
             return
-        credentials = self._credentials("Connection required", "Configure the gateway and API key first.")
+        credentials = self._credentials()
         if credentials is None:
             return
-        context = self.storage.list_branch_to(original.conversation_id, original.parent_message_id)
-        self.start_generation(*credentials, self.host.history.current_model(), original.parent_message_id, context)
+        parent_id = original.parent_message_id
+        context = self.storage.list_branch_to(original.conversation_id, parent_id)
+        self.start_generation(
+            *credentials, self.host.history.current_model(), parent_id, context
+        )
 
-    def start_generation(self, api_key: str, connection: GatewayConnection, model: str, parent_message_id: int | None, context_messages: list[Any]) -> None:
+    def start_generation(
+        self,
+        api_key: str,
+        connection: GatewayConnection,
+        model: str,
+        parent_message_id: int | None,
+        context_messages: list[Any],
+    ) -> None:
         conversation = self.host.history.current()
         if conversation is None:
             return
         settings = self.host.settings
-        prepared = self.controller.prepare(conversation, context_messages, model, settings.catalog.models())
+        prepared = self.controller.prepare(
+            conversation, context_messages, model, settings.catalog.models()
+        )
         self.controller.begin(conversation.id, parent_message_id, model, self.mode)
         self.live_events = []
         options = settings.request_options(model)
-        privacy = {"data_collection": options.data_collection, "zdr": options.zero_data_retention}
+        privacy = {
+            "data_collection": options.data_collection,
+            "zdr": options.zero_data_retention,
+        }
         if self.mode == "chat":
             worker: ChatWorker | AgentWorker = ChatWorker(
                 GatewayClient(connection),
@@ -271,7 +314,9 @@ class GenerationService(QObject):
             identity = runtime.identity()
             config = self.storage.workspace_config(identity)
             selected = [str(item) for item in config.get("active_skills") or ()]
-            skills = load_selected_skills(app_data_dir() / "skills", Path(runtime.workspace_path), selected)
+            skills = load_selected_skills(
+                app_data_dir() / "skills", Path(runtime.workspace_path), selected
+            )
             worker = AgentWorker.for_run(
                 GatewayClient(connection),
                 api_key=api_key,
@@ -289,7 +334,9 @@ class GenerationService(QObject):
             )
             worker.eventReceived.connect(self.on_agent_event)
         self._attach(worker)
-        suffix = f" · compacted {prepared.removed_messages}" if prepared.removed_messages else ""
+        suffix = (
+            f" · compacted {prepared.removed_messages}" if prepared.removed_messages else ""
+        )
         self.host.set_status(f"≈{prepared.estimated_tokens:,} input tokens{suffix}")
         self.host.history.refresh_transcript()
         worker.start()
@@ -309,9 +356,10 @@ class GenerationService(QObject):
         if self.running or not connection or not api_key or not conversation or not run_id:
             return
         # Session approval tiers never survive a resume; the gateway enforces this too.
-        self.auto_mode = False
-        self.accept_edits = False
-        self.controller.begin(conversation.id, conversation.active_leaf_id, conversation.model, "agent")
+        self._reset_tiers()
+        self.controller.begin(
+            conversation.id, conversation.active_leaf_id, conversation.model, "agent"
+        )
         worker = AgentWorker.for_resume(GatewayClient(connection), run_id, api_key)
         worker.eventReceived.connect(self.on_agent_event)
         self._attach(worker)
@@ -334,13 +382,22 @@ class GenerationService(QObject):
         try:
             if event_type not in {"model.delta", "tool.output", "tool.completed"}:
                 self.controller.save_event(event)
-            compact = compact_activity_event({"run_id": event.run_id, "event_id": event.event_id, "type": event.type, "payload": payload})
+            compact = compact_activity_event(
+                {
+                    "run_id": event.run_id,
+                    "event_id": event.event_id,
+                    "type": event.type,
+                    "payload": payload,
+                }
+            )
             if compact is not None:
                 self.live_events.append(compact)
         except (TypeError, ValueError):
             pass
         if event_type == "tool.started":
-            self.host.set_status(f"Running {payload.get('tool', 'tool')} in the isolated executor…")
+            self.host.set_status(
+                f"Running {payload.get('tool', 'tool')} in the isolated executor…"
+            )
         elif event_type == "approval.required":
             self._request_approval(event)
         elif event_type == "checkpoint.created" and payload.get("publish_manifest"):
@@ -348,7 +405,7 @@ class GenerationService(QObject):
                 payload["publish_manifest"],
                 token=f"publish:{event.run_id}:{event.event_id}",
                 auto=bool(payload.get("auto_publish")),
-                auto_authorized=self.auto_mode and isinstance(self.worker, AgentWorker) and self.worker.auto_approve,
+                auto_authorized=self.auto_mode and self._auto_run(),
             )
         elif event_type == "publication.failed":
             self.auto_mode = False
@@ -361,13 +418,21 @@ class GenerationService(QObject):
         approval_id = str(payload.get("approval_id") or "")
         kind = str(payload.get("kind") or "tool")
         detail = payload.get("manifest") if kind == "publish" else payload.get("arguments")
-        summary, full_detail = approval_display(kind, str(payload.get("tool") or "tool"), detail)
+        summary, full_detail = approval_display(
+            kind, str(payload.get("tool") or "tool"), detail
+        )
         key = f"{event.run_id}:{approval_id}"
-        self._pending_approvals[key] = {"runId": event.run_id, "approvalId": approval_id, "kind": kind}
+        self._pending_approvals[key] = {
+            "runId": event.run_id,
+            "approvalId": approval_id,
+            "kind": kind,
+        }
         self.host.approvalRequested.emit(
             {
                 "key": key,
-                "title": "Publish staged changes?" if kind == "publish" else "Approve isolated tool?",
+                "title": "Publish staged changes?"
+                if kind == "publish"
+                else "Approve isolated tool?",
                 "summary": summary,
                 "details": full_detail,
                 "allowRule": kind == "tool",
@@ -381,7 +446,9 @@ class GenerationService(QObject):
         if decision not in APPROVAL_DECISIONS:
             decision = "deny"
         try:
-            self.worker.client.resolve_approval(str(pending["runId"]), str(pending["approvalId"]), decision)
+            self.worker.client.resolve_approval(
+                str(pending["runId"]), str(pending["approvalId"]), decision
+            )
         except GatewayError as exc:
             self.host.errorRequested.emit("Approval failed", str(exc))
 
@@ -392,34 +459,38 @@ class GenerationService(QObject):
     @Slot(dict, bool)
     def on_stream_complete(self, usage: dict[str, Any], cancelled: bool) -> None:
         cancelled = cancelled or self.controller.state.cancel_requested
-        if cancelled and isinstance(self.worker, AgentWorker) and self.worker.auto_approve:
+        if cancelled and self._auto_run():
             self.auto_mode = False
         if usage.get("run_id") and self.controller.state.run_id is None:
             self.on_run_started(str(usage["run_id"]))
-        saved = self.controller.save_assistant(usage, status="cancelled" if cancelled else "completed")
-        if saved is None:
-            self.controller.finish_without_message("cancelled" if cancelled else "completed")
-        self.controller.state.clear_stream()
-        self.live_events = []
-        self.host.set_status(GenerationController.format_usage(usage, cancelled))
-        self.host.history.refresh_transcript()
-        self.host.stateChanged.emit()
+        status = "cancelled" if cancelled else "completed"
+        if self.controller.save_assistant(usage, status=status) is None:
+            self.controller.finish_without_message(status)
+        self._end_stream(GenerationController.format_usage(usage, cancelled))
         self.host.settingsChanged.emit()
 
     @Slot(str)
     def on_stream_error(self, message: str) -> None:
-        if isinstance(self.worker, AgentWorker) and self.worker.auto_approve:
+        if self._auto_run():
             self.auto_mode = False
         usage = self.worker.last_usage if isinstance(self.worker, AgentWorker) else {}
-        saved = self.controller.save_assistant(usage, finish_reason="error", status="failed")
-        if saved is None:
+        if (
+            self.controller.save_assistant(usage, finish_reason="error", status="failed")
+            is None
+        ):
             self.controller.finish_without_message("failed", message)
+        self._end_stream("Request failed")
+        self.host.errorRequested.emit("Gateway request failed", message)
+
+    def _auto_run(self) -> bool:
+        return isinstance(self.worker, AgentWorker) and self.worker.auto_approve
+
+    def _end_stream(self, status: str) -> None:
         self.controller.state.clear_stream()
         self.live_events = []
-        self.host.set_status("Request failed")
+        self.host.set_status(status)
         self.host.history.refresh_transcript()
         self.host.stateChanged.emit()
-        self.host.errorRequested.emit("Gateway request failed", message)
 
     @Slot()
     def on_worker_finished(self) -> None:
@@ -434,7 +505,9 @@ class GenerationService(QObject):
     def continue_queued_input(self) -> None:
         queued = self.controller.next_input()
         if queued:
-            self.host.set_status("Applying steering…" if queued.steered else "Sending queued message…")
+            self.host.set_status(
+                "Applying steering…" if queued.steered else "Sending queued message…"
+            )
             QTimer.singleShot(0, lambda value=queued.text: self.start_user_turn(value))
 
     # -- control -----------------------------------------------------------------------

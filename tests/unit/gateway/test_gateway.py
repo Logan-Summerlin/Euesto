@@ -58,13 +58,21 @@ def test_gateway_auth_host_origin_and_health_boundaries(tmp_path: Path) -> None:
         service = GatewayService(config(tmp_path), provider_factory=FakeProvider)
         app = create_app(config(tmp_path), service)
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://127.0.0.1"
+        ) as client:
             health = await client.get("/health")
             assert health.status_code == 200
             assert health.json() == {"status": "ok"}
             assert (await client.get("/v1/status")).status_code == 401
-            assert (await client.get("/v1/status", headers={"Authorization": "Bearer wrong"})).status_code == 401
-            assert (await client.get("/v1/status", headers=auth_headers(Origin="https://evil.example"))).status_code == 403
+            assert (
+                await client.get("/v1/status", headers={"Authorization": "Bearer wrong"})
+            ).status_code == 401
+            assert (
+                await client.get(
+                    "/v1/status", headers=auth_headers(Origin="https://evil.example")
+                )
+            ).status_code == 403
             public = await client.get(
                 "/v1/status",
                 headers={**auth_headers(), "Host": "192.168.1.20"},
@@ -87,9 +95,13 @@ def test_chat_stream_journals_usage_and_replays_after_last_event(tmp_path: Path)
         app = create_app(cfg, service)
         transport = httpx.ASGITransport(app=app)
         headers = auth_headers(**{"Content-Type": "application/json"})
-        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://127.0.0.1"
+        ) as client:
             configured = await client.put(
-                "/v1/session/openrouter-key", headers=headers, json={"api_key": "sk-or-v1-test-key"}
+                "/v1/session/openrouter-key",
+                headers=headers,
+                json={"api_key": "sk-or-v1-test-key"},
             )
             assert configured.status_code == 200
             response = await client.post(
@@ -110,7 +122,9 @@ def test_chat_stream_journals_usage_and_replays_after_last_event(tmp_path: Path)
                 f"/v1/runs/{run_id}/events",
                 headers=auth_headers(**{"Last-Event-ID": "3"}),
             )
-            replay_ids = [int(line[4:]) for line in replay.text.splitlines() if line.startswith("id: ")]
+            replay_ids = [
+                int(line[4:]) for line in replay.text.splitlines() if line.startswith("id: ")
+            ]
             assert replay_ids and min(replay_ids) > 3
             assert '"actual_model":"actual/model"' in replay.text
             assert '"provider":"Test Provider"' in replay.text
@@ -137,7 +151,10 @@ def test_cancellation_preserves_partial_events(tmp_path: Path) -> None:
         assert await service.cancel(run_id)
         await finished.wait()
         events = service.journal.events_after(run_id)
-        assert any(event.type == "model.delta" and event.payload["text"] == "partial" for event in events)
+        assert any(
+            event.type == "model.delta" and event.payload["text"] == "partial"
+            for event in events
+        )
         assert events[-1].type == "run.cancelled"
         assert events[-1].payload["partial_output_preserved"] is True
         await service.close()
@@ -184,7 +201,9 @@ def test_agent_endpoint_requires_configured_v04_executor(tmp_path: Path) -> None
                 "/v1/runs",
                 headers=auth_headers(**{"Content-Type": "application/json"}),
                 json={
-                    "mode": "agent", "model": "vendor/model", "workspace_id": "workspace",
+                    "mode": "agent",
+                    "model": "vendor/model",
+                    "workspace_id": "workspace",
                     "messages": [{"role": "user", "content": "work"}],
                 },
             )
@@ -207,7 +226,11 @@ def test_gateway_payload_keeps_hosted_tools_explicit() -> None:
     assert payload["tools"] == [
         {
             "type": "openrouter:web_search",
-            "parameters": {"search_context_size": "low", "max_total_results": 12, "max_results": 4},
+            "parameters": {
+                "search_context_size": "low",
+                "max_total_results": 12,
+                "max_results": 4,
+            },
         },
         {"type": "openrouter:datetime"},
     ]
@@ -259,7 +282,9 @@ def test_log_redaction_removes_authorization_and_openrouter_keys() -> None:
     assert output.count("[REDACTED]") == 2
 
 
-def test_v05_workspace_config_capabilities_and_permission_rule_management(tmp_path: Path) -> None:
+def test_v05_workspace_config_capabilities_and_permission_rule_management(
+    tmp_path: Path,
+) -> None:
     async def scenario() -> None:
         socket = tmp_path / "executor.sock"
         socket.touch()
@@ -272,7 +297,11 @@ def test_v05_workspace_config_capabilities_and_permission_rule_management(tmp_pa
         )
         service = GatewayService(cfg, provider_factory=FakeProvider)
         rule = PermissionRule(
-            "rule", PermissionDecision.ALLOW_RULE, "workspace", "agent", "run_command",
+            "rule",
+            PermissionDecision.ALLOW_RULE,
+            "workspace",
+            "agent",
+            "run_command",
             executable="pytest",
         )
         service.journal.save_permission_rule(rule)
@@ -286,7 +315,11 @@ def test_v05_workspace_config_capabilities_and_permission_rule_management(tmp_pa
                 json={
                     "instructions": "Keep tests fast",
                     "custom_tools": [
-                        {"name": "lint.report", "description": "Declared only", "modes": ["agent"]}
+                        {
+                            "name": "lint.report",
+                            "description": "Declared only",
+                            "modes": ["agent"],
+                        }
                     ],
                 },
             )
@@ -332,13 +365,19 @@ def test_agent_payload_offers_tools_by_mode_and_honours_an_empty_allow_list() ->
     assert synthesis["tool_choice"] == "none"
 
 
-def test_approval_endpoint_reports_bad_json_and_unknown_decisions_as_422(tmp_path: Path) -> None:
+def test_approval_endpoint_reports_bad_json_and_unknown_decisions_as_422(
+    tmp_path: Path,
+) -> None:
     async def scenario() -> tuple[int, int, str]:
         service = GatewayService(config(tmp_path), provider_factory=FakeProvider)
         app = create_app(config(tmp_path), service)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1"
+        ) as client:
             url = "/v1/runs/run/approvals/approval"
-            bad_json = await client.post(url, headers=auth_headers(**{"Content-Type": "application/json"}), content=b"{")
+            bad_json = await client.post(
+                url, headers=auth_headers(**{"Content-Type": "application/json"}), content=b"{"
+            )
             unknown = await client.post(url, headers=auth_headers(), json={"decision": "maybe"})
         await service.close()
         return bad_json.status_code, unknown.status_code, unknown.json()["error"]["code"]
@@ -364,13 +403,23 @@ class StatusOnlyExecutor:
 def _status_only_service(tmp_path: Path, environment: dict) -> GatewayService:
     socket = tmp_path / "executor.sock"
     socket.touch()
-    service = GatewayService(GatewayConfig(TOKEN, tmp_path / "gateway.sqlite3", executor_socket=socket, executor_token="e" * 43, workspace_id="workspace"))
+    service = GatewayService(
+        GatewayConfig(
+            TOKEN,
+            tmp_path / "gateway.sqlite3",
+            executor_socket=socket,
+            executor_token="e" * 43,
+            workspace_id="workspace",
+        )
+    )
     service.executor = StatusOnlyExecutor(environment)
     return service
 
 
 def test_staging_inspection_uses_executor_status_not_a_tool_call(tmp_path: Path) -> None:
-    service = _status_only_service(tmp_path, {"unpublished_changes": True, "agent_snapshot": {"file_count": 3}})
+    service = _status_only_service(
+        tmp_path, {"unpublished_changes": True, "agent_snapshot": {"file_count": 3}}
+    )
 
     async def scenario() -> dict:
         try:
@@ -387,7 +436,14 @@ def test_staging_inspection_uses_executor_status_not_a_tool_call(tmp_path: Path)
 def test_auto_preflight_requires_clean_staging_via_executor_status(tmp_path: Path) -> None:
     service = _status_only_service(tmp_path, {"unpublished_changes": True})
     service.configure_client_key("k" * 16)
-    request = AgentRunRequest(model="m", messages=({"role": "user", "content": "go"},), mode="agent", workspace_id="workspace", approval_policy="auto", investigation_model_id=None)
+    request = AgentRunRequest(
+        model="m",
+        messages=({"role": "user", "content": "go"},),
+        mode="agent",
+        workspace_id="workspace",
+        approval_policy="auto",
+        investigation_model_id=None,
+    )
 
     async def scenario() -> None:
         try:
