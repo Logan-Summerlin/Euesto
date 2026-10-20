@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ from ..workers import CatalogWorker
 from .host import BridgeHost
 
 SERVER_TOOLS = ("web_search", "web_fetch", "datetime")
+REASONING_EFFORTS = frozenset({"minimal", "low", "medium", "high"})
 BUILTIN_COMMANDS = (
     ("new", "Start a new conversation"),
     ("mode", "Switch Chat, Plan, or Agent mode"),
@@ -58,6 +60,21 @@ def _saved_investigation_entry(model_id: str) -> dict[str, Any]:
         "price": None,
         "year": None,
     }
+
+
+def _request_options(values: dict[str, Any]) -> RequestOptions:
+    """Per-model request options from saved JSON or the QML options dialog."""
+    effort = optional_string(values.get("reasoning_effort"))
+    stop = values.get("stop")
+    return RequestOptions(
+        max_tokens=optional_int(values.get("max_tokens")),
+        reasoning_effort=effort if effort in REASONING_EFFORTS else None,
+        temperature=optional_float(values.get("temperature")),
+        top_p=optional_float(values.get("top_p")),
+        stop=[str(item) for item in stop] if isinstance(stop, list) else [],
+        data_collection="allow" if values.get("data_collection") == "allow" else "deny",
+        zero_data_retention=bool(values.get("zero_data_retention", False)),
+    )
 
 
 class SettingsService(QObject):
@@ -147,40 +164,19 @@ class SettingsService(QObject):
     # -- per-model request options -----------------------------------------------------
 
     def request_options(self, model: str) -> RequestOptions:
-        raw = self.storage.get_setting(f"model_options:{model}")
-        if not raw:
-            return RequestOptions()
         try:
-            data = json.loads(raw)
-            return RequestOptions(
-                max_tokens=optional_int(data.get("max_tokens")),
-                reasoning_effort=optional_string(data.get("reasoning_effort")),
-                temperature=optional_float(data.get("temperature")),
-                top_p=optional_float(data.get("top_p")),
-                stop=[str(item) for item in data.get("stop", [])],
-                data_collection=("allow" if data.get("data_collection") == "allow" else "deny"),
-                zero_data_retention=bool(data.get("zero_data_retention", False)),
-            )
-        except (json.JSONDecodeError, TypeError, AttributeError):
+            data = json.loads(self.storage.get_setting(f"model_options:{model}") or "{}")
+            return _request_options(data)
+        except (json.JSONDecodeError, TypeError, ValueError, AttributeError):
             return RequestOptions()
 
     def set_reasoning_effort(self, model: str, effort: str) -> None:
         options = self.request_options(model)
-        options.reasoning_effort = None if effort in {"", "default"} else effort
+        options.reasoning_effort = effort if effort in REASONING_EFFORTS else None
         self._save_model_options(model, options)
 
     def save_model_options(self, model: str, values: dict[str, Any]) -> None:
-        options = self.request_options(model)
-        options.max_tokens = optional_int(values.get("max_tokens"))
-        options.temperature = optional_float(values.get("temperature"))
-        options.top_p = optional_float(values.get("top_p"))
-        stop = values.get("stop")
-        options.stop = [str(item) for item in stop] if isinstance(stop, list) else []
-        effort = str(values.get("reasoning_effort") or "")
-        options.reasoning_effort = effort if effort in {"minimal", "low", "medium", "high"} else None
-        options.data_collection = "allow" if values.get("data_collection") == "allow" else "deny"
-        options.zero_data_retention = bool(values.get("zero_data_retention", False))
-        self._save_model_options(model, options)
+        self._save_model_options(model, _request_options(values))
 
     def _save_model_options(self, model: str, options: RequestOptions) -> None:
         self.storage.set_setting(f"model_options:{model}", json.dumps(asdict(options)))
@@ -381,24 +377,25 @@ class SettingsService(QObject):
         self.host.permissionsChanged.emit()
 
     def set_permission_enabled(self, rule_id: str, enabled: bool) -> None:
-        connection = self.host.runtime.connection()
-        if not connection:
-            return
-        try:
-            GatewayClient(connection).set_permission_rule_enabled(rule_id, enabled)
-            self.host.loadPermissionRules()
-        except GatewayError as exc:
-            self.host.errorRequested.emit("Could not update permission", str(exc))
+        self._change_permission(
+            "Could not update permission",
+            lambda client: client.set_permission_rule_enabled(rule_id, enabled),
+        )
 
     def delete_permission(self, rule_id: str) -> None:
+        self._change_permission(
+            "Could not delete permission", lambda client: client.delete_permission_rule(rule_id)
+        )
+
+    def _change_permission(self, failure: str, change: Callable[[GatewayClient], object]) -> None:
         connection = self.host.runtime.connection()
         if not connection:
             return
         try:
-            GatewayClient(connection).delete_permission_rule(rule_id)
+            change(GatewayClient(connection))
             self.host.loadPermissionRules()
         except GatewayError as exc:
-            self.host.errorRequested.emit("Could not delete permission", str(exc))
+            self.host.errorRequested.emit(failure, str(exc))
 
     def shutdown(self) -> None:
         if self.catalog_worker:

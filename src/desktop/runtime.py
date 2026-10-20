@@ -5,6 +5,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QTimer, Slot
 
+from shared.responses import GatewayStatus
+
 from ..connection import GatewayHealthWorker, HealthResult, HealthState
 from ..gateway_client import DEFAULT_GATEWAY_URL, GatewayConnection
 from ..runtime_manager import RuntimeManager, RuntimeResult
@@ -48,7 +50,7 @@ class RuntimeService(QObject):
         self.workspace_path = self.storage.get_setting("workspace_path", "") or ""
         self.gateway_text = "Gateway: checking"
         self.gateway_detail = ""
-        self.last_status: object | None = None
+        self.last_status: GatewayStatus | None = None
         self.state = "starting" if self.automatic else "manual"
         self.detail = "Preparing the local runtime…" if self.automatic else "The developer runtime is managed by scripts."
         self.target_identity: str | None = None
@@ -85,35 +87,27 @@ class RuntimeService(QObject):
             return None
 
     def has_capability(self, name: str) -> bool:
-        capabilities = getattr(self.last_status, "capabilities", ()) if self.last_status else ()
-        return any(isinstance(item, dict) and item.get("name") == name for item in capabilities)
+        capabilities = self.last_status.capabilities if self.last_status else ()
+        return any(item.get("name") == name for item in capabilities)
 
     def identity(self) -> str:
         return workspace_id(Path(self.workspace_path))
 
-    def workspace_ready(self, status: object | None = None) -> bool:
+    def workspace_ready(self, status: GatewayStatus | None = None) -> bool:
         status = self.last_status if status is None else status
         if not self.workspace_path or self.state not in {"ready", "manual"} or status is None:
             return False
         try:
-            identity = self.identity()
+            return status.serves_workspace(self.identity())
         except BrokerError:
             return False
-        supported = set(getattr(status, "supported_modes", ()))
-        return bool(
-            getattr(status, "ready", False)
-            and getattr(status, "executor_present", False)
-            and getattr(status, "executor_status", "") == "ready"
-            and getattr(status, "active_workspace", None) == identity
-            and {"plan", "agent"}.issubset(supported)
-        )
 
     def mode_available(self, mode: str) -> bool:
         """Whether the gateway reports ``mode`` ready for the selected workspace."""
         status = self.last_status
-        supported = tuple(getattr(status, "supported_modes", ())) if status else ()
-        active = getattr(status, "active_workspace", None) if status else None
-        return mode in supported and active == self.identity()
+        return bool(
+            status and mode in status.supported_modes and status.active_workspace == self.identity()
+        )
 
     def status_report(self) -> str:
         status = self.last_status

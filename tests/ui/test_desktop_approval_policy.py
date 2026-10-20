@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,6 +15,7 @@ try:
 except ImportError as exc:  # pragma: no cover - Qt unavailable
     pytest.skip(f"Desktop Qt bridge unavailable: {exc}", allow_module_level=True)
 
+from shared.responses import GatewayStatus
 from src.storage import Storage
 from src.workspace_broker import workspace_id
 
@@ -27,7 +29,7 @@ def bridge(tmp_path: Path):
     backend.runtime.health_timer.stop()
     backend.runtime.workspace_path = str(workspace.resolve())
     backend.runtime.state = "manual"
-    backend.runtime.last_status = SimpleNamespace(
+    backend.runtime.last_status = GatewayStatus(
         ready=True,
         executor_present=True,
         executor_status="ready",
@@ -87,7 +89,9 @@ def test_accept_edits_resets_on_mode_change(bridge) -> None:
 
 def test_accept_edits_unavailable_without_gateway_capability(bridge) -> None:
     backend, confirmations, errors = bridge
-    backend.runtime.last_status.capabilities = ({"name": "agent_auto"},)
+    backend.runtime.last_status = replace(
+        backend.runtime.last_status, capabilities=({"name": "agent_auto"},)
+    )
     assert backend.acceptEditsAvailable is False
     backend.requestAcceptEdits(True)
     assert confirmations == [] and errors == ["Accept edits unavailable"]

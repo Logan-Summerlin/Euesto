@@ -20,6 +20,7 @@ except ImportError as exc:  # pragma: no cover - Qt unavailable
     pytest.skip(f"Qt unavailable: {exc}", allow_module_level=True)
 
 from shared.events import EventEnvelope
+from shared.responses import GatewayStatus
 from shared.tools import PublishManifest
 from src.connection import HealthResult, HealthState
 from src.desktop import (
@@ -102,14 +103,14 @@ def storage(tmp_path: Path):
     value.close()
 
 
-def _status(workspace: Path, **extra: Any) -> SimpleNamespace:
+def _status(workspace: Path, **extra: Any) -> GatewayStatus:
     values = {
         "ready": True, "executor_present": True, "executor_status": "ready",
         "active_workspace": workspace_id(workspace), "supported_modes": ("chat", "plan", "agent"),
         "capabilities": ({"name": "agent_auto"}, {"name": "agent_accept_edits"}),
     }
     values.update(extra)
-    return SimpleNamespace(**values)
+    return GatewayStatus(**values)
 
 
 # -- RuntimeService --------------------------------------------------------------------

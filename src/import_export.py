@@ -10,13 +10,14 @@ from typing import Any
 
 from shared.coercion import optional_string
 
-from .models import MESSAGE_METADATA_FIELDS, Message
+from .models import MESSAGE_METADATA_FIELDS
 from .storage import Storage
 
 EXPORT_FORMAT = "local-openrouter-chat"
 EXPORT_SCHEMA_VERSION = 3
 MAX_IMPORT_MESSAGES = 100_000
 MAX_IMPORT_CONTENT_BYTES = 10 * 1024 * 1024
+ROLE_LABELS = {"system": "System", "user": "You", "assistant": "Assistant"}
 
 
 class ImportExportError(ValueError):
@@ -60,7 +61,7 @@ def import_json(storage: Storage, source: str) -> str:
         raise ImportExportError("Export is missing conversation or message data.")
     if len(messages) > MAX_IMPORT_MESSAGES:
         raise ImportExportError("Export contains too many messages.")
-    _validate_json_messages(messages)
+    ordered = _parents_first(messages)
 
     preset_id: str | None = None
     preset_snapshot = optional_string(conversation_data.get("prompt_preset_snapshot"))
@@ -80,48 +81,22 @@ def import_json(storage: Storage, source: str) -> str:
         prompt_preset_snapshot=preset_snapshot,
     )
     old_to_new: dict[str, int] = {}
-    pending = list(messages)
-    total_bytes = 0
-    while pending:
-        progressed = False
-        for raw in list(pending):
-            if not isinstance(raw, dict):
-                raise ImportExportError("Message entry must be an object.")
-            old_id = str(raw.get("id"))
-            old_parent = raw.get("parent_message_id")
-            if old_parent is not None and str(old_parent) not in old_to_new:
-                continue
-            role = raw.get("role")
-            if role not in {"system", "user", "assistant"}:
-                raise ImportExportError("Message has an invalid role.")
-            content = str(raw.get("content") or "")
-            total_bytes += len(content.encode("utf-8"))
-            if total_bytes > MAX_IMPORT_CONTENT_BYTES:
-                raise ImportExportError("Export message content is too large.")
-            message = storage.add_message(
-                conversation.id,
-                role,
-                content,
-                parent_message_id=(
-                    old_to_new[str(old_parent)] if old_parent is not None else None
-                ),
-                activate=False,
-                **_imported_metadata(raw),
-            )
-            if message.id is None:
-                raise ImportExportError("Could not import message.")
-            old_to_new[old_id] = message.id
-            pending.remove(raw)
-            progressed = True
-        if not progressed:
-            storage.delete_conversation(conversation.id)
-            raise ImportExportError("Message tree has a cycle or missing parent.")
+    for raw in ordered:
+        message = storage.add_message(
+            conversation.id,
+            raw["role"],
+            str(raw.get("content") or ""),
+            parent_message_id=_new_id(old_to_new, raw.get("parent_message_id")),
+            activate=False,
+            **_imported_metadata(raw),
+        )
+        old_to_new[str(raw["id"])] = message.id
 
-    old_leaf = conversation_data.get("active_leaf_id")
-    if old_leaf is not None and str(old_leaf) in old_to_new:
-        storage.set_active_leaf(conversation.id, old_to_new[str(old_leaf)])
-    elif old_to_new:
-        storage.set_active_leaf(conversation.id, list(old_to_new.values())[-1])
+    leaf = _new_id(old_to_new, conversation_data.get("active_leaf_id"))
+    if leaf is None and old_to_new:
+        leaf = list(old_to_new.values())[-1]
+    if leaf is not None:
+        storage.set_active_leaf(conversation.id, leaf)
     if conversation_data.get("pinned_at"):
         storage.pin_conversation(conversation.id, True)
     for raw in payload.get("compactions") or ():
@@ -132,10 +107,9 @@ def import_json(storage: Storage, source: str) -> str:
             for item in raw.get("covered_message_ids") or ()
             if str(item) in old_to_new
         ]
-        old_branch = raw.get("branch_leaf_id")
         storage.save_compaction(
             conversation.id,
-            old_to_new.get(str(old_branch)) if old_branch is not None else None,
+            _new_id(old_to_new, raw.get("branch_leaf_id")),
             covered,
             str(raw.get("summary") or ""),
             optional_string(raw.get("model_id")),
@@ -152,9 +126,7 @@ def import_json(storage: Storage, source: str) -> str:
             storage.start_generation_run(
                 run_id,
                 conversation.id,
-                old_to_new.get(str(raw["parent_message_id"]))
-                if raw.get("parent_message_id") is not None
-                else None,
+                _new_id(old_to_new, raw.get("parent_message_id")),
                 str(raw.get("mode") or "chat"),
                 str(raw.get("model_id") or conversation.model),
                 str(raw.get("started_at") or ""),
@@ -162,15 +134,11 @@ def import_json(storage: Storage, source: str) -> str:
             storage.finish_generation_run(
                 run_id,
                 str(raw.get("status") or "completed"),
-                assistant_message_id=(
-                    old_to_new.get(str(raw["assistant_message_id"]))
-                    if raw.get("assistant_message_id") is not None
-                    else None
-                ),
+                assistant_message_id=_new_id(old_to_new, raw.get("assistant_message_id")),
                 error=optional_string(raw.get("error")),
                 finished_at=optional_string(raw.get("finished_at")),
             )
-        except (KeyError, TypeError, ValueError):
+        except (TypeError, ValueError):
             continue
     for raw in payload.get("run_events") or ():
         if not isinstance(raw, dict) or not isinstance(raw.get("payload"), dict):
@@ -209,12 +177,11 @@ def export_markdown(storage: Storage, conversation_id: str) -> str:
         "",
     ]
     for message in storage.list_messages(conversation_id):
-        metadata = json.dumps(_message_markdown_metadata(message), sort_keys=True)
-        label = {"user": "You", "assistant": "Assistant", "system": "System"}[message.role]
+        metadata = {key: value for key, value in asdict(message).items() if key != "content"}
         lines.extend(
             [
-                f"<!-- local-openrouter-chat-message {metadata} -->",
-                f"## {label}",
+                f"<!-- local-openrouter-chat-message {json.dumps(metadata, sort_keys=True)} -->",
+                f"## {ROLE_LABELS[message.role]}",
                 "",
                 message.content,
                 "",
@@ -227,9 +194,8 @@ def export_markdown(storage: Storage, conversation_id: str) -> str:
         lines.extend(["## Agent activity", ""])
         for event in events:
             if str(event["type"]).startswith(("tool.", "context.", "skill.")):
-                lines.append(
-                    f"- `{event['type']}` — `{json.dumps(event['payload'], ensure_ascii=False)[:1000]}`"
-                )
+                payload = json.dumps(event["payload"], ensure_ascii=False)[:1000]
+                lines.append(f"- `{event['type']}` — `{payload}`")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -252,7 +218,7 @@ def import_markdown(storage: Storage, source: str, *, title: str = "Imported cha
         storage.add_message(conversation.id, "user", source.strip())
         return conversation.id
     id_map: dict[str, int] = {}
-    role_map = {"System": "system", "You": "user", "Assistant": "assistant"}
+    roles = {label: role for role, label in ROLE_LABELS.items()}
     for match in matches:
         try:
             metadata = json.loads(match.group("meta"))
@@ -265,13 +231,12 @@ def import_markdown(storage: Storage, source: str, *, title: str = "Imported cha
             raise ImportExportError("Markdown message references a missing parent.")
         message = storage.add_message(
             conversation.id,
-            role_map[match.group("label")],
+            roles[match.group("label")],
             match.group("content").strip(),
-            parent_message_id=(id_map.get(str(old_parent)) if old_parent is not None else None),
+            parent_message_id=_new_id(id_map, old_parent),
             **_imported_metadata(metadata),
         )
-        if message.id is not None:
-            id_map[str(metadata.get("id"))] = message.id
+        id_map[str(metadata.get("id"))] = message.id
     return conversation.id
 
 
@@ -286,45 +251,49 @@ def export_to_file(storage: Storage, conversation_id: str, path: Path) -> None:
 
 def import_from_file(storage: Storage, path: Path) -> str:
     content = path.read_text(encoding="utf-8")
-    return import_json(storage, content) if path.suffix.lower() == ".json" else import_markdown(
-        storage, content, title=path.stem
-    )
+    if path.suffix.lower() == ".json":
+        return import_json(storage, content)
+    return import_markdown(storage, content, title=path.stem)
 
 
-def _message_markdown_metadata(message: Message) -> dict[str, Any]:
-    return {key: value for key, value in asdict(message).items() if key != "content"}
-
-
-def _validate_json_messages(messages: list[object]) -> None:
-    ids: set[str] = set()
-    parents: dict[str, str | None] = {}
+def _parents_first(messages: list[object]) -> list[dict[str, Any]]:
+    """Validate an exported message tree and order it so every parent precedes its children."""
+    by_id: dict[str, dict[str, Any]] = {}
     total_bytes = 0
     for raw in messages:
         if not isinstance(raw, dict):
             raise ImportExportError("Message entry must be an object.")
         if raw.get("id") is None:
             raise ImportExportError("Message is missing an ID.")
-        message_id = str(raw["id"])
-        if message_id in ids:
+        if str(raw["id"]) in by_id:
             raise ImportExportError("Message IDs must be unique.")
-        ids.add(message_id)
-        if raw.get("role") not in {"system", "user", "assistant"}:
+        if raw.get("role") not in ROLE_LABELS:
             raise ImportExportError("Message has an invalid role.")
         total_bytes += len(str(raw.get("content") or "").encode("utf-8"))
         if total_bytes > MAX_IMPORT_CONTENT_BYTES:
             raise ImportExportError("Export message content is too large.")
-        parent = raw.get("parent_message_id")
-        parents[message_id] = str(parent) if parent is not None else None
-    if any(parent is not None and parent not in ids for parent in parents.values()):
-        raise ImportExportError("Message tree references a missing parent.")
-    for message_id in ids:
-        seen: set[str] = set()
+        by_id[str(raw["id"])] = raw
+    ordered: list[dict[str, Any]] = []
+    placed: set[str] = set()
+    for message_id in by_id:
+        chain: dict[str, None] = {}
         current: str | None = message_id
-        while current is not None:
-            if current in seen:
+        while current is not None and current not in placed:
+            if current not in by_id:
+                raise ImportExportError("Message tree references a missing parent.")
+            if current in chain:
                 raise ImportExportError("Message tree contains a cycle.")
-            seen.add(current)
-            current = parents[current]
+            chain[current] = None
+            parent = by_id[current].get("parent_message_id")
+            current = None if parent is None else str(parent)
+        for item in reversed(chain):
+            placed.add(item)
+            ordered.append(by_id[item])
+    return ordered
+
+
+def _new_id(id_map: dict[str, int], old_id: object) -> int | None:
+    return None if old_id is None else id_map.get(str(old_id))
 
 
 def _imported_metadata(raw: dict[str, Any]) -> dict[str, Any]:

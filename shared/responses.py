@@ -23,6 +23,17 @@ class GatewayStatus:
     capabilities: tuple[dict[str, Any], ...] = ()
     resumable_runs: tuple[str, ...] = ()
 
+    def serves_workspace(self, identity: str | None) -> bool:
+        """Whether the gateway and its executor are ready to run Plan and Agent on ``identity``."""
+        return bool(
+            self.ready
+            and self.executor_present
+            and self.executor_status == "ready"
+            and identity
+            and self.active_workspace == identity
+            and {"plan", "agent"}.issubset(self.supported_modes)
+        )
+
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["event_versions"] = list(self.event_versions)
