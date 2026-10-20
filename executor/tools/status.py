@@ -23,7 +23,14 @@ MAX_STATUS_DIFF_FILE_BYTES = 1_000_000
 MAX_CURSOR_OFFSET = 1_000_000
 
 
-def status(work_root: Path, source_root: Path, snapshot: Snapshot, arguments: dict, *, current: dict[str, tuple[str, int, int]] | None = None) -> tuple[str, dict]:
+def status(
+    work_root: Path,
+    source_root: Path,
+    snapshot: Snapshot,
+    arguments: dict,
+    *,
+    current: dict[str, tuple[str, int, int]] | None = None,
+) -> tuple[str, dict]:
     """Summarize staged changes against the publication baseline, with optional diffs.
 
     The baseline is the snapshot the next publication manifest is validated against, so this
@@ -44,7 +51,11 @@ def status(work_root: Path, source_root: Path, snapshot: Snapshot, arguments: di
     all_changes = workspace_changes(snapshot, work_root, current)
     changes = all_changes
     if scopes is not None:
-        changes = [item for item in all_changes if any(item.path == scope or item.path.startswith(scope + "/") for scope in scopes)]
+        changes = [
+            item
+            for item in all_changes
+            if any(item.path == scope or item.path.startswith(scope + "/") for scope in scopes)
+        ]
     page = changes[cursor : cursor + requested]
     has_more = cursor + len(page) < len(changes)
     counts = _counts(changes)
@@ -91,7 +102,8 @@ def status(work_root: Path, source_root: Path, snapshot: Snapshot, arguments: di
 def _scopes(value: object) -> list[str] | None:
     if value is None:
         return None
-    if not isinstance(value, list) or not 1 <= len(value) <= MAX_STATUS_PATHS or not all(isinstance(item, str) and item for item in value):
+    valid = isinstance(value, list) and 1 <= len(value) <= MAX_STATUS_PATHS
+    if not valid or not all(isinstance(item, str) and item for item in value):
         raise ExecutorToolError(INVALID_ARGUMENTS, f"paths must be a list of 1 to {MAX_STATUS_PATHS} relative paths")
     scopes: list[str] = []
     for item in value:
@@ -161,15 +173,25 @@ def _batch_count(changes: list[WorkspaceChange]) -> int | None:
         return None
 
 
-def _diffs(work_root: Path, source_root: Path, changes: list[WorkspaceChange]) -> tuple[list[dict[str, object]], bool]:
+def _diffs(
+    work_root: Path,
+    source_root: Path,
+    changes: list[WorkspaceChange],
+) -> tuple[list[dict[str, object]], bool]:
     results: list[dict[str, object]] = []
-    used_bytes = 0; used_lines = 0; exhausted = False
+    used_bytes = used_lines = 0
+    exhausted = False
     for change in changes:
         if exhausted:
             results.append({"path": change.path, "kind": "omitted", "reason": "diff_budget_exhausted"})
             continue
         if change.operation == "update" and change.base_sha256 == change.staged_sha256:
-            results.append({"path": change.path, "kind": "mode_only", "base_mode": _octal(change.base_mode), "staged_mode": _octal(change.staged_mode)})
+            results.append({
+                "path": change.path,
+                "kind": "mode_only",
+                "base_mode": _octal(change.base_mode),
+                "staged_mode": _octal(change.staged_mode),
+            })
             continue
         before = _baseline_bytes(work_root, source_root, change) if change.operation != "create" else b""
         after = _staged_bytes(work_root, change) if change.operation != "delete" else b""
@@ -177,9 +199,15 @@ def _diffs(work_root: Path, source_root: Path, changes: list[WorkspaceChange]) -
             reason = "too_large" if _too_large(change) else "baseline_unavailable"
             results.append({"path": change.path, "kind": reason})
             continue
-        before_text = _text(before); after_text = _text(after)
+        before_text = _text(before)
+        after_text = _text(after)
         if before_text is None or after_text is None:
-            results.append({"path": change.path, "kind": "binary", "base_size_bytes": change.base_size_bytes, "staged_size_bytes": change.staged_size_bytes})
+            results.append({
+                "path": change.path,
+                "kind": "binary",
+                "base_size_bytes": change.base_size_bytes,
+                "staged_size_bytes": change.staged_size_bytes,
+            })
             continue
         lines = list(difflib.unified_diff(
             before_text.splitlines(keepends=True), after_text.splitlines(keepends=True),
@@ -194,10 +222,19 @@ def _diffs(work_root: Path, source_root: Path, changes: list[WorkspaceChange]) -
             if used_lines >= MAX_STATUS_DIFF_LINES or used_bytes + encoded > MAX_STATUS_DIFF_BYTES:
                 exhausted = True
                 break
-            accepted.append(line); used_lines += 1; used_bytes += encoded
+            accepted.append(line)
+            used_lines += 1
+            used_bytes += encoded
         added = sum(1 for line in lines if line.startswith("+") and not line.startswith("+++"))
         removed = sum(1 for line in lines if line.startswith("-") and not line.startswith("---"))
-        results.append({"path": change.path, "kind": "text", "text": "".join(accepted).rstrip("\n"), "truncated": len(accepted) < len(lines), "added_lines": added, "removed_lines": removed})
+        results.append({
+            "path": change.path,
+            "kind": "text",
+            "text": "".join(accepted).rstrip("\n"),
+            "truncated": len(accepted) < len(lines),
+            "added_lines": added,
+            "removed_lines": removed,
+        })
     return results, exhausted
 
 
@@ -210,10 +247,14 @@ def _baseline_bytes(work_root: Path, source_root: Path, change: WorkspaceChange)
     digest = change.base_sha256
     if not digest or int(change.base_size_bytes or 0) > MAX_STATUS_DIFF_FILE_BYTES:
         return None
-    candidates = [work_root / ".local-chat-checkpoints" / "objects" / digest, source_root.joinpath(*change.path.split("/"))]
+    candidates = (
+        work_root / ".local-chat-checkpoints" / "objects" / digest,
+        source_root.joinpath(*change.path.split("/")),
+    )
     for candidate in candidates:
         try:
-            if candidate.is_symlink() or not candidate.is_file() or candidate.stat().st_size > MAX_STATUS_DIFF_FILE_BYTES:
+            unusable = candidate.is_symlink() or not candidate.is_file()
+            if unusable or candidate.stat().st_size > MAX_STATUS_DIFF_FILE_BYTES:
                 continue
             content = candidate.read_bytes()
         except OSError:

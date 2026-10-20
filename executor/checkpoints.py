@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -21,9 +20,10 @@ from .errors import (
     ExecutorToolError,
 )
 from .paths import safe_path
-from .staging import sha256_file, visible_files
+from .staging import copy_with_sha256, sha256_file, visible_files
 
 DEFAULT_MAX_CHECKPOINTS = 8
+DEFAULT_MAX_CHECKPOINT_FILES = 300_000
 DEFAULT_MAX_CHECKPOINT_BYTES = 2_500_000_000
 _CHECKPOINT_ID = re.compile(r"^[0-9a-f-]{20,64}$")
 # chmod without following links where the platform supports it (Windows Python 3.12 does not).
@@ -33,7 +33,7 @@ _NO_FOLLOW = {"follow_symlinks": False} if os.chmod in os.supports_follow_symlin
 def create_checkpoint(
     work_root: Path,
     *,
-    max_files: int = 300_000,
+    max_files: int = DEFAULT_MAX_CHECKPOINT_FILES,
     max_total_bytes: int = DEFAULT_MAX_CHECKPOINT_BYTES,
     max_checkpoints: int = DEFAULT_MAX_CHECKPOINTS,
 ) -> str:
@@ -121,11 +121,36 @@ def checkpoint_files(checkpoint_id: str) -> dict[str, tuple[str, int, int]] | No
     return dict(files) if files is not None else None
 
 
+class checkpointed:
+    """Checkpoint staging on entry (yielding its id) and restore it if the body raises.
+
+    Restoration also covers ``BaseException`` (cancellation, interpreter shutdown), so a
+    mutation is never left half applied. A class rather than ``@contextmanager``, which
+    would rewrite ``__traceback__`` on the frozen ``ExecutorToolError``.
+    """
+
+    def __init__(self, work_root: Path, *, max_files: int, max_total_bytes: int) -> None:
+        self.work_root = work_root
+        self.max_files = max_files
+        self.max_total_bytes = max_total_bytes
+        self.checkpoint_id = ""
+
+    def __enter__(self) -> str:
+        self.checkpoint_id = create_checkpoint(
+            self.work_root, max_files=self.max_files, max_total_bytes=self.max_total_bytes
+        )
+        return self.checkpoint_id
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        if exc_type is not None:
+            restore_checkpoint(self.work_root, self.checkpoint_id)
+
+
 def restore_checkpoint(
     work_root: Path,
     checkpoint_id: str,
     *,
-    max_files: int = 300_000,
+    max_files: int = DEFAULT_MAX_CHECKPOINT_FILES,
     max_total_bytes: int = DEFAULT_MAX_CHECKPOINT_BYTES,
 ) -> dict[str, object]:
     manifest = _load_manifest(work_root, checkpoint_id)
@@ -145,14 +170,11 @@ def restore_checkpoint(
     if total > max_total_bytes:
         raise ExecutorToolError(LIMIT_EXCEEDED, "Checkpoint size exceeds the executor limit.")
     current = visible_files(work_root)
-    changed = sorted(set(current) | set(expected), key=str.casefold)
+    absent = (None, None, None)
     changed = [
         relative
-        for relative in changed
-        if current.get(relative, (None, None, None))[0]
-        != expected.get(relative, (None, None, None))[0]
-        or current.get(relative, (None, None, None))[2]
-        != expected.get(relative, (None, None, None))[2]
+        for relative in sorted(set(current) | set(expected), key=str.casefold)
+        if _content_and_mode(current.get(relative, absent)) != _content_and_mode(expected.get(relative, absent))
     ]
     prepared: dict[str, tuple[bytes, int | None]] = {}
     objects = work_root / ".local-chat-checkpoints" / "objects"
@@ -184,6 +206,11 @@ def restore_checkpoint(
     }
 
 
+def _content_and_mode(entry: tuple[object, object, object]) -> tuple[object, object]:
+    digest, _size, mode = entry
+    return digest, mode
+
+
 def _load_manifest(work_root: Path, checkpoint_id: str) -> dict[str, object]:
     if not isinstance(checkpoint_id, str) or not _CHECKPOINT_ID.fullmatch(checkpoint_id):
         raise ExecutorToolError(INVALID_ARGUMENTS, "Invalid checkpoint identity.")
@@ -202,12 +229,10 @@ def _prune(root: Path, current_id: str, max_count: int, max_storage_bytes: int) 
         (path for path in root.iterdir() if path.is_dir() and _CHECKPOINT_ID.fullmatch(path.name)),
         key=lambda path: path.stat().st_mtime,
     )
-    keep = set(path.name for path in directories[-max(1, max_count) :]) | {current_id}
+    keep = {path.name for path in directories[-max(1, max_count) :]} | {current_id}
     for directory in directories:
         if directory.name not in keep:
-            shutil.rmtree(directory, ignore_errors=True)
-            with _cache_lock:
-                _reference_cache.pop(str(directory / "manifest.json"), None)
+            _remove_checkpoint(directory)
 
     objects = root / "objects"
     while True:
@@ -234,10 +259,13 @@ def _prune(root: Path, current_id: str, max_count: int, max_storage_bytes: int) 
         removable = [path for path in kept_directories if path.name != current_id]
         if not removable:
             raise ExecutorToolError(LIMIT_EXCEEDED, "Checkpoint storage budget is exhausted by the current checkpoint set.")
-        oldest = min(removable, key=lambda path: path.stat().st_mtime)
-        shutil.rmtree(oldest, ignore_errors=True)
-        with _cache_lock:
-            _reference_cache.pop(str(oldest / "manifest.json"), None)
+        _remove_checkpoint(min(removable, key=lambda path: path.stat().st_mtime))
+
+
+def _remove_checkpoint(directory: Path) -> None:
+    shutil.rmtree(directory, ignore_errors=True)
+    with _cache_lock:
+        _reference_cache.pop(str(directory / "manifest.json"), None)
 
 
 def _manifest_references(directory: Path) -> dict[str, int]:
@@ -278,12 +306,9 @@ def _store_object(source: Path, object_path: Path, digest: str) -> None:
     descriptor, name = tempfile.mkstemp(prefix=".object-", dir=object_path.parent)
     temporary = Path(name)
     try:
-        hasher = hashlib.sha256()
         with os.fdopen(descriptor, "wb") as writer, source.open("rb") as reader:
-            for chunk in iter(lambda: reader.read(128 * 1024), b""):
-                hasher.update(chunk)
-                writer.write(chunk)
-        if hasher.hexdigest() != digest:
+            stored = copy_with_sha256(reader, writer)
+        if stored != digest:
             raise ExecutorToolError(CHECKPOINT_CORRUPT, "Checkpoint content verification failed.")
         os.replace(temporary, object_path)
     finally:

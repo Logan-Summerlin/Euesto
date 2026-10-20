@@ -68,14 +68,14 @@ Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `ve
 ## `bash`
 
 - **Purpose:** run a non-interactive Bash command in the staged workspace.
-- **Arguments:** `command` required; optional `working_directory`, `timeout_seconds` (1–900), `env`, and `stdin` (maximum 8,000,000 characters at schema level).
+- **Arguments:** `command` required; optional `working_directory`, `timeout_seconds` (1–900), `env`, `stdin` (maximum 8,000,000 characters at schema level), and `rollback_on_failure` (default true).
 - **Modes:** Agent only.
 - **Permission:** mutation-capable; checkpointed and staged.
-- **Defaults:** 300 seconds, 1,000,000 bytes of command text, stdin, and output in `coding`.
+- **Defaults:** 60 seconds when `timeout_seconds` is omitted; the `coding` profile caps commands at 300 seconds and 1,000,000 bytes of command text, stdin, and output.
 - **Hard maximums:** 900 seconds; 1,000,000 command bytes; 8,000,000 stdin/output bytes.
 - **Execution:** `/bin/bash -lc`, non-interactive (a new session with no controlling terminal; stdin is `/dev/null` unless `stdin` is supplied), no network, restricted environment, process-group cleanup. Under the opt-in allowlisted-egress profile (`docs/EGRESS.md`) the base environment also carries `HTTPS_PROXY`/`HTTP_PROXY` for the allowlisted registry proxy; nothing else becomes reachable.
 - **Environment:** a fixed base environment (`PATH`, `HOME`, locale, UTF-8 Python flags) is always applied. User-supplied `env` is limited to 64 variables with POSIX-identifier names and ≤16,384-byte values; `PATH`, `HOME`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, and `BASH_ENV*` are refused.
-- **Output:** stdout/stderr is bounded; oversized output is retained as a bounded head/tail preview with a truncation marker. Command event cursors are exposed separately through the executor event endpoint.
+- **Output:** stdout/stderr is bounded; oversized output is retained as a bounded head/tail preview with a truncation marker.
 - **Failure:** timed-out and cancelled commands always roll staged filesystem changes back to their checkpoint. Non-zero-exit commands roll back by default; set `rollback_on_failure: false` when retaining partial progress is intentional. Results separate the process `exit_code` from checkpoint outcome with `rolled_back` and `rollback_reason` (`cancelled`, `nonzero_exit`, or `none`); `rollback_on_failure: false` never retains the changes of a cancelled command.
 
 ## `grep`

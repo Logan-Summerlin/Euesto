@@ -10,7 +10,7 @@ from executor.paths import UnsafePath, assert_unique_paths, normalize_relative, 
 from executor.staging import sha256_file
 from executor.tools.edit import edit
 from executor.tools.find import find
-from executor.tools.grep import search_text
+from executor.tools.grep import grep
 from executor.tools.ls import ls
 from executor.tools.read import read
 from executor.tools.write import write
@@ -72,7 +72,7 @@ def test_search_scan_budget_and_pagination_metadata(tmp_path: Path) -> None:
     root.mkdir()
     (root / "small.txt").write_text("needle\n", encoding="utf-8")
     (root / "large.txt").write_text("needle\n" * 20, encoding="utf-8")
-    output, metadata = search_text(root, {"path": ".", "query": "needle", "max_results": 1}, max_bytes=20, max_results=1)
+    output, metadata = grep(root, {"path": ".", "query": "needle", "max_results": 1}, max_scan_bytes=20, max_output_bytes=10_000, max_results=1)
     assert "small.txt:1:needle" in output
     assert metadata["files_skipped_too_large"] == 1
     assert metadata["files_searched"] == 1

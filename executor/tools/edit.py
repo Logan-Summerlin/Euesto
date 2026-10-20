@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..atomic_io import replacement_mode
-from ..checkpoints import create_checkpoint, restore_checkpoint
+from ..checkpoints import DEFAULT_MAX_CHECKPOINT_FILES, checkpointed
 from ..errors import (
     EDIT_MALFORMED_CONTEXT,
     EDIT_NO_MATCH,
@@ -17,7 +17,14 @@ from ..errors import (
     LIMIT_EXCEEDED,
     ExecutorToolError,
 )
-from ..mutations import bounded_diff, bounded_edit_diff, check_expected_sha256, guard_shrink
+from ..mutations import (
+    bounded_diff,
+    bounded_edit_diff,
+    changed_lines_summary,
+    check_expected_sha256,
+    guard_shrink,
+    with_shrink_warning,
+)
 from ..paths import require_regular_file, safe_path
 from ..staging import sha256_file
 from ..utf8 import Utf8Validator
@@ -49,34 +56,56 @@ class AppliedEdit:
     shrink_warning: dict | None
 
 
-def edit(root: Path, arguments: dict, *, max_target_bytes: int, max_result_bytes: int, max_checkpoint_files: int = 300_000, max_checkpoint_bytes: int) -> tuple[str, dict]:
-    if set(arguments) - EDIT_ARGUMENTS: raise ExecutorToolError(INVALID_ARGUMENTS, "Unknown edit arguments")
+def edit(
+    root: Path,
+    arguments: dict,
+    *,
+    max_target_bytes: int,
+    max_result_bytes: int,
+    max_checkpoint_files: int = DEFAULT_MAX_CHECKPOINT_FILES,
+    max_checkpoint_bytes: int,
+) -> tuple[str, dict]:
+    if set(arguments) - EDIT_ARGUMENTS:
+        raise ExecutorToolError(INVALID_ARGUMENTS, "Unknown edit arguments")
     prepared = prepare_edit(root, arguments, max_target_bytes=max_target_bytes)
-    checkpoint_id = create_checkpoint(root, max_files=max_checkpoint_files, max_total_bytes=max_checkpoint_bytes)
-    try:
+    with checkpointed(root, max_files=max_checkpoint_files, max_total_bytes=max_checkpoint_bytes) as checkpoint_id:
         applied = apply_edit(prepared, max_result_bytes=max_result_bytes)
-    except BaseException:
-        restore_checkpoint(root, checkpoint_id); raise
     data = edit_result(prepared, applied)
     data["checkpoint_id"] = checkpoint_id
-    changed = int(data["diff"]["changed_lines"]); output = f"Edited {prepared.relative}. Changed {changed} line{'s' if changed != 1 else ''}."
-    if applied.line_ending_adjustment: output += f" Matched after line-ending translation ({applied.line_ending_adjustment})."
-    if applied.shrink_warning: output += " Warning: confirmed large shrink."
+    output = f"Edited {prepared.relative}. {changed_lines_summary(data['diff'])}"
+    if applied.line_ending_adjustment:
+        output += f" Matched after line-ending translation ({applied.line_ending_adjustment})."
+    if applied.shrink_warning:
+        output += " Warning: confirmed large shrink."
     return output, data
 
 
 def prepare_edit(root: Path, arguments: dict, *, max_target_bytes: int) -> PreparedEdit:
     """Validate one exact edit against the current staged state without changing anything."""
-    relative = arguments.get("path"); old = arguments.get("old_str"); new = arguments.get("new_str"); expected_occurrences = arguments.get("expected_occurrences", 1)
-    if not isinstance(relative, str) or not relative: raise ExecutorToolError(INVALID_ARGUMENTS, "edit requires a file path")
+    relative = arguments.get("path")
+    old = arguments.get("old_str")
+    new = arguments.get("new_str")
+    expected_occurrences = arguments.get("expected_occurrences", 1)
+    if not isinstance(relative, str) or not relative:
+        raise ExecutorToolError(INVALID_ARGUMENTS, "edit requires a file path")
+    malformed = {"failure": "malformed_context", "path": relative}
     if not isinstance(old, str) or not old or not isinstance(new, str) or "\x00" in old or "\x00" in new:
-        raise ExecutorToolError(EDIT_MALFORMED_CONTEXT, "edit requires a non-empty old_str and a new_str without NUL characters", details={"failure": "malformed_context", "path": relative})
-    if not isinstance(expected_occurrences, int) or isinstance(expected_occurrences, bool) or not 1 <= expected_occurrences <= 1000:
-        raise ExecutorToolError(EDIT_MALFORMED_CONTEXT, "expected_occurrences must be an integer from 1 to 1000", details={"failure": "malformed_context", "path": relative})
+        raise ExecutorToolError(
+            EDIT_MALFORMED_CONTEXT,
+            "edit requires a non-empty old_str and a new_str without NUL characters",
+            details=malformed,
+        )
+    if not _bounded_int(expected_occurrences, 1, 1000):
+        raise ExecutorToolError(
+            EDIT_MALFORMED_CONTEXT,
+            "expected_occurrences must be an integer from 1 to 1000",
+            details=malformed,
+        )
     path = safe_path(root, relative, must_exist=True)
     require_regular_file(path, "edit")
     target_size = path.stat().st_size
-    if target_size > max_target_bytes: raise ExecutorToolError(LIMIT_EXCEEDED, "Edit target exceeds the mutation limit")
+    if target_size > max_target_bytes:
+        raise ExecutorToolError(LIMIT_EXCEEDED, "Edit target exceeds the mutation limit")
     original_small = path.read_text(encoding="utf-8") if target_size <= EDIT_DIFF_MEMORY_BYTES else None
     old_hash = sha256_file(path)
     check_expected_sha256(relative, arguments.get("expected_sha256"), old_hash)
@@ -92,41 +121,64 @@ def apply_edit(prepared: PreparedEdit, *, max_result_bytes: int) -> AppliedEdit:
     its own convention. The occurrence count must still match exactly; nothing fuzzy is
     ever applied.
     """
-    path = prepared.path; old = prepared.old; new = prepared.new; adjustment = None
-    temp_path, actual, result_size = _stream_replace(path, old.encode("utf-8"), new.encode("utf-8"), max_result_bytes)
+    path = prepared.path
+    old = prepared.old
+    new = prepared.new
+    adjustment = None
+    temp_path, actual = _stream_replace(path, old, new, max_result_bytes)
     try:
-        if actual == 0:
-            variant = _line_ending_variant(old, new)
-            if variant is not None:
-                alt_old, alt_new, label = variant
-                alt_temp, alt_actual, alt_size = _stream_replace(path, alt_old.encode("utf-8"), alt_new.encode("utf-8"), max_result_bytes)
-                if alt_actual:
-                    temp_path.unlink(missing_ok=True)
-                    temp_path, actual, result_size, old, new, adjustment = alt_temp, alt_actual, alt_size, alt_old, alt_new, label
-                else:
-                    alt_temp.unlink(missing_ok=True)
+        variant = _line_ending_variant(old, new) if actual == 0 else None
+        if variant is not None:
+            alt_old, alt_new, label = variant
+            alt_temp, alt_actual = _stream_replace(path, alt_old, alt_new, max_result_bytes)
+            if alt_actual:
+                temp_path.unlink(missing_ok=True)
+                temp_path, actual, old, new, adjustment = alt_temp, alt_actual, alt_old, alt_new, label
+            else:
+                alt_temp.unlink(missing_ok=True)
         if actual != prepared.expected_occurrences:
             raise _match_error(prepared, actual, old, adjustment)
-        shrink_warning = guard_shrink(prepared.relative, path, None, replacement_old=old, replacement_new=new, replacement_occurrences=actual, advisory=True)
-        if result_size > max_result_bytes: raise ExecutorToolError(LIMIT_EXCEEDED, "Edited content exceeds the mutation limit")
+        shrink_warning = guard_shrink(
+            prepared.relative,
+            path,
+            None,
+            replacement_old=old,
+            replacement_new=new,
+            replacement_occurrences=actual,
+            advisory=True,
+        )
         os.chmod(temp_path, replacement_mode(path))
         os.replace(temp_path, path)
     except BaseException:
-        temp_path.unlink(missing_ok=True); raise
+        temp_path.unlink(missing_ok=True)
+        raise
     return AppliedEdit(old, new, actual, adjustment, shrink_warning)
 
 
 def edit_result(prepared: PreparedEdit, applied: AppliedEdit) -> dict:
     path = prepared.path
+    relative = prepared.relative
     if prepared.original_small is not None:
-        diff = bounded_diff(path, prepared.original_small, path.read_text(encoding="utf-8"), fromfile=prepared.relative, tofile=prepared.relative)
+        current = path.read_text(encoding="utf-8")
+        diff = bounded_diff(path, prepared.original_small, current, fromfile=relative, tofile=relative)
     else:
-        diff = bounded_edit_diff(prepared.relative, applied.actual_occurrences, applied.old, applied.new)
-    data = {"path": prepared.relative, "old_sha256": prepared.old_hash, "new_sha256": sha256_file(path), "expected_occurrences": prepared.expected_occurrences, "actual_occurrences": applied.actual_occurrences, "size_bytes": path.stat().st_size, "diff": diff, "line_ending_adjustment": applied.line_ending_adjustment, "atomicity": "validated-before-write-with-checkpoint-rollback"}
-    if applied.shrink_warning:
-        data["shrink_warning"] = True
-        data["shrink_details"] = applied.shrink_warning
-    return data
+        diff = bounded_edit_diff(relative, applied.actual_occurrences, applied.old, applied.new)
+    data = {
+        "path": relative,
+        "old_sha256": prepared.old_hash,
+        "new_sha256": sha256_file(path),
+        "expected_occurrences": prepared.expected_occurrences,
+        "actual_occurrences": applied.actual_occurrences,
+        "size_bytes": path.stat().st_size,
+        "diff": diff,
+        "line_ending_adjustment": applied.line_ending_adjustment,
+        "atomicity": "validated-before-write-with-checkpoint-rollback",
+    }
+    return with_shrink_warning(data, applied.shrink_warning)
+
+
+def _bounded_int(value: object, minimum: int, maximum: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and minimum <= value <= maximum
 
 
 def _line_ending_variant(old: str, new: str) -> tuple[str, str, str] | None:
@@ -145,7 +197,13 @@ def _match_error(prepared: PreparedEdit, actual: int, matched_old: str, adjustme
         code, failure = EDIT_TOO_MANY_MATCHES, "too_many_matches"
     else:
         code, failure = EDIT_TOO_FEW_MATCHES, "too_few_matches"
-    details: dict[str, object] = {"failure": failure, "path": prepared.relative, "expected_occurrences": expected, "actual_occurrences": actual, "line_ending_adjustment": adjustment}
+    details: dict[str, object] = {
+        "failure": failure,
+        "path": prepared.relative,
+        "expected_occurrences": expected,
+        "actual_occurrences": actual,
+        "line_ending_adjustment": adjustment,
+    }
     hint = ""
     if prepared.original_small is not None:
         details.update(_diagnostics(prepared.original_small, matched_old if actual else prepared.old, actual))
@@ -153,24 +211,32 @@ def _match_error(prepared: PreparedEdit, actual: int, matched_old: str, adjustme
             hint = " Hints: " + "; ".join(str(item) for item in details["hints"]) + "."
     else:
         details["diagnostics"] = "omitted for a target larger than 1,000,000 bytes"
-    message = f"Edit occurrence conflict: expected {expected}, found {actual} in {prepared.relative} ({failure.replace('_', ' ')}).{hint}"
+    message = (
+        f"Edit occurrence conflict: expected {expected}, found {actual} in {prepared.relative} "
+        f"({failure.replace('_', ' ')}).{hint}"
+    )
     return ExecutorToolError(code, message, details=details)
 
 
 def _diagnostics(text: str, old: str, actual: int) -> dict[str, object]:
     """Bounded, escaped hints about why an exact edit did not match; never applied."""
-    result: dict[str, object] = {"file_line_endings": _line_endings(text), "old_str_line_endings": _line_endings(old)}
-    hints: list[str] = []
+    file_endings = _line_endings(text)
+    old_endings = _line_endings(old)
+    result: dict[str, object] = {"file_line_endings": file_endings, "old_str_line_endings": old_endings}
     if actual:
-        lines: list[int] = []; start = 0
+        lines: list[int] = []
+        start = 0
         while len(lines) < MAX_DIAGNOSTIC_MATCH_LINES:
             index = text.find(old, start)
-            if index < 0: break
-            lines.append(text.count("\n", 0, index) + 1); start = index + 1
+            if index < 0:
+                break
+            lines.append(text.count("\n", 0, index) + 1)
+            start = index + 1
         result["match_lines"] = lines
-        hints.append("set expected_occurrences to the intended count or add surrounding context to old_str")
-        return {**result, "hints": hints}
-    if result["file_line_endings"] != result["old_str_line_endings"] and "none" not in (result["file_line_endings"], result["old_str_line_endings"]):
+        result["hints"] = ["set expected_occurrences to the intended count or add surrounding context to old_str"]
+        return result
+    hints: list[str] = []
+    if file_endings != old_endings and "none" not in (file_endings, old_endings):
         hints.append("line endings differ between old_str and the file")
     if _collapse(old) and _collapse(old) in _collapse(text):
         hints.append("old_str matches only if whitespace or indentation is ignored; copy it exactly from a fresh read")
@@ -191,9 +257,12 @@ def _diagnostics(text: str, old: str, actual: int) -> dict[str, object]:
 
 
 def _line_endings(value: str) -> str:
-    crlf = value.count("\r\n"); lf = value.count("\n") - crlf
-    if not crlf and not lf: return "none"
-    if crlf and lf: return "mixed"
+    crlf = value.count("\r\n")
+    lf = value.count("\n") - crlf
+    if not crlf and not lf:
+        return "none"
+    if crlf and lf:
+        return "mixed"
     return "crlf" if crlf else "lf"
 
 
@@ -201,31 +270,46 @@ def _collapse(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
-def _stream_replace(path: Path, old: bytes, new: bytes, max_result_bytes: int) -> tuple[Path, int, int]:
-    fd, raw_temp = tempfile.mkstemp(prefix=f".{path.name}.edit-", dir=path.parent); temp_path = Path(raw_temp)
-    validator = Utf8Validator("Only UTF-8 text edits are supported"); count = 0; result_size = 0; pending = b""; keep = max(1, len(old))
+def _stream_replace(path: Path, old_text: str, new_text: str, max_result_bytes: int) -> tuple[Path, int]:
+    """Write *path* with every ``old_text`` replaced to a sibling temporary file.
+
+    The source is streamed in chunks (validating UTF-8 as it goes), keeping just enough
+    unmatched tail to find a match that spans a chunk boundary. Returns the temporary path
+    and the number of replacements; the caller replaces or removes the temporary file.
+    """
+    old = old_text.encode("utf-8")
+    new = new_text.encode("utf-8")
+    descriptor, raw_temp = tempfile.mkstemp(prefix=f".{path.name}.edit-", dir=path.parent)
+    temp_path = Path(raw_temp)
+    validator = Utf8Validator("Only UTF-8 text edits are supported")
+    count = 0
+    result_size = 0
+    pending = b""
+    keep = max(1, len(old))
+
+    def emit(output, data: bytes) -> None:
+        nonlocal result_size
+        result_size += len(data)
+        if result_size > max_result_bytes:
+            raise ExecutorToolError(LIMIT_EXCEEDED, "Edited content exceeds the mutation limit")
+        output.write(data)
+
     try:
-        with os.fdopen(fd, "wb") as output:
-            with path.open("rb") as source:
-                while True:
-                    chunk = source.read(EDIT_CHUNK_BYTES)
-                    if not chunk: break
-                    validator.feed(chunk)
-                    pending += chunk
-                    while True:
-                        index = pending.find(old)
-                        if index < 0: break
-                        prefix = pending[:index]; replaced = prefix + new; result_size += len(replaced)
-                        if result_size > max_result_bytes: raise ExecutorToolError(LIMIT_EXCEEDED, "Edited content exceeds the mutation limit")
-                        output.write(replaced); pending = pending[index + len(old):]; count += 1
-                    if len(pending) > keep:
-                        prefix = pending[:-keep]; result_size += len(prefix)
-                        if result_size > max_result_bytes: raise ExecutorToolError(LIMIT_EXCEEDED, "Edited content exceeds the mutation limit")
-                        output.write(prefix); pending = pending[-keep:]
+        with os.fdopen(descriptor, "wb") as output, path.open("rb") as source:
+            for chunk in iter(lambda: source.read(EDIT_CHUNK_BYTES), b""):
+                validator.feed(chunk)
+                pending += chunk
+                while (index := pending.find(old)) >= 0:
+                    emit(output, pending[:index] + new)
+                    pending = pending[index + len(old) :]
+                    count += 1
+                if len(pending) > keep:
+                    emit(output, pending[:-keep])
+                    pending = pending[-keep:]
             validator.finish()
-            replaced = pending.replace(old, new); count += pending.count(old); result_size += len(replaced)
-            if result_size > max_result_bytes: raise ExecutorToolError(LIMIT_EXCEEDED, "Edited content exceeds the mutation limit")
-            output.write(replaced)
-        return temp_path, count, result_size
+            count += pending.count(old)
+            emit(output, pending.replace(old, new))
+        return temp_path, count
     except BaseException:
-        temp_path.unlink(missing_ok=True); raise
+        temp_path.unlink(missing_ok=True)
+        raise

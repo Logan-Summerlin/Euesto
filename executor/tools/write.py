@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..atomic_io import atomic_write_text
-from ..checkpoints import create_checkpoint, restore_checkpoint
+from ..checkpoints import DEFAULT_MAX_CHECKPOINT_FILES, checkpointed
 from ..errors import (
     INVALID_ARGUMENTS,
     INVALID_UTF8,
@@ -12,7 +12,14 @@ from ..errors import (
     PATH_MISSING,
     ExecutorToolError,
 )
-from ..mutations import bounded_diff, bounded_edit_diff, check_expected_sha256, guard_shrink
+from ..mutations import (
+    bounded_diff,
+    bounded_edit_diff,
+    changed_lines_summary,
+    check_expected_sha256,
+    guard_shrink,
+    with_shrink_warning,
+)
 from ..paths import require_regular_file, safe_path
 from ..staging import sha256_file
 from ..utf8 import validate_utf8_file
@@ -33,21 +40,24 @@ class PreparedWrite:
     shrink_warning: dict | None
 
 
-def write(root: Path, arguments: dict, *, max_bytes: int, max_checkpoint_files: int = 300_000, max_checkpoint_bytes: int, max_staging_bytes: int | None = None) -> tuple[str, dict]:
+def write(
+    root: Path,
+    arguments: dict,
+    *,
+    max_bytes: int,
+    max_checkpoint_files: int = DEFAULT_MAX_CHECKPOINT_FILES,
+    max_checkpoint_bytes: int,
+    max_staging_bytes: int | None = None,
+) -> tuple[str, dict]:
     if set(arguments) - WRITE_ARGUMENTS:
         raise ExecutorToolError(INVALID_ARGUMENTS, "Unknown write arguments")
     prepared = prepare_write(root, arguments, max_bytes=max_bytes, max_staging_bytes=max_staging_bytes)
-    checkpoint_id = create_checkpoint(root, max_files=max_checkpoint_files, max_total_bytes=max_checkpoint_bytes)
-    try:
+    with checkpointed(root, max_files=max_checkpoint_files, max_total_bytes=max_checkpoint_bytes) as checkpoint_id:
         commit_write(root, prepared)
-    except BaseException:
-        restore_checkpoint(root, checkpoint_id)
-        raise
     data = write_result(prepared, max_bytes=max_bytes, max_staging_bytes=max_staging_bytes)
     data["checkpoint_id"] = checkpoint_id
-    changed = int(prepared.diff["changed_lines"])
     verb = "Created" if prepared.old_hash is None else "Wrote"
-    output = f"{verb} {prepared.relative}. Changed {changed} line{'s' if changed != 1 else ''}."
+    output = f"{verb} {prepared.relative}. {changed_lines_summary(prepared.diff)}"
     if prepared.shrink_warning:
         output += " Warning: confirmed large shrink."
     return output, data
@@ -81,14 +91,16 @@ def prepare_write(root: Path, arguments: dict, *, max_bytes: int, max_staging_by
     check_expected_sha256(relative, expected, old_hash)
     # A matching expected_sha256 proves the caller reviewed the current content, so a large
     # shrink is a deliberate rewrite and is reported rather than refused.
-    shrink_warning = guard_shrink(relative, path, content, advisory=expected is not None) if old_hash is not None else None
+    shrink_warning = None
+    if old_hash is not None:
+        shrink_warning = guard_shrink(relative, path, content, advisory=expected is not None)
 
     create_parents = bool(arguments.get("create_parents", False))
-    parent = path.parent
-    if not parent.exists() and not create_parents:
-        raise ExecutorToolError(PATH_MISSING, f"Parent directory does not exist: {parent.relative_to(root).as_posix()}")
-    if parent.exists():
-        safe_path(root, parent.relative_to(root).as_posix(), must_exist=True)
+    parent = path.parent.relative_to(root).as_posix()
+    if path.parent.exists():
+        safe_path(root, parent, must_exist=True)
+    elif not create_parents:
+        raise ExecutorToolError(PATH_MISSING, f"Parent directory does not exist: {parent}")
     else:
         _validate_new_parents(root, parent)
 
@@ -113,20 +125,26 @@ def commit_write(root: Path, prepared: PreparedWrite) -> None:
 
 def write_result(prepared: PreparedWrite, *, max_bytes: int, max_staging_bytes: int | None) -> dict:
     data = {
-        "path": prepared.relative, "old_sha256": prepared.old_hash, "new_sha256": sha256_file(prepared.path),
-        "size_bytes": prepared.requested_bytes, "requested_write_bytes": prepared.requested_bytes, "max_write_bytes": max_bytes,
-        "staging_capacity_bytes": max_staging_bytes, "diff": prepared.diff,
+        "path": prepared.relative,
+        "old_sha256": prepared.old_hash,
+        "new_sha256": sha256_file(prepared.path),
+        "size_bytes": prepared.requested_bytes,
+        "requested_write_bytes": prepared.requested_bytes,
+        "max_write_bytes": max_bytes,
+        "staging_capacity_bytes": max_staging_bytes,
+        "diff": prepared.diff,
         "atomicity": "tempfile-fsync-atomic-replace-with-checkpoint-rollback",
     }
-    if prepared.shrink_warning:
-        data["shrink_warning"] = True
-        data["shrink_details"] = prepared.shrink_warning
-    return data
+    return with_shrink_warning(data, prepared.shrink_warning)
 
 
-def _validate_new_parents(root: Path, parent: Path) -> None:
-    relative = parent.relative_to(root).as_posix(); current = root
-    for part in relative.split("/") if relative != "." else []:
-        current = current / part
-        if current.exists(): safe_path(root, current.relative_to(root).as_posix(), must_exist=True)
+def _validate_new_parents(root: Path, parent: str) -> None:
+    """Validate the existing prefix of a parent chain that ``create_parents`` will finish."""
+    if parent == ".":
+        return
+    parts = parent.split("/")
+    for index in range(1, len(parts) + 1):
+        prefix = "/".join(parts[:index])
+        if root.joinpath(*parts[:index]).exists():
+            safe_path(root, prefix, must_exist=True)
 

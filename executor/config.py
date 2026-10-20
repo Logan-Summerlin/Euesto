@@ -96,14 +96,21 @@ class ExecutorConfig:
         if not self.workspace_id:
             raise ValueError("Executor workspace identity is required")
         values = {name: getattr(self, name) for name in self._LIMIT_FIELDS}
-        invalid = [name for name, value in values.items() if not isinstance(value, int) or isinstance(value, bool) or value < 1]
+        invalid = [
+            name
+            for name, value in values.items()
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1
+        ]
         if invalid:
             raise ValueError("Executor limits must be positive integers: " + ", ".join(invalid))
         over = [name for name, value in values.items() if value > self.HARD_CEILINGS[name]]
         if over:
             raise ValueError("Configured limits exceed hard ceilings: " + ", ".join(over))
         if self.required_capacity_bytes >= self.work_capacity_bytes:
-            raise ValueError("Staging capacity, checkpoint capacity, and required temporary headroom must fit strictly below /work capacity")
+            raise ValueError(
+                "Staging capacity, checkpoint capacity, and required temporary headroom must fit "
+                "strictly below /work capacity"
+            )
 
     @classmethod
     def from_environment(cls) -> ExecutorConfig:
@@ -194,11 +201,20 @@ class ExecutorConfig:
     def limit_status(self, name: str, requested: int | None = None) -> dict[str, object]:
         if name not in self._LIMIT_FIELDS:
             raise KeyError(f"Unknown executor limit: {name}")
-        configured = getattr(self, name)
-        return {"requested": requested, "configured": configured, "hard_ceiling": self.HARD_CEILINGS[name], "effective": self.effective_limit(name, requested), "source": self.sources.get(name, "constructor")}
+        return {
+            "requested": requested,
+            "configured": getattr(self, name),
+            "hard_ceiling": self.HARD_CEILINGS[name],
+            "effective": self.effective_limit(name, requested),
+            "source": self.sources.get(name, "constructor"),
+        }
 
     def limits_status(self) -> dict[str, dict[str, object]]:
         status = {name: self.limit_status(name) for name in self._LIMIT_FIELDS}
-        status["required_temp_headroom_bytes"] = {"configured": self.REQUIRED_TEMP_HEADROOM_BYTES, "effective": self.REQUIRED_TEMP_HEADROOM_BYTES, "source": "resource-model"}
-        status["required_capacity_bytes"] = {"configured": self.required_capacity_bytes, "effective": self.required_capacity_bytes, "source": "resource-model"}
+        derived = {
+            "required_temp_headroom_bytes": self.REQUIRED_TEMP_HEADROOM_BYTES,
+            "required_capacity_bytes": self.required_capacity_bytes,
+        }
+        for name, value in derived.items():
+            status[name] = {"configured": value, "effective": value, "source": "resource-model"}
         return status
