@@ -6,7 +6,7 @@ from typing import Any
 
 from shared.coercion import optional_int
 
-from .models import Message
+from .models import Message, usage_labels
 
 # Run events that are not tool calls, with their transcript titles.
 EVENT_TITLES = {
@@ -251,10 +251,7 @@ def _message_metadata(message: Message) -> str:
         message.input_tokens is not None or message.output_tokens is not None
     ):
         tokens = (message.input_tokens or 0) + (message.output_tokens or 0)
-    if tokens:
-        parts.append(f"{tokens:,} tokens")
-    if message.cost is not None:
-        parts.append(f"${message.cost:.6f}")
+    parts += usage_labels(tokens, message.cost)
     if message.provider_id:
         parts.append(message.provider_id)
     return " · ".join(parts)

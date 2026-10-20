@@ -1,6 +1,6 @@
 # Coding Harness Quality-of-Life Plan
 
-> **Archived — implemented; not normative.** Formerly `docs/HARNESS_QOL_PLAN.md`. Items 1–8 and the four-call investigation budget are implemented: tolerant line ranges (`range_clipped`), edit diagnostics and newline policy, `apply_patch`, the `scripts/validate.py preflight` report, rollback reporting, the `status` tool, the per-turn investigation budget with `inspected_paths`/`findings`, and `pyside6-qmllint` plus `scripts/qml_smoke.py`. The remaining validation work (a Qt-enabled validation image) is tracked in [`docs/HARNESS_VALIDATION_PLAN.md`](../docs/HARNESS_VALIDATION_PLAN.md).
+> **Archived — implemented; not normative.** Formerly `docs/HARNESS_QOL_PLAN.md`. Items 1–8 and the four-call investigation budget are implemented: tolerant line ranges (`range_clipped`), edit diagnostics and newline policy, `apply_patch`, the `scripts/validate.py preflight` report, rollback reporting, the `status` tool, the per-turn investigation budget with `inspected_paths`/`findings`, and `pyside6-qmllint` plus `scripts/qml_smoke.py`. The remaining validation work (a Qt-enabled validation image) continued in [`harness-validation-plan.md`](harness-validation-plan.md), whose open items are now in `docs/ROADMAP.md`.
 
 ## Purpose
 

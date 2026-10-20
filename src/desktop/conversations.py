@@ -9,7 +9,7 @@ from ..context_utils import compact_messages, context_source, estimate_tokens
 from ..controllers import ConversationController
 from ..import_export import ImportExportError, export_to_file, import_from_file
 from ..markdown_renderer import render_markdown
-from ..models import DEFAULT_MODELS, Conversation, model_context_length
+from ..models import DEFAULT_MODELS, Conversation, model_context_length, usage_labels
 from ..storage import Storage
 from ..transcript import (
     ACTIVITY_EVENT_TYPES,
@@ -348,14 +348,11 @@ def local_path(value: str) -> Path | None:
 
 
 def usage_text(usage: dict[str, Any]) -> str:
-    prompt = int(usage.get("input_tokens") or 0)
-    completion = int(usage.get("output_tokens") or 0)
-    cached = int(usage.get("cached_tokens") or 0)
-    reasoning = int(usage.get("reasoning_tokens") or 0)
-    cost = float(usage.get("cost") or 0)
-    parts = [f"{prompt + completion:,} billed tokens", f"USD {cost:.6f}"]
-    if cached:
-        parts.append(f"{cached:,} cached")
-    if reasoning:
-        parts.append(f"{reasoning:,} reasoning")
-    return " · ".join(parts)
+    """A ``Storage.usage_summary`` total as one line."""
+    labels = usage_labels(
+        int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0),
+        float(usage.get("cost") or 0),
+        int(usage.get("cached_tokens") or 0),
+        int(usage.get("reasoning_tokens") or 0),
+    )
+    return " · ".join(labels)

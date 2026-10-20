@@ -173,3 +173,18 @@ def model_context_length(model_id: str, catalog: list[ModelOption] | None = None
         (option.context_length for option in options if option.id == model_id),
         128_000,
     )
+
+
+def usage_labels(
+    tokens: int | None,
+    cost: float | None,
+    cached: int | None = None,
+    reasoning: int | None = None,
+) -> list[str]:
+    """Token and cost labels, worded the same in the status bar, transcript, and usage dialog."""
+    labels = [f"{tokens:,} tokens"] if tokens else []
+    labels += [f"{cached:,} cached"] if cached else []
+    labels += [f"{reasoning:,} reasoning"] if reasoning else []
+    if cost is not None:
+        labels.append(f"${cost:.6f}")
+    return labels

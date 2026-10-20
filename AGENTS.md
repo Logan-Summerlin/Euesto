@@ -51,6 +51,8 @@ Keep one authoritative copy of each document. Planning documents and the roadmap
 
 The canonical validation entry point is `python scripts/validate.py`; use `preflight` to report missing dependencies explicitly and the named tiers (`fast`, `slow`, `docker`, `ruff`, `compile`, `qml`, `all`) for execution. Run the applicable checks after changes; the command list lives once, in `docs/TESTING.md` ("Required checks").
 
+Python code is `ruff format`-formatted; the `ruff` tier checks it. Tests live in `tests/unit/<domain>/` or a tier folder (`ui`, `docker`, `structural`), never the `tests/` root.
+
 Unit tests must not require provider credentials. Container/security checks must continue to verify non-root execution, blocked egress, mounts, resource limits, traversal/link rejection, staging recovery, and exact tool-mode boundaries.
 
 ## Scoped investigation

@@ -1,6 +1,6 @@
 # Euesto — Project Roadmap
 
-This document is a status-oriented roadmap. It is not the authoritative architecture or tool specification. See [ARCHITECTURE.md](ARCHITECTURE.md), [TOOLS.md](TOOLS.md), [LIMITS.md](LIMITS.md), and [PUBLICATION.md](PUBLICATION.md) for current behavior. Open work items are tracked in the plans listed in [README.md](README.md#plans).
+This document is a status-oriented roadmap. It is not the authoritative architecture or tool specification. See [ARCHITECTURE.md](ARCHITECTURE.md), [TOOLS.md](TOOLS.md), [LIMITS.md](LIMITS.md), and [PUBLICATION.md](PUBLICATION.md) for current behavior. Open work items, including those carried from archived plans, are tracked below; new living plans are indexed in [README.md](README.md#plans).
 
 ## Completed
 
@@ -50,12 +50,17 @@ From [the code-simplification plan](../archived-doc/simplification-plan.md), fin
 - **The auto-policy clean-staging preflight is unreachable over HTTP,** because `AgentRunRequest.from_dict` always fills `investigation_model_id`.
 - **`read` clamps to 256,000 bytes** regardless of a larger configured `max_read_bytes`.
 - **Starlette/uvicorn versions drift** between `requirements-dev.lock` (0.45.3/0.34.0) and the gateway image (0.52.1).
-- **Three usage formatters** produce different UI strings.
+
+From [the harness validation plan](../archived-doc/harness-validation-plan.md):
+
+- a Qt preflight check that reports whether Qt can initialize offscreen, and a dedicated Qt-enabled validation image or Compose profile;
+- collection checks that fail on unmarked Docker or slow tests, and per-tier test counts in the validation output;
+- JUnit result upload from CI;
+- a structural test that the workflows invoke the shared validator and that documented commands match its tier names.
 
 From [the organization plan](../archived-doc/organization-plan.md):
 
 - **Product naming:** choose one canonical product name for user-facing text and record the legacy `LocalOpenRouterChat`/"Local OpenRouter Chat" runtime identifiers (keyring service, export marker, window title, installer and executable names) once. Renaming them needs a migration decision because the keyring service name protects stored secrets.
-- **Flat test relocation:** move the remaining flat `tests/*.py` files into `tests/unit/<domain>/` (or `integration/`/`security/` once those tiers exist) as they are touched, without dropping assertions.
 
 ## Deferred
 

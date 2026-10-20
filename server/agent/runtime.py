@@ -50,11 +50,12 @@ Append = Callable[[str, str, dict[str, Any]], Awaitable[Any]]
 
 MAX_PARALLEL_TOOL_CALLS = 8
 MAX_TOOL_RESULT_BYTES = 512_000
+EXECUTOR_CONTEXT_HEADER = "LOCAL EXECUTOR CONTEXT"
 EPHEMERAL_CONTEXT_PREFIXES = (
     "UNTRUSTED WORKSPACE INSTRUCTIONS",
     "SKILL [",
     "USER WORKSPACE CONFIGURATION",
-    "LOCAL EXECUTOR CONTEXT",
+    EXECUTOR_CONTEXT_HEADER,
 )
 
 
@@ -123,6 +124,8 @@ class AgentRuntime:
             context = _render_executor_context(
                 status, request.mode, request.approval_policy, budget.snapshot()
             )
+            # A resumed snapshot still carries the context rendered when it was saved.
+            messages = [item for item in messages if not _is_executor_context(item)]
             if context:
                 messages.insert(0, {"role": "system", "content": context})
             await self.append(
@@ -605,6 +608,12 @@ def _is_ephemeral_system_context(message: Message) -> bool:
     )
 
 
+def _is_executor_context(message: Message) -> bool:
+    return message.get("role") == "system" and str(message.get("content") or "").startswith(
+        EXECUTOR_CONTEXT_HEADER
+    )
+
+
 def _render_executor_context(
     status: dict[str, Any],
     mode: str,
@@ -616,7 +625,7 @@ def _render_executor_context(
         return ""
     workspace_root = str(environment.get("workspace_root") or ".")[:20]
     lines = [
-        "LOCAL EXECUTOR CONTEXT (application-generated runtime facts):",
+        f"{EXECUTOR_CONTEXT_HEADER} (application-generated runtime facts):",
         f"- Workspace root is {workspace_root}; use relative POSIX paths.",
     ]
     if mode == "agent":
