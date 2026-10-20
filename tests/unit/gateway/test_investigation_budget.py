@@ -21,7 +21,9 @@ from shared.tools import ToolResult
 
 class FakeExecutor:
     async def execute(self, request):
-        return ToolResult(request.request_id, True, output=f"read {request.arguments.get('path', '')}")
+        return ToolResult(
+            request.request_id, True, output=f"read {request.arguments.get('path', '')}"
+        )
 
 
 class FakeApprovals:
@@ -62,7 +64,10 @@ def test_investigator_prompt_explains_plan_harness_and_budget(monkeypatch):
         return AgentTurn(
             content="The answer is supported by the inspected files.",
             tool_calls=(),
-            message={"role": "assistant", "content": "The answer is supported by the inspected files."},
+            message={
+                "role": "assistant",
+                "content": "The answer is supported by the inspected files.",
+            },
             usage={"total_tokens": 8},
         )
 
@@ -102,7 +107,12 @@ def test_investigator_reserves_final_budget_for_synthesis(monkeypatch):
         if len(calls) == 1:
             return AgentTurn(
                 content="",
-                tool_calls=({"id": "read-1", "function": {"name": "read", "arguments": '{"path":"README.md"}'}},),
+                tool_calls=(
+                    {
+                        "id": "read-1",
+                        "function": {"name": "read", "arguments": '{"path":"README.md"}'},
+                    },
+                ),
                 message={"role": "assistant", "content": ""},
                 usage={"total_tokens": 8},
             )
@@ -150,14 +160,24 @@ def test_investigation_rejects_hallucinated_tool_and_recovers(monkeypatch):
         if len(calls) == 1:
             return AgentTurn(
                 content="",
-                tool_calls=({"id": "glob-1", "function": {"name": "glob", "arguments": '{"pattern":"*.py"}'}},),
+                tool_calls=(
+                    {
+                        "id": "glob-1",
+                        "function": {"name": "glob", "arguments": '{"pattern":"*.py"}'},
+                    },
+                ),
                 message={"role": "assistant", "content": ""},
                 usage={"total_tokens": 8},
             )
         if len(calls) == 2:
             return AgentTurn(
                 content="",
-                tool_calls=({"id": "read-1", "function": {"name": "read", "arguments": '{"path":"README.md"}'}},),
+                tool_calls=(
+                    {
+                        "id": "read-1",
+                        "function": {"name": "read", "arguments": '{"path":"README.md"}'},
+                    },
+                ),
                 message={"role": "assistant", "content": ""},
                 usage={"total_tokens": 8},
             )
@@ -199,7 +219,11 @@ def test_investigation_rejects_hallucinated_tool_and_recovers(monkeypatch):
 
     assert executed == ["read"]
     assert len(calls) == 3
-    assert any("investigation.tool_not_permitted" in message["content"] for message in calls[1] if message.get("role") == "tool")
+    assert any(
+        "investigation.tool_not_permitted" in message["content"]
+        for message in calls[1]
+        if message.get("role") == "tool"
+    )
     event_types = [event[0] for event in events]
     assert event_types.count("subagent.tool_call") == 2
     assert event_types.count("subagent.tool_result") == 2
@@ -216,14 +240,24 @@ def test_investigation_rejects_malformed_and_non_object_json_arguments(monkeypat
         if len(calls) == 1:
             return AgentTurn(
                 content="",
-                tool_calls=({"id": "read-bad-1", "function": {"name": "read", "arguments": '{not-json'}},),
+                tool_calls=(
+                    {
+                        "id": "read-bad-1",
+                        "function": {"name": "read", "arguments": "{not-json"},
+                    },
+                ),
                 message={"role": "assistant", "content": ""},
                 usage={"total_tokens": 8},
             )
         if len(calls) == 2:
             return AgentTurn(
                 content="",
-                tool_calls=({"id": "read-bad-2", "function": {"name": "read", "arguments": '["README.md"]'}},),
+                tool_calls=(
+                    {
+                        "id": "read-bad-2",
+                        "function": {"name": "read", "arguments": '["README.md"]'},
+                    },
+                ),
                 message={"role": "assistant", "content": ""},
                 usage={"total_tokens": 8},
             )
@@ -265,8 +299,16 @@ def test_investigation_rejects_malformed_and_non_object_json_arguments(monkeypat
 
     assert executed == []
     assert len(calls) == 3
-    assert any("investigation.invalid_tool_arguments" in message["content"] for message in calls[1] if message.get("role") == "tool")
-    assert any("investigation.invalid_tool_arguments" in message["content"] for message in calls[2] if message.get("role") == "tool")
+    assert any(
+        "investigation.invalid_tool_arguments" in message["content"]
+        for message in calls[1]
+        if message.get("role") == "tool"
+    )
+    assert any(
+        "investigation.invalid_tool_arguments" in message["content"]
+        for message in calls[2]
+        if message.get("role") == "tool"
+    )
     event_types = [event[0] for event in events]
     assert event_types.count("subagent.tool_call") == 2
     assert event_types.count("subagent.tool_result") == 2
@@ -279,7 +321,12 @@ def test_investigation_budget_exhaustion_returns_partial_success(monkeypatch):
     async def fake_agent_turn(*args, **kwargs):
         return AgentTurn(
             content="",
-            tool_calls=({"id": "read-1", "function": {"name": "read", "arguments": '{"path":"README.md"}'}},),
+            tool_calls=(
+                {
+                    "id": "read-1",
+                    "function": {"name": "read", "arguments": '{"path":"README.md"}'},
+                },
+            ),
             message={"role": "assistant", "content": ""},
             usage={"total_tokens": 8},
         )
@@ -291,7 +338,9 @@ def test_investigation_budget_exhaustion_returns_partial_success(monkeypatch):
         self.check()
 
     monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
-    monkeypatch.setattr(investigation_module.RunBudget, "consume_tool_call", fail_investigation_tool_call)
+    monkeypatch.setattr(
+        investigation_module.RunBudget, "consume_tool_call", fail_investigation_tool_call
+    )
     runtime = make_runtime()
     messages = []
     parent_budget = RunBudget(100, 600, 1.0, 100, "test")
@@ -314,17 +363,34 @@ def test_investigation_budget_exhaustion_returns_partial_success(monkeypatch):
 
 
 def test_parent_and_investigation_budgets_are_tripled():
-    assert (STANDARD_CODING_PROFILE.max_iterations, STANDARD_CODING_PROFILE.max_tool_calls) == (600, 900)
-    assert (EXTENDED_CODING_PROFILE.max_iterations, EXTENDED_CODING_PROFILE.max_tool_calls) == (1_200, 1_800)
-    assert (LARGE_CODING_PROFILE.max_iterations, LARGE_CODING_PROFILE.max_tool_calls) == (1_800, 2_700)
-    assert (investigation_module.INVESTIGATION_MAX_ITERATIONS, investigation_module.INVESTIGATION_MAX_TOOL_CALLS) == (36, 36)
+    assert (STANDARD_CODING_PROFILE.max_iterations, STANDARD_CODING_PROFILE.max_tool_calls) == (
+        600,
+        900,
+    )
+    assert (EXTENDED_CODING_PROFILE.max_iterations, EXTENDED_CODING_PROFILE.max_tool_calls) == (
+        1_200,
+        1_800,
+    )
+    assert (LARGE_CODING_PROFILE.max_iterations, LARGE_CODING_PROFILE.max_tool_calls) == (
+        1_800,
+        2_700,
+    )
+    assert (
+        investigation_module.INVESTIGATION_MAX_ITERATIONS,
+        investigation_module.INVESTIGATION_MAX_TOOL_CALLS,
+    ) == (36, 36)
 
 
 def test_investigation_child_wall_time_is_capped_independently_of_parent(monkeypatch):
     events = []
 
     async def fake_agent_turn(*args, **kwargs):
-        return AgentTurn(content="Done.", tool_calls=(), message={"role": "assistant", "content": "Done."}, usage={"total_tokens": 8})
+        return AgentTurn(
+            content="Done.",
+            tool_calls=(),
+            message={"role": "assistant", "content": "Done."},
+            usage={"total_tokens": 8},
+        )
 
     async def append_event(run_id, event_type, payload):
         events.append((event_type, payload))
@@ -334,10 +400,22 @@ def test_investigation_child_wall_time_is_capped_independently_of_parent(monkeyp
     runtime._api_keys["run-1"] = "api-key"
     parent_budget = RunBudget(100, 1_500, 1.0, 100, "test")
 
-    asyncio.run(runtime._investigate_repository("run-1", make_request(), "investigate-1", json.dumps({"query": "q"}), [], parent_budget))
+    asyncio.run(
+        runtime._investigate_repository(
+            "run-1",
+            make_request(),
+            "investigate-1",
+            json.dumps({"query": "q"}),
+            [],
+            parent_budget,
+        )
+    )
 
     started = next(payload for kind, payload in events if kind == "subagent.started")
-    assert started["budget"]["max_wall_seconds"] == investigation_module.INVESTIGATION_MAX_WALL_SECONDS
+    assert (
+        started["budget"]["max_wall_seconds"]
+        == investigation_module.INVESTIGATION_MAX_WALL_SECONDS
+    )
     assert investigation_module.INVESTIGATION_MAX_WALL_SECONDS == 300
 
 
@@ -345,18 +423,38 @@ def test_investigation_wall_seconds_never_exceeds_ceiling_for_any_parent_remaini
     for remaining in (0, 5, 10, 299, 300, 301, 1_500, 5_400):
         parent = RunBudget(100, remaining, 1.0, 100, "test")
         wall = investigation_module.investigation_wall_seconds(parent)
-        assert investigation_module.INVESTIGATION_MIN_WALL_SECONDS <= wall <= investigation_module.INVESTIGATION_MAX_WALL_SECONDS
-        if investigation_module.INVESTIGATION_MIN_WALL_SECONDS < remaining < investigation_module.INVESTIGATION_MAX_WALL_SECONDS:
+        assert (
+            investigation_module.INVESTIGATION_MIN_WALL_SECONDS
+            <= wall
+            <= investigation_module.INVESTIGATION_MAX_WALL_SECONDS
+        )
+        if (
+            investigation_module.INVESTIGATION_MIN_WALL_SECONDS
+            < remaining
+            < investigation_module.INVESTIGATION_MAX_WALL_SECONDS
+        ):
             assert wall <= remaining
 
 
 class TurnExecutor(FakeExecutor):
     async def status(self):
-        return {"workspace_id": "workspace", "environment": {"workspace_root": "/work", "limits": {}}}
+        return {
+            "workspace_id": "workspace",
+            "environment": {"workspace_root": "/work", "limits": {}},
+        }
 
 
 def _investigate_calls(turn: int, count: int) -> tuple[dict, ...]:
-    return tuple({"id": f"inv-{turn}-{index}", "function": {"name": "investigate_repository", "arguments": json.dumps({"query": f"question {index}"})}} for index in range(count))
+    return tuple(
+        {
+            "id": f"inv-{turn}-{index}",
+            "function": {
+                "name": "investigate_repository",
+                "arguments": json.dumps({"query": f"question {index}"}),
+            },
+        }
+        for index in range(count)
+    )
 
 
 def test_investigation_call_budget_resets_each_turn(monkeypatch):
@@ -365,7 +463,12 @@ def test_investigation_call_budget_resets_each_turn(monkeypatch):
 
     async def fake_agent_turn(model, messages, api_key, mode, *args, **kwargs):
         if model != "parent-model":
-            return AgentTurn(content="Found it.", tool_calls=(), message={"role": "assistant", "content": "Found it."}, usage={"total_tokens": 8})
+            return AgentTurn(
+                content="Found it.",
+                tool_calls=(),
+                message={"role": "assistant", "content": "Found it."},
+                usage={"total_tokens": 8},
+            )
         parent_turns.append(len(parent_turns) + 1)
         if len(parent_turns) == 1:
             calls = _investigate_calls(1, 5)
@@ -373,8 +476,18 @@ def test_investigation_call_budget_resets_each_turn(monkeypatch):
             calls = _investigate_calls(2, 4)
         else:
             final_messages.extend(messages)
-            return AgentTurn(content="All done.", tool_calls=(), message={"role": "assistant", "content": "All done."}, usage={"total_tokens": 8})
-        return AgentTurn(content="", tool_calls=calls, message={"role": "assistant", "content": "", "tool_calls": list(calls)}, usage={"total_tokens": 8})
+            return AgentTurn(
+                content="All done.",
+                tool_calls=(),
+                message={"role": "assistant", "content": "All done."},
+                usage={"total_tokens": 8},
+            )
+        return AgentTurn(
+            content="",
+            tool_calls=calls,
+            message={"role": "assistant", "content": "", "tool_calls": list(calls)},
+            usage={"total_tokens": 8},
+        )
 
     events = []
 
@@ -387,7 +500,11 @@ def test_investigation_call_budget_resets_each_turn(monkeypatch):
     asyncio.run(runtime.run("run-1", make_request(), "api-key"))
 
     assert "run.failed" not in [kind for kind, _ in events]
-    results = {message["tool_call_id"]: json.loads(message["content"]) for message in final_messages if message.get("role") == "tool"}
+    results = {
+        message["tool_call_id"]: json.loads(message["content"])
+        for message in final_messages
+        if message.get("role") == "tool"
+    }
     turn_one = [results[f"inv-1-{index}"] for index in range(5)]
     turn_two = [results[f"inv-2-{index}"] for index in range(4)]
     assert all(item.get("summary") == "Found it." for item in turn_one[:4])
@@ -397,15 +514,28 @@ def test_investigation_call_budget_resets_each_turn(monkeypatch):
 
 
 def _read_call(call_id: str, path: str = "README.md") -> dict:
-    return {"id": call_id, "function": {"name": "read", "arguments": json.dumps({"path": path})}}
+    return {
+        "id": call_id,
+        "function": {"name": "read", "arguments": json.dumps({"path": path})},
+    }
 
 
 def _tool_turn(*calls: dict) -> AgentTurn:
-    return AgentTurn(content="", tool_calls=tuple(calls), message={"role": "assistant", "content": "", "tool_calls": list(calls)}, usage={"total_tokens": 8})
+    return AgentTurn(
+        content="",
+        tool_calls=tuple(calls),
+        message={"role": "assistant", "content": "", "tool_calls": list(calls)},
+        usage={"total_tokens": 8},
+    )
 
 
 def _text_turn(text: str) -> AgentTurn:
-    return AgentTurn(content=text, tool_calls=(), message={"role": "assistant", "content": text}, usage={"total_tokens": 8})
+    return AgentTurn(
+        content=text,
+        tool_calls=(),
+        message={"role": "assistant", "content": text},
+        usage={"total_tokens": 8},
+    )
 
 
 def _investigate(runtime: AgentRuntime, parent_budget: RunBudget | None = None) -> dict:
@@ -426,7 +556,9 @@ def _investigate(runtime: AgentRuntime, parent_budget: RunBudget | None = None) 
 
 def _assert_tool_calls_answered(messages: list[dict]) -> None:
     """Every assistant tool call must be followed by a tool result before the next model turn."""
-    answered = {message["tool_call_id"] for message in messages if message.get("role") == "tool"}
+    answered = {
+        message["tool_call_id"] for message in messages if message.get("role") == "tool"
+    }
     for message in messages:
         for call in message.get("tool_calls") or ():
             assert call["id"] in answered, f"dangling tool call {call['id']}"
@@ -439,9 +571,16 @@ def test_budget_boundary_mid_turn_answers_every_tool_call_before_synthesis(monke
     calls = []
 
     async def fake_agent_turn(model, messages, *args, **kwargs):
-        calls.append({"messages": [dict(item) for item in messages], "allowed_tools": kwargs["allowed_tools"]})
+        calls.append(
+            {
+                "messages": [dict(item) for item in messages],
+                "allowed_tools": kwargs["allowed_tools"],
+            }
+        )
         if kwargs["allowed_tools"]:
-            return _tool_turn(*(_read_call(f"read-{index}", f"file{index}.py") for index in range(5)))
+            return _tool_turn(
+                *(_read_call(f"read-{index}", f"file{index}.py") for index in range(5))
+            )
         return _text_turn("Synthesized from partial evidence.")
 
     monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
@@ -450,7 +589,11 @@ def test_budget_boundary_mid_turn_answers_every_tool_call_before_synthesis(monke
     assert len(calls) == 2
     assert calls[1]["allowed_tools"] == set()
     _assert_tool_calls_answered(calls[1]["messages"])
-    reserved = [m for m in calls[1]["messages"] if m.get("role") == "tool" and "investigation.budget_reserved" in m["content"]]
+    reserved = [
+        m
+        for m in calls[1]["messages"]
+        if m.get("role") == "tool" and "investigation.budget_reserved" in m["content"]
+    ]
     assert len(reserved) == 3
     assert result["summary"] == "Synthesized from partial evidence."
     assert result["truncated"] is True
@@ -478,7 +621,9 @@ def test_wall_time_reserve_stops_exploration_and_still_returns_summary(monkeypat
     assert result["budget_exhausted"] is True
     assert calls[-1]["allowed_tools"] == set()
     assert calls[-1]["timeout"] >= 60
-    assert all(call["timeout"] <= investigation_module.INVESTIGATION_MAX_TURN_SECONDS for call in calls)
+    assert all(
+        call["timeout"] <= investigation_module.INVESTIGATION_MAX_TURN_SECONDS for call in calls
+    )
 
 
 def test_empty_final_answer_requests_an_explicit_synthesis(monkeypatch):
@@ -521,7 +666,9 @@ def test_transient_provider_errors_are_retried(monkeypatch):
     async def fake_agent_turn(*args, **kwargs):
         attempts.append(1)
         if len(attempts) < 3:
-            raise investigation_module.ProviderError("provider.agent_error", "OpenRouter agent request failed (502).", retryable=True)
+            raise investigation_module.ProviderError(
+                "provider.agent_error", "OpenRouter agent request failed (502).", retryable=True
+            )
         return _text_turn("Recovered after retries.")
 
     async def no_sleep(_seconds):
@@ -543,7 +690,10 @@ def test_provider_failure_after_evidence_still_returns_a_summary(monkeypatch):
         if len(calls) == 1:
             return _tool_turn(_read_call("read-1", "src/app.py"))
         if kwargs["allowed_tools"]:
-            raise investigation_module.ProviderError("provider.agent_error", "OpenRouter agent request failed (400): context too long.")
+            raise investigation_module.ProviderError(
+                "provider.agent_error",
+                "OpenRouter agent request failed (400): context too long.",
+            )
         return _text_turn("Summary from gathered evidence.")
 
     monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
@@ -556,7 +706,9 @@ def test_provider_failure_after_evidence_still_returns_a_summary(monkeypatch):
 
 def test_provider_failure_without_evidence_reports_failure(monkeypatch):
     async def fake_agent_turn(*args, **kwargs):
-        raise investigation_module.ProviderError("provider.agent_error", "OpenRouter agent request failed (401): bad key.")
+        raise investigation_module.ProviderError(
+            "provider.agent_error", "OpenRouter agent request failed (401): bad key."
+        )
 
     monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
     result = _investigate(make_runtime())

@@ -9,7 +9,15 @@ import scripts.validate as validate
 def test_validation_commands_use_explicit_tiers_and_active_python() -> None:
     commands = validate.commands("all")
     assert commands
-    assert [name for name, _ in commands] == ["fast", "slow", "ruff", "compile", "qml", "docker"]
+    assert [name for name, _ in commands] == [
+        "fast",
+        "slow",
+        "ruff",
+        "ruff-format",
+        "compile",
+        "qml",
+        "docker",
+    ]
     assert commands[0][1][:3] == [validate.sys.executable, "-m", "pytest"]
     assert commands[0][1][-1] == "not slow and not docker"
     assert validate.commands("slow")[0][1][-1] == "slow and not docker"
@@ -56,7 +64,9 @@ def test_preflight_has_bounded_safe_records(monkeypatch) -> None:
     monkeypatch.setattr(validate.shutil, "which", lambda name: None)
     report = validate.preflight("docker")
     assert report["schema_version"] == 1
-    assert all(set(item) == {"name", "status", "version", "detail"} for item in report["checks"])
+    assert all(
+        set(item) == {"name", "status", "version", "detail"} for item in report["checks"]
+    )
     assert not any("OPENROUTER" in str(item) for item in report["checks"])
 
 
@@ -80,5 +90,11 @@ def test_validation_scripts_and_lock_are_repository_owned() -> None:
 
 def test_validate_script_runs_as_a_command() -> None:
     root = Path(validate.__file__).resolve().parents[1]
-    result = subprocess.run([validate.sys.executable, "scripts/validate.py", "preflight"], cwd=root, capture_output=True, text=True, timeout=60)
+    result = subprocess.run(
+        [validate.sys.executable, "scripts/validate.py", "preflight"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
     assert " python: " in result.stdout

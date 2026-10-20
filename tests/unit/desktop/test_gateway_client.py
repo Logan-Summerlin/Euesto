@@ -87,7 +87,9 @@ def test_discard_staging_uses_the_selected_workspace(monkeypatch) -> None:
 
 
 def test_inspect_staging_rejects_malformed_success_response(monkeypatch) -> None:
-    gateway, _calls = _gateway(monkeypatch, lambda _request: httpx.Response(200, json={"ok": True}))
+    gateway, _calls = _gateway(
+        monkeypatch, lambda _request: httpx.Response(200, json={"ok": True})
+    )
 
     with pytest.raises(GatewayError, match="invalid staging inspection"):
         gateway.inspect_staging("workspace-1")
@@ -111,7 +113,9 @@ def test_streamed_error_response_reports_the_gateway_error(monkeypatch) -> None:
 
 def test_agent_events_map_the_final_model_delta_and_completion() -> None:
     def envelope(event_id: int, event_type: str, payload: dict) -> EventEnvelope:
-        return EventEnvelope(event_id, "run-1", event_type, "2026-01-01T00:00:00+00:00", payload)
+        return EventEnvelope(
+            event_id, "run-1", event_type, "2026-01-01T00:00:00+00:00", payload
+        )
 
     delta = _map_event(envelope(10, "model.delta", {"text": "Task complete."}), run_id="run-1")
     completed = _map_event(envelope(11, "run.completed", {"iterations": 1}), run_id="run-1")

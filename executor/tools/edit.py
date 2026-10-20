@@ -31,7 +31,9 @@ from ..utf8 import Utf8Validator
 
 EDIT_CHUNK_BYTES = 64 * 1024
 EDIT_DIFF_MEMORY_BYTES = 1_000_000
-EDIT_ARGUMENTS = frozenset({"path", "old_str", "new_str", "expected_occurrences", "expected_sha256"})
+EDIT_ARGUMENTS = frozenset(
+    {"path", "old_str", "new_str", "expected_occurrences", "expected_sha256"}
+)
 MAX_DIAGNOSTIC_MATCH_LINES = 10
 MAX_DIAGNOSTIC_PREVIEW_CHARS = 240
 
@@ -68,7 +70,9 @@ def edit(
     if set(arguments) - EDIT_ARGUMENTS:
         raise ExecutorToolError(INVALID_ARGUMENTS, "Unknown edit arguments")
     prepared = prepare_edit(root, arguments, max_target_bytes=max_target_bytes)
-    with checkpointed(root, max_files=max_checkpoint_files, max_total_bytes=max_checkpoint_bytes) as checkpoint_id:
+    with checkpointed(
+        root, max_files=max_checkpoint_files, max_total_bytes=max_checkpoint_bytes
+    ) as checkpoint_id:
         applied = apply_edit(prepared, max_result_bytes=max_result_bytes)
     data = edit_result(prepared, applied)
     data["checkpoint_id"] = checkpoint_id
@@ -89,7 +93,13 @@ def prepare_edit(root: Path, arguments: dict, *, max_target_bytes: int) -> Prepa
     if not isinstance(relative, str) or not relative:
         raise ExecutorToolError(INVALID_ARGUMENTS, "edit requires a file path")
     malformed = {"failure": "malformed_context", "path": relative}
-    if not isinstance(old, str) or not old or not isinstance(new, str) or "\x00" in old or "\x00" in new:
+    if (
+        not isinstance(old, str)
+        or not old
+        or not isinstance(new, str)
+        or "\x00" in old
+        or "\x00" in new
+    ):
         raise ExecutorToolError(
             EDIT_MALFORMED_CONTEXT,
             "edit requires a non-empty old_str and a new_str without NUL characters",
@@ -106,10 +116,14 @@ def prepare_edit(root: Path, arguments: dict, *, max_target_bytes: int) -> Prepa
     target_size = path.stat().st_size
     if target_size > max_target_bytes:
         raise ExecutorToolError(LIMIT_EXCEEDED, "Edit target exceeds the mutation limit")
-    original_small = path.read_text(encoding="utf-8") if target_size <= EDIT_DIFF_MEMORY_BYTES else None
+    original_small = (
+        path.read_text(encoding="utf-8") if target_size <= EDIT_DIFF_MEMORY_BYTES else None
+    )
     old_hash = sha256_file(path)
     check_expected_sha256(relative, arguments.get("expected_sha256"), old_hash)
-    return PreparedEdit(relative, path, old, new, expected_occurrences, old_hash, original_small)
+    return PreparedEdit(
+        relative, path, old, new, expected_occurrences, old_hash, original_small
+    )
 
 
 def apply_edit(prepared: PreparedEdit, *, max_result_bytes: int) -> AppliedEdit:
@@ -133,7 +147,13 @@ def apply_edit(prepared: PreparedEdit, *, max_result_bytes: int) -> AppliedEdit:
             alt_temp, alt_actual = _stream_replace(path, alt_old, alt_new, max_result_bytes)
             if alt_actual:
                 temp_path.unlink(missing_ok=True)
-                temp_path, actual, old, new, adjustment = alt_temp, alt_actual, alt_old, alt_new, label
+                temp_path, actual, old, new, adjustment = (
+                    alt_temp,
+                    alt_actual,
+                    alt_old,
+                    alt_new,
+                    label,
+                )
             else:
                 alt_temp.unlink(missing_ok=True)
         if actual != prepared.expected_occurrences:
@@ -160,7 +180,9 @@ def edit_result(prepared: PreparedEdit, applied: AppliedEdit) -> dict:
     relative = prepared.relative
     if prepared.original_small is not None:
         current = path.read_text(encoding="utf-8")
-        diff = bounded_diff(path, prepared.original_small, current, fromfile=relative, tofile=relative)
+        diff = bounded_diff(
+            path, prepared.original_small, current, fromfile=relative, tofile=relative
+        )
     else:
         diff = bounded_edit_diff(relative, applied.actual_occurrences, applied.old, applied.new)
     data = {
@@ -178,18 +200,26 @@ def edit_result(prepared: PreparedEdit, applied: AppliedEdit) -> dict:
 
 
 def _bounded_int(value: object, minimum: int, maximum: int) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and minimum <= value <= maximum
+    return (
+        isinstance(value, int) and not isinstance(value, bool) and minimum <= value <= maximum
+    )
 
 
 def _line_ending_variant(old: str, new: str) -> tuple[str, str, str] | None:
     if "\r\n" in old:
         return old.replace("\r\n", "\n"), new.replace("\r\n", "\n"), "crlf_to_lf"
     if "\n" in old:
-        return old.replace("\n", "\r\n"), new.replace("\r\n", "\n").replace("\n", "\r\n"), "lf_to_crlf"
+        return (
+            old.replace("\n", "\r\n"),
+            new.replace("\r\n", "\n").replace("\n", "\r\n"),
+            "lf_to_crlf",
+        )
     return None
 
 
-def _match_error(prepared: PreparedEdit, actual: int, matched_old: str, adjustment: str | None) -> ExecutorToolError:
+def _match_error(
+    prepared: PreparedEdit, actual: int, matched_old: str, adjustment: str | None
+) -> ExecutorToolError:
     expected = prepared.expected_occurrences
     if actual == 0:
         code, failure = EDIT_NO_MATCH, "zero_matches"
@@ -206,7 +236,11 @@ def _match_error(prepared: PreparedEdit, actual: int, matched_old: str, adjustme
     }
     hint = ""
     if prepared.original_small is not None:
-        details.update(_diagnostics(prepared.original_small, matched_old if actual else prepared.old, actual))
+        details.update(
+            _diagnostics(
+                prepared.original_small, matched_old if actual else prepared.old, actual
+            )
+        )
         if details.get("hints"):
             hint = " Hints: " + "; ".join(str(item) for item in details["hints"]) + "."
     else:
@@ -222,7 +256,10 @@ def _diagnostics(text: str, old: str, actual: int) -> dict[str, object]:
     """Bounded, escaped hints about why an exact edit did not match; never applied."""
     file_endings = _line_endings(text)
     old_endings = _line_endings(old)
-    result: dict[str, object] = {"file_line_endings": file_endings, "old_str_line_endings": old_endings}
+    result: dict[str, object] = {
+        "file_line_endings": file_endings,
+        "old_str_line_endings": old_endings,
+    }
     if actual:
         lines: list[int] = []
         start = 0
@@ -233,22 +270,28 @@ def _diagnostics(text: str, old: str, actual: int) -> dict[str, object]:
             lines.append(text.count("\n", 0, index) + 1)
             start = index + 1
         result["match_lines"] = lines
-        result["hints"] = ["set expected_occurrences to the intended count or add surrounding context to old_str"]
+        result["hints"] = [
+            "set expected_occurrences to the intended count or add surrounding context to old_str"
+        ]
         return result
     hints: list[str] = []
     if file_endings != old_endings and "none" not in (file_endings, old_endings):
         hints.append("line endings differ between old_str and the file")
     if _collapse(old) and _collapse(old) in _collapse(text):
-        hints.append("old_str matches only if whitespace or indentation is ignored; copy it exactly from a fresh read")
+        hints.append(
+            "old_str matches only if whitespace or indentation is ignored; copy it exactly from a fresh read"
+        )
     first = next((line.strip() for line in old.splitlines() if line.strip()), "")
     if first:
         for number, line in enumerate(text.splitlines(), 1):
             if first in line:
                 result["closest_line"] = number
                 offset = sum(len(item) for item in text.splitlines(keepends=True)[: number - 1])
-                excerpt = text[max(0, offset - 40): offset + MAX_DIAGNOSTIC_PREVIEW_CHARS]
+                excerpt = text[max(0, offset - 40) : offset + MAX_DIAGNOSTIC_PREVIEW_CHARS]
                 result["context_preview"] = repr(excerpt)[: MAX_DIAGNOSTIC_PREVIEW_CHARS + 2]
-                hints.append(f"the first non-blank line of old_str appears at line {number}; compare the context preview")
+                hints.append(
+                    f"the first non-blank line of old_str appears at line {number}; compare the context preview"
+                )
                 break
     if not hints:
         hints.append("no similar text found; re-read the file before retrying")
@@ -270,7 +313,9 @@ def _collapse(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
-def _stream_replace(path: Path, old_text: str, new_text: str, max_result_bytes: int) -> tuple[Path, int]:
+def _stream_replace(
+    path: Path, old_text: str, new_text: str, max_result_bytes: int
+) -> tuple[Path, int]:
     """Write *path* with every ``old_text`` replaced to a sibling temporary file.
 
     The source is streamed in chunks (validating UTF-8 as it goes), keeping just enough

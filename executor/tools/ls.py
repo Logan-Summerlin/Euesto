@@ -38,10 +38,14 @@ def ls(
             if time.monotonic() >= deadline:
                 expired = True
                 return
-            if not path.is_symlink() and not is_tool_excluded(path.relative_to(root).as_posix()):
+            if not path.is_symlink() and not is_tool_excluded(
+                path.relative_to(root).as_posix()
+            ):
                 yield path
 
-    children = heapq.nsmallest(cursor + maximum + 1, visible(), key=lambda item: item.name.casefold())
+    children = heapq.nsmallest(
+        cursor + maximum + 1, visible(), key=lambda item: item.name.casefold()
+    )
     page = children[cursor : cursor + maximum]
     has_more = len(children) > cursor + maximum
     lines = [listing_line(root, path, details) for path in page]

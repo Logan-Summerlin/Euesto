@@ -55,9 +55,13 @@ class GatewayStatus:
             model_catalog_age_seconds=optional_float(data.get("model_catalog_age_seconds")),
             executor_present=bool(data.get("executor_present")),
             executor_status=str(data.get("executor_status") or "unavailable"),
-            active_workspace=(str(data["active_workspace"]) if data.get("active_workspace") else None),
+            active_workspace=(
+                str(data["active_workspace"]) if data.get("active_workspace") else None
+            ),
             openrouter_key_configured=bool(data.get("openrouter_key_configured")),
-            capabilities=tuple(dict(item) for item in data.get("capabilities") or () if isinstance(item, dict)),
+            capabilities=tuple(
+                dict(item) for item in data.get("capabilities") or () if isinstance(item, dict)
+            ),
             resumable_runs=tuple(str(item) for item in data.get("resumable_runs") or ()),
         )
 

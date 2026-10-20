@@ -78,11 +78,14 @@ class GenerationService(QObject):
     def _workspace_mode_available(self, mode: str) -> bool:
         runtime = self.host.runtime
         if not runtime.workspace_path:
-            self.host.errorRequested.emit("Workspace required", "Select one project workspace first.")
+            self.host.errorRequested.emit(
+                "Workspace required", "Select one project workspace first."
+            )
         elif not runtime.workspace_ready():
             self.host.errorRequested.emit(
                 "Workspace is still preparing",
-                runtime.detail or "Wait for the isolated executor to become ready, then try again.",
+                runtime.detail
+                or "Wait for the isolated executor to become ready, then try again.",
             )
         elif not runtime.mode_available(mode):
             self.host.errorRequested.emit(
@@ -138,7 +141,9 @@ class GenerationService(QObject):
 
         def enable() -> None:
             self.accept_edits = True
-            self.host.set_status("Staged edits are accepted without prompts for this Agent session")
+            self.host.set_status(
+                "Staged edits are accepted without prompts for this Agent session"
+            )
 
         self.host.confirm(
             f"enable-accept-edits:{self.host.runtime.workspace_path}",
@@ -210,7 +215,8 @@ class GenerationService(QObject):
         api_key = get_api_key()
         if not api_key:
             self.host.errorRequested.emit(
-                "OpenRouter API key required", "Open Settings → Connection and store an API key."
+                "OpenRouter API key required",
+                "Open Settings → Connection and store an API key.",
             )
             return None
         connection = self.host.runtime.connection()
@@ -252,7 +258,9 @@ class GenerationService(QObject):
         edited = self.storage.edit_user_message(message_id, value.strip())
         self.host.history.refresh_transcript(force_reset=True)
         context = self.storage.list_messages(original.conversation_id)
-        self.start_generation(*credentials, self.host.history.current_model(), edited.id, context)
+        self.start_generation(
+            *credentials, self.host.history.current_model(), edited.id, context
+        )
 
     def regenerate_message(self, message_id: int) -> None:
         original = self.storage.get_message(message_id)
@@ -263,7 +271,9 @@ class GenerationService(QObject):
             return
         parent_id = original.parent_message_id
         context = self.storage.list_branch_to(original.conversation_id, parent_id)
-        self.start_generation(*credentials, self.host.history.current_model(), parent_id, context)
+        self.start_generation(
+            *credentials, self.host.history.current_model(), parent_id, context
+        )
 
     def start_generation(
         self,
@@ -283,7 +293,10 @@ class GenerationService(QObject):
         self.controller.begin(conversation.id, parent_message_id, model, self.mode)
         self.live_events = []
         options = settings.request_options(model)
-        privacy = {"data_collection": options.data_collection, "zdr": options.zero_data_retention}
+        privacy = {
+            "data_collection": options.data_collection,
+            "zdr": options.zero_data_retention,
+        }
         if self.mode == "chat":
             worker: ChatWorker | AgentWorker = ChatWorker(
                 GatewayClient(connection),
@@ -321,7 +334,9 @@ class GenerationService(QObject):
             )
             worker.eventReceived.connect(self.on_agent_event)
         self._attach(worker)
-        suffix = f" · compacted {prepared.removed_messages}" if prepared.removed_messages else ""
+        suffix = (
+            f" · compacted {prepared.removed_messages}" if prepared.removed_messages else ""
+        )
         self.host.set_status(f"≈{prepared.estimated_tokens:,} input tokens{suffix}")
         self.host.history.refresh_transcript()
         worker.start()
@@ -380,7 +395,9 @@ class GenerationService(QObject):
         except (TypeError, ValueError):
             pass
         if event_type == "tool.started":
-            self.host.set_status(f"Running {payload.get('tool', 'tool')} in the isolated executor…")
+            self.host.set_status(
+                f"Running {payload.get('tool', 'tool')} in the isolated executor…"
+            )
         elif event_type == "approval.required":
             self._request_approval(event)
         elif event_type == "checkpoint.created" and payload.get("publish_manifest"):
@@ -401,7 +418,9 @@ class GenerationService(QObject):
         approval_id = str(payload.get("approval_id") or "")
         kind = str(payload.get("kind") or "tool")
         detail = payload.get("manifest") if kind == "publish" else payload.get("arguments")
-        summary, full_detail = approval_display(kind, str(payload.get("tool") or "tool"), detail)
+        summary, full_detail = approval_display(
+            kind, str(payload.get("tool") or "tool"), detail
+        )
         key = f"{event.run_id}:{approval_id}"
         self._pending_approvals[key] = {
             "runId": event.run_id,
@@ -411,7 +430,9 @@ class GenerationService(QObject):
         self.host.approvalRequested.emit(
             {
                 "key": key,
-                "title": "Publish staged changes?" if kind == "publish" else "Approve isolated tool?",
+                "title": "Publish staged changes?"
+                if kind == "publish"
+                else "Approve isolated tool?",
                 "summary": summary,
                 "details": full_detail,
                 "allowRule": kind == "tool",
@@ -453,7 +474,10 @@ class GenerationService(QObject):
         if self._auto_run():
             self.auto_mode = False
         usage = self.worker.last_usage if isinstance(self.worker, AgentWorker) else {}
-        if self.controller.save_assistant(usage, finish_reason="error", status="failed") is None:
+        if (
+            self.controller.save_assistant(usage, finish_reason="error", status="failed")
+            is None
+        ):
             self.controller.finish_without_message("failed", message)
         self._end_stream("Request failed")
         self.host.errorRequested.emit("Gateway request failed", message)
@@ -481,7 +505,9 @@ class GenerationService(QObject):
     def continue_queued_input(self) -> None:
         queued = self.controller.next_input()
         if queued:
-            self.host.set_status("Applying steering…" if queued.steered else "Sending queued message…")
+            self.host.set_status(
+                "Applying steering…" if queued.steered else "Sending queued message…"
+            )
             QTimer.singleShot(0, lambda value=queued.text: self.start_user_turn(value))
 
     # -- control -----------------------------------------------------------------------

@@ -67,7 +67,9 @@ class GatewayCatalog:
                 payload = response.json()
         except (httpx.HTTPError, ValueError, TypeError) as exc:
             raise ProviderError(
-                "catalog.unavailable", f"Could not refresh the model catalog: {exc}", retryable=True
+                "catalog.unavailable",
+                f"Could not refresh the model catalog: {exc}",
+                retryable=True,
             ) from exc
         raw_models = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(raw_models, list):

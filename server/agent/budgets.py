@@ -171,9 +171,7 @@ class RunBudget:
             )
         elapsed = self.elapsed_seconds
         if elapsed > self.max_wall_seconds:
-            raise BudgetExceededError(
-                "wall-time", elapsed, self.max_wall_seconds, "seconds"
-            )
+            raise BudgetExceededError("wall-time", elapsed, self.max_wall_seconds, "seconds")
         if self.cost > self.max_cost:
             raise BudgetExceededError("cost", self.cost, self.max_cost, "USD")
 

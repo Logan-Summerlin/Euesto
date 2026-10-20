@@ -17,8 +17,12 @@ def _tool_summary(tool: str, detail: object) -> str:
     values = detail if isinstance(detail, dict) else {}
     if tool == "apply_patch" and isinstance(values.get("operations"), list):
         operations = [item for item in values["operations"] if isinstance(item, dict)]
-        lines = [f"Tool approval: apply_patch · {len(operations)} operation(s), applied all-or-nothing"]
-        lines.extend(f"{item.get('operation', '?')}: {item.get('path', '?')}" for item in operations[:12])
+        lines = [
+            f"Tool approval: apply_patch · {len(operations)} operation(s), applied all-or-nothing"
+        ]
+        lines.extend(
+            f"{item.get('operation', '?')}: {item.get('path', '?')}" for item in operations[:12]
+        )
         if len(operations) > 12:
             lines.append(f"… and {len(operations) - 12} more operation(s)")
         return "\n".join(lines)
@@ -30,7 +34,11 @@ def _publish_summary(detail: object) -> str:
     values = detail if isinstance(detail, dict) else {}
     operations = values.get("operations") if isinstance(values.get("operations"), list) else []
     batch_count = values.get("batch_count")
-    batch = f" (batch {values.get('batch_index')} of {batch_count})" if isinstance(batch_count, int) and batch_count > 1 else ""
+    batch = (
+        f" (batch {values.get('batch_index')} of {batch_count})"
+        if isinstance(batch_count, int) and batch_count > 1
+        else ""
+    )
     lines = [f"Publish approval{batch}: {len(operations)} file operation(s)"]
     for item in operations[:12]:
         if isinstance(item, dict):

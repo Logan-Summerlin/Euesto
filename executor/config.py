@@ -73,7 +73,11 @@ class ExecutorConfig:
 
     @property
     def required_capacity_bytes(self) -> int:
-        return self.max_staging_bytes + self.max_checkpoint_bytes + self.REQUIRED_TEMP_HEADROOM_BYTES
+        return (
+            self.max_staging_bytes
+            + self.max_checkpoint_bytes
+            + self.REQUIRED_TEMP_HEADROOM_BYTES
+        )
 
     def validate_storage_capacity(self, actual_capacity_bytes: int) -> None:
         if actual_capacity_bytes < 1:
@@ -114,8 +118,13 @@ class ExecutorConfig:
 
     @classmethod
     def from_environment(cls) -> ExecutorConfig:
-        token_path = Path(os.environ.get("LOCAL_CHAT_EXECUTOR_TOKEN_FILE", "/run/ipc/executor_token"))
-        profile = os.environ.get("LOCAL_CHAT_EXECUTOR_PROFILE", "coding").strip().casefold() or "coding"
+        token_path = Path(
+            os.environ.get("LOCAL_CHAT_EXECUTOR_TOKEN_FILE", "/run/ipc/executor_token")
+        )
+        profile = (
+            os.environ.get("LOCAL_CHAT_EXECUTOR_PROFILE", "coding").strip().casefold()
+            or "coding"
+        )
         profiles = cls._profiles()
         if profile not in profiles:
             raise ValueError(f"Unknown executor profile: {profile}")
@@ -135,7 +144,9 @@ class ExecutorConfig:
         return cls(
             source_root=Path(os.environ.get("LOCAL_CHAT_SOURCE_ROOT", "/source")),
             work_root=Path(os.environ.get("LOCAL_CHAT_WORK_ROOT", "/work")),
-            socket_path=Path(os.environ.get("LOCAL_CHAT_EXECUTOR_SOCKET", "/run/ipc/executor.sock")),
+            socket_path=Path(
+                os.environ.get("LOCAL_CHAT_EXECUTOR_SOCKET", "/run/ipc/executor.sock")
+            ),
             token=token_path.read_text(encoding="utf-8").strip(),
             workspace_id=os.environ.get("LOCAL_CHAT_WORKSPACE_ID", "").strip(),
             sources=sources,
@@ -145,7 +156,9 @@ class ExecutorConfig:
     @classmethod
     def _profiles(cls) -> dict[str, dict[str, int]]:
         # The "coding" profile is the field defaults above; the others override a subset.
-        base = {item.name: item.default for item in fields(cls) if item.name in cls._LIMIT_FIELDS}
+        base = {
+            item.name: item.default for item in fields(cls) if item.name in cls._LIMIT_FIELDS
+        }
         return {
             "small": {
                 **base,
@@ -195,7 +208,9 @@ class ExecutorConfig:
         if requested is None:
             return configured
         if not isinstance(requested, int) or isinstance(requested, bool) or requested < 1:
-            raise ExecutorToolError(INVALID_ARGUMENTS, f"{name} requested limit must be a positive integer")
+            raise ExecutorToolError(
+                INVALID_ARGUMENTS, f"{name} requested limit must be a positive integer"
+            )
         return min(requested, configured, self.HARD_CEILINGS[name])
 
     def limit_status(self, name: str, requested: int | None = None) -> dict[str, object]:

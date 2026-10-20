@@ -39,7 +39,12 @@ def test_policy_rejects_unsafe_allowlist_entries() -> None:
     for entry in ("10.0.0.1", "localhost", "*.", "bad host", ""):
         with pytest.raises(ValueError):
             EgressPolicy((entry,))
-    policy = EgressPolicy.from_environment({"LOCAL_CHAT_EGRESS_ALLOWED_HOSTS": "pypi.org, files.pythonhosted.org", "LOCAL_CHAT_EGRESS_ALLOWED_PORTS": "443"})
+    policy = EgressPolicy.from_environment(
+        {
+            "LOCAL_CHAT_EGRESS_ALLOWED_HOSTS": "pypi.org, files.pythonhosted.org",
+            "LOCAL_CHAT_EGRESS_ALLOWED_PORTS": "443",
+        }
+    )
     assert policy.allowed_hosts == ("pypi.org", "files.pythonhosted.org")
 
 
@@ -90,21 +95,33 @@ def test_proxy_tunnels_allowlisted_hosts_and_audits_every_decision() -> None:
         server = await proxy.serve("127.0.0.1", 0)
         port = server.sockets[0].getsockname()[1]
         async with server, upstream:
-            head, body = await _request(port, f"CONNECT pypi.org:{upstream_port} HTTP/1.1\r\nHost: pypi.org\r\n\r\n".encode(), b"wheel bytes")
+            head, body = await _request(
+                port,
+                f"CONNECT pypi.org:{upstream_port} HTTP/1.1\r\nHost: pypi.org\r\n\r\n".encode(),
+                b"wheel bytes",
+            )
             assert head.startswith(b"HTTP/1.1 200") and body == b"WHEEL BYTES"
             # A bare connect-and-close (a health probe) is not an egress attempt and is not audited.
             probe_reader, probe_writer = await asyncio.open_connection("127.0.0.1", port)
             probe_writer.close()
             assert await probe_reader.read() == b""
-            head, _ = await _request(port, f"CONNECT example.com:{upstream_port} HTTP/1.1\r\n\r\n".encode())
+            head, _ = await _request(
+                port, f"CONNECT example.com:{upstream_port} HTTP/1.1\r\n\r\n".encode()
+            )
             assert head.startswith(b"HTTP/1.1 403")
             head, _ = await _request(port, b"GET http://pypi.org/ HTTP/1.1\r\n\r\n")
             assert head.startswith(b"HTTP/1.1 405")
-            head, _ = await _request(port, f"CONNECT 127.0.0.1:{upstream_port} HTTP/1.1\r\n\r\n".encode())
+            head, _ = await _request(
+                port, f"CONNECT 127.0.0.1:{upstream_port} HTTP/1.1\r\n\r\n".encode()
+            )
             assert head.startswith(b"HTTP/1.1 403")
-            head, _ = await _request(port, f"CONNECT pypi.org:{upstream_port} HTTP/1.1\r\n\r\n".encode())
+            head, _ = await _request(
+                port, f"CONNECT pypi.org:{upstream_port} HTTP/1.1\r\n\r\n".encode()
+            )
             assert head.startswith(b"HTTP/1.1 200")
-            head, _ = await _request(port, f"CONNECT pypi.org:{upstream_port} HTTP/1.1\r\n\r\n".encode())
+            head, _ = await _request(
+                port, f"CONNECT pypi.org:{upstream_port} HTTP/1.1\r\n\r\n".encode()
+            )
             assert head.startswith(b"HTTP/1.1 429")
             await asyncio.sleep(0.2)
         assert resolved == [("pypi.org", upstream_port), ("pypi.org", upstream_port)]
@@ -118,7 +135,9 @@ def test_proxy_tunnels_allowlisted_hosts_and_audits_every_decision() -> None:
     assert ("egress.denied", "rate_limited", "") in events
     assert len(events) == 6
     allowed = next(entry for entry in audit if entry["event"] == "egress.allowed")
-    assert allowed["bytes_up"] == len(b"wheel bytes") and allowed["bytes_down"] == len(b"wheel bytes")
+    assert allowed["bytes_up"] == len(b"wheel bytes") and allowed["bytes_down"] == len(
+        b"wheel bytes"
+    )
 
 
 def test_executor_proxy_environment_is_empty_by_default() -> None:
@@ -126,7 +145,12 @@ def test_executor_proxy_environment_is_empty_by_default() -> None:
     assert egress_status({}) == {"enabled": False, "mode": "none"}
     env = proxy_environment({"LOCAL_CHAT_EGRESS_PROXY": "http://172.31.250.2:3128"})
     assert env["HTTPS_PROXY"] == env["https_proxy"] == "http://172.31.250.2:3128"
-    assert egress_status({"LOCAL_CHAT_EGRESS_PROXY": "http://172.31.250.2:3128", "LOCAL_CHAT_EGRESS_ALLOWED_HOSTS": "pypi.org"})["allowed_hosts"] == ["pypi.org"]
+    assert egress_status(
+        {
+            "LOCAL_CHAT_EGRESS_PROXY": "http://172.31.250.2:3128",
+            "LOCAL_CHAT_EGRESS_ALLOWED_HOSTS": "pypi.org",
+        }
+    )["allowed_hosts"] == ["pypi.org"]
     with pytest.raises(ValueError):
         proxy_environment({"LOCAL_CHAT_EGRESS_PROXY": "socks5://evil:1080"})
 
@@ -146,7 +170,7 @@ def _block(text: str, header: str) -> str:
     start = lines.index(header)
     indent = len(header) - len(header.lstrip())
     block = []
-    for line in lines[start + 1:]:
+    for line in lines[start + 1 :]:
         if line.strip() and len(line) - len(line.lstrip()) <= indent:
             break
         block.append(line)
@@ -170,9 +194,16 @@ def test_default_compose_profile_is_unchanged_and_the_overlay_is_isolated() -> N
     assert "tmpfs: !override" in overlay_executor and "nosuid,nodev,exec" in overlay_executor
     assert ",exec" not in base and "noexec" in _block(base, "  executor:")
     assert 'profiles: ["agent"]' in proxy and "ports:" not in proxy
-    assert "read_only: true" in proxy and "cap_drop:\n      - ALL" in proxy and "no-new-privileges:true" in proxy
+    assert (
+        "read_only: true" in proxy
+        and "cap_drop:\n      - ALL" in proxy
+        and "no-new-privileges:true" in proxy
+    )
     assert 'user: "10003:10003"' in proxy
-    assert "LOCAL_CHAT_EGRESS_LISTEN: 172.31.250.2:3128" in proxy and "ipv4_address: 172.31.250.2" in proxy
+    assert (
+        "LOCAL_CHAT_EGRESS_LISTEN: 172.31.250.2:3128" in proxy
+        and "ipv4_address: 172.31.250.2" in proxy
+    )
     assert "LOCAL_CHAT_EGRESS_PROXY: http://172.31.250.2:3128" in overlay_executor
     assert "/var/run/docker.sock" not in overlay and "privileged" not in overlay
     dockerfile = (ROOT / "docker" / "Dockerfile.egress-proxy").read_text(encoding="utf-8")
@@ -183,10 +214,24 @@ def test_runtime_manager_adds_the_overlay_only_on_explicit_opt_in(tmp_path: Path
     (tmp_path / "docker").mkdir()
     (tmp_path / "docker" / "compose.egress.yaml").write_text("services: {}\n", encoding="utf-8")
     assert egress_overlays(tmp_path, prebuilt=False, environ={}) == ()
-    assert egress_overlays(tmp_path, prebuilt=False, environ={"LOCAL_CHAT_EXECUTOR_EGRESS": "none"}) == ()
-    overlays = egress_overlays(tmp_path, prebuilt=False, environ={"LOCAL_CHAT_EXECUTOR_EGRESS": "allowlisted"})
-    assert compose_base_args(tmp_path / "docker" / "compose.yaml", overlays=overlays)[-2:] == ["--file", str(overlays[0])]
+    assert (
+        egress_overlays(
+            tmp_path, prebuilt=False, environ={"LOCAL_CHAT_EXECUTOR_EGRESS": "none"}
+        )
+        == ()
+    )
+    overlays = egress_overlays(
+        tmp_path, prebuilt=False, environ={"LOCAL_CHAT_EXECUTOR_EGRESS": "allowlisted"}
+    )
+    assert compose_base_args(tmp_path / "docker" / "compose.yaml", overlays=overlays)[-2:] == [
+        "--file",
+        str(overlays[0]),
+    ]
     with pytest.raises(RuntimeErrorMessage, match="release images"):
-        egress_overlays(tmp_path, prebuilt=True, environ={"LOCAL_CHAT_EXECUTOR_EGRESS": "allowlisted"})
+        egress_overlays(
+            tmp_path, prebuilt=True, environ={"LOCAL_CHAT_EXECUTOR_EGRESS": "allowlisted"}
+        )
     with pytest.raises(RuntimeErrorMessage, match="allowlisted"):
-        egress_overlays(tmp_path, prebuilt=False, environ={"LOCAL_CHAT_EXECUTOR_EGRESS": "open"})
+        egress_overlays(
+            tmp_path, prebuilt=False, environ={"LOCAL_CHAT_EXECUTOR_EGRESS": "open"}
+        )

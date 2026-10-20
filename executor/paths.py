@@ -8,27 +8,51 @@ from pathlib import Path, PurePosixPath
 
 from .errors import PATH_INVALID_TYPE, PATH_UNSAFE, ExecutorToolError
 
-RESERVED = frozenset({"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))})
-SECRET_PARTS = frozenset({".env", ".aws", ".azure", ".ssh", ".gnupg", ".npmrc", ".pypirc", "credentials", "id_rsa", "id_ed25519"})
+RESERVED = frozenset(
+    {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        *(f"COM{i}" for i in range(1, 10)),
+        *(f"LPT{i}" for i in range(1, 10)),
+    }
+)
+SECRET_PARTS = frozenset(
+    {
+        ".env",
+        ".aws",
+        ".azure",
+        ".ssh",
+        ".gnupg",
+        ".npmrc",
+        ".pypirc",
+        "credentials",
+        "id_rsa",
+        "id_ed25519",
+    }
+)
 # Matched against every path segment, so only names that are unambiguously metadata,
 # dependency, or cache directories belong here. A bare "env" is deliberately absent:
 # real source trees use env/ for configuration and loaders, and silently dropping it
 # would hide it from staging, tools, and publication. Name virtualenvs .venv or venv.
-STAGING_EXCLUDED_PARTS = frozenset({
-    ".git",
-    ".hg",
-    ".svn",
-    ".venv",
-    "venv",
-    ".tox",
-    ".nox",
-    "node_modules",
-    "__pycache__",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".ruff_cache",
-    ".hypothesis",
-})
+STAGING_EXCLUDED_PARTS = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        ".venv",
+        "venv",
+        ".tox",
+        ".nox",
+        "node_modules",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".hypothesis",
+    }
+)
 
 
 class UnsafePath(ExecutorToolError):
@@ -45,7 +69,11 @@ def _is_secret_part(part: str) -> bool:
 
 def is_hidden_part(part: str) -> bool:
     """Whether one path segment is secret, staging-excluded, or executor metadata."""
-    return _is_secret_part(part) or part.casefold() in STAGING_EXCLUDED_PARTS or part.startswith(".local-chat-")
+    return (
+        _is_secret_part(part)
+        or part.casefold() in STAGING_EXCLUDED_PARTS
+        or part.startswith(".local-chat-")
+    )
 
 
 def is_secret_path(value: str) -> bool:
@@ -88,7 +116,9 @@ def normalize_relative(value: str, *, allow_secret: bool = False) -> str:
     return "/".join(normalized_parts)
 
 
-def safe_path(root: Path, relative: str, *, must_exist: bool = True, allow_secret: bool = False) -> Path:
+def safe_path(
+    root: Path, relative: str, *, must_exist: bool = True, allow_secret: bool = False
+) -> Path:
     normalized = normalize_relative(relative, allow_secret=allow_secret)
     candidate = root if normalized == "." else root.joinpath(*normalized.split("/"))
     root_real = root.resolve(strict=True)
@@ -128,7 +158,9 @@ def require_regular_file(path: Path, tool: str) -> None:
     """File tools act only on regular files with a single link: a hard link would let a change
     through one path alter content reachable through another."""
     if path.is_symlink() or not path.is_file() or path.stat().st_nlink > 1:
-        raise ExecutorToolError(PATH_INVALID_TYPE, f"{tool} target must be a regular, non-hard-linked file")
+        raise ExecutorToolError(
+            PATH_INVALID_TYPE, f"{tool} target must be a regular, non-hard-linked file"
+        )
 
 
 def assert_unique_paths(paths: list[str]) -> None:

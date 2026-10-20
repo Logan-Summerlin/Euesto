@@ -32,7 +32,10 @@ class ExecutorClient:
             "X-Executor-Nonce": secrets.token_urlsafe(24),
         }
         async with httpx.AsyncClient(
-            transport=transport, base_url="http://executor", timeout=timeout, follow_redirects=False
+            transport=transport,
+            base_url="http://executor",
+            timeout=timeout,
+            follow_redirects=False,
         ) as client:
             response = await client.request(method, path, headers=headers, json=json)
         if check:

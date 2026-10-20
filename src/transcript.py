@@ -18,16 +18,32 @@ EVENT_TITLES = {
     "checkpoint.created": "Checkpoint created",
     "checkpoint.restored": "Checkpoint restored",
 }
-ACTIVITY_EVENT_TYPES = frozenset({
-    "tool.requested", "tool.failed", "approval.required", "approval.timeout",
-    "run.failed", "run.paused", "checkpoint.created", "checkpoint.restored",
-    "mutation.rollback", "publication.failed",
-})
+ACTIVITY_EVENT_TYPES = frozenset(
+    {
+        "tool.requested",
+        "tool.failed",
+        "approval.required",
+        "approval.timeout",
+        "run.failed",
+        "run.paused",
+        "checkpoint.created",
+        "checkpoint.restored",
+        "mutation.rollback",
+        "publication.failed",
+    }
+)
 # Events that expand their turn's activity so the user sees them.
-ATTENTION_EVENT_TYPES = frozenset({
-    "approval.required", "approval.timeout", "tool.failed", "run.failed", "run.paused",
-    "publication.failed", "mutation.rollback",
-})
+ATTENTION_EVENT_TYPES = frozenset(
+    {
+        "approval.required",
+        "approval.timeout",
+        "tool.failed",
+        "run.failed",
+        "run.paused",
+        "publication.failed",
+        "mutation.rollback",
+    }
+)
 # Payload keys loaded for activity; arguments only feed the file-name label and never reach QML.
 ACTIVITY_PAYLOAD_KEYS = ("tool", "request_id", "arguments", "checkpoint_id")
 
@@ -196,13 +212,15 @@ def _activity_items(events: list[dict[str, object]]) -> list[dict[str, Any]]:
             attention = event_type in ATTENTION_EVENT_TYPES
         else:
             continue
-        result.append({
-            "key": f"{event.get('run_id', '')}:{event.get('event_id', '')}",
-            "title": title,
-            "eventType": event_type,
-            "rollback": event_type == "mutation.rollback",
-            "attention": attention,
-        })
+        result.append(
+            {
+                "key": f"{event.get('run_id', '')}:{event.get('event_id', '')}",
+                "title": title,
+                "eventType": event_type,
+                "rollback": event_type == "mutation.rollback",
+                "attention": attention,
+            }
+        )
     return result
 
 
@@ -213,7 +231,10 @@ def _activity_summary(events: list[dict[str, object]], *, legacy: bool = False) 
     counts = (
         (types.count("tool.requested"), "tool call"),
         (types.count("approval.required"), "approval"),
-        (sum(kind in {"tool.failed", "run.failed", "publication.failed"} for kind in types), "failure"),
+        (
+            sum(kind in {"tool.failed", "run.failed", "publication.failed"} for kind in types),
+            "failure",
+        ),
     )
     parts = [f"{count} {noun}{'s' if count != 1 else ''}" for count, noun in counts if count]
     if legacy:
@@ -226,7 +247,9 @@ def _message_metadata(message: Message) -> str:
     if message.model_id:
         parts.append(message.model_id)
     tokens = message.total_tokens
-    if tokens is None and (message.input_tokens is not None or message.output_tokens is not None):
+    if tokens is None and (
+        message.input_tokens is not None or message.output_tokens is not None
+    ):
         tokens = (message.input_tokens or 0) + (message.output_tokens or 0)
     if tokens:
         parts.append(f"{tokens:,} tokens")

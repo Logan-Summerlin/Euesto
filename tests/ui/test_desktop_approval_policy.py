@@ -1,4 +1,5 @@
 """Desktop selection of the Agent approval tier (prompt / accept_edits / auto)."""
+
 from __future__ import annotations
 
 import os
@@ -84,7 +85,9 @@ def test_accept_edits_resets_on_mode_change(bridge) -> None:
     backend.requestAcceptEdits(True)
     backend.resolveConfirmation(confirmations[0], True)
     backend.selectMode("plan")
-    assert backend.generation.approval_policy() == "prompt" and backend.acceptEditsEnabled is False
+    assert (
+        backend.generation.approval_policy() == "prompt" and backend.acceptEditsEnabled is False
+    )
 
 
 def test_accept_edits_unavailable_without_gateway_capability(bridge) -> None:

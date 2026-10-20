@@ -62,14 +62,20 @@ class RuntimeImages:
         try:
             data = json.loads(manifest.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise RuntimeErrorMessage(f"The bundled Docker image manifest is invalid: {exc}") from exc
+            raise RuntimeErrorMessage(
+                f"The bundled Docker image manifest is invalid: {exc}"
+            ) from exc
         if not isinstance(data, dict):
             raise RuntimeErrorMessage("The bundled Docker image manifest must be an object.")
         if data.get("schema_version") != 1:
-            raise RuntimeErrorMessage("The bundled Docker image manifest has an unsupported version.")
+            raise RuntimeErrorMessage(
+                "The bundled Docker image manifest has an unsupported version."
+            )
         gateway = _image_ref(data.get("gateway"), "gateway")
         executor = _image_ref(data.get("executor"), "executor")
-        if not IMAGE_DIGEST_PATTERN.search(gateway) or not IMAGE_DIGEST_PATTERN.search(executor):
+        if not IMAGE_DIGEST_PATTERN.search(gateway) or not IMAGE_DIGEST_PATTERN.search(
+            executor
+        ):
             raise RuntimeErrorMessage("The bundled Docker image manifest is not digest-pinned.")
         return cls(gateway, executor, True)
 
@@ -142,14 +148,18 @@ def compose_base_args(compose_file: Path, *, overlays: tuple[Path, ...] = ()) ->
     return arguments
 
 
-def egress_overlays(bundle: Path, *, prebuilt: bool, environ: dict[str, str] | None = None) -> tuple[Path, ...]:
+def egress_overlays(
+    bundle: Path, *, prebuilt: bool, environ: dict[str, str] | None = None
+) -> tuple[Path, ...]:
     """Compose overlays for the opt-in allowlisted-egress executor profile.
 
     The default (``LOCAL_CHAT_EXECUTOR_EGRESS`` unset, ``none``, or ``off``) adds nothing, so the
     executor keeps ``network_mode: none``. ``allowlisted`` adds ``docker/compose.egress.yaml``
     (developer bundles only while the profile is a prototype); any other value fails closed.
     """
-    mode = (os.environ if environ is None else environ).get(EGRESS_MODE_ENV, "").strip().casefold()
+    mode = (
+        (os.environ if environ is None else environ).get(EGRESS_MODE_ENV, "").strip().casefold()
+    )
     if mode in {"", "none", "off"}:
         return ()
     if mode != "allowlisted":
@@ -322,7 +332,9 @@ class RuntimeWorker(QThread):
             return False
         return True
 
-    def _compose(self, arguments: list[str], *, timeout: float, allow_failure: bool = False) -> str:
+    def _compose(
+        self, arguments: list[str], *, timeout: float, allow_failure: bool = False
+    ) -> str:
         return self._run(
             [*compose_base_args(self.compose_file, overlays=self.overlays), *arguments],
             timeout=timeout,
@@ -373,7 +385,9 @@ class RuntimeWorker(QThread):
             if time.monotonic() >= deadline:
                 process.kill()
                 process.wait()
-                raise RuntimeErrorMessage(f"Docker command timed out: {' '.join(arguments[:3])}")
+                raise RuntimeErrorMessage(
+                    f"Docker command timed out: {' '.join(arguments[:3])}"
+                )
             try:
                 output.append(chunks.get(timeout=0.1))
             except Empty:
@@ -429,7 +443,13 @@ class RuntimeWorker(QThread):
                     return
                 else:
                     last_detail = "The isolated executor is still preparing the workspace."
-            except (httpx.HTTPError, OSError, TypeError, ValueError, RuntimeErrorMessage) as exc:
+            except (
+                httpx.HTTPError,
+                OSError,
+                TypeError,
+                ValueError,
+                RuntimeErrorMessage,
+            ) as exc:
                 last_detail = str(exc)
             self.progress.emit("checking", last_detail)
             time.sleep(1)
@@ -503,7 +523,10 @@ class RuntimeManager(QObject):
         compose_file = self.bundle / "docker" / "compose.yaml"
         if docker is None or not compose_file.is_file():
             return
-        environment = {**os.environ, "LOCAL_CHAT_SECRETS_DIR": str(self.data_dir / "gateway-session")}
+        environment = {
+            **os.environ,
+            "LOCAL_CHAT_SECRETS_DIR": str(self.data_dir / "gateway-session"),
+        }
         agent = bool(target and target.workspace)
         overlays: tuple[Path, ...] = ()
         if agent:
@@ -542,7 +565,8 @@ def _redact_output(
 ) -> str:
     value = output.strip()
     environment_secrets = (
-        environment.get(key, "") for key in ("LOCAL_CHAT_GATEWAY_TOKEN", "LOCAL_CHAT_EXECUTOR_TOKEN")
+        environment.get(key, "")
+        for key in ("LOCAL_CHAT_GATEWAY_TOKEN", "LOCAL_CHAT_EXECUTOR_TOKEN")
     )
     for secret in (*environment_secrets, *secret_values):
         if secret:

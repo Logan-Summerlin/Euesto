@@ -14,9 +14,7 @@ def test_transcript_model_appends_and_updates_without_resetting() -> None:
     inserts: list[tuple[int, int]] = []
     changes: list[tuple[int, int]] = []
     model.modelReset.connect(lambda: resets.append(None))
-    model.rowsInserted.connect(
-        lambda _parent, first, last: inserts.append((first, last))
-    )
+    model.rowsInserted.connect(lambda _parent, first, last: inserts.append((first, last)))
     model.dataChanged.connect(
         lambda first, last, _roles: changes.append((first.row(), last.row()))
     )

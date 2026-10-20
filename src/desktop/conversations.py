@@ -61,7 +61,9 @@ class ConversationService(QObject):
 
     def load(self, select_id: str | None = None) -> None:
         previous_id = self.current_id
-        conversations = self.storage.list_conversations(query=self.search_query, archived=self.show_archived)
+        conversations = self.storage.list_conversations(
+            query=self.search_query, archived=self.show_archived
+        )
         self.conversations = [
             {
                 "id": item.id,
@@ -74,12 +76,16 @@ class ConversationService(QObject):
             for item in conversations
         ]
         if not conversations and not self.search_query and not self.show_archived:
-            conversation = self.controller.create_new(self.current(), self.storage.recent_model_ids(1))
+            conversation = self.controller.create_new(
+                self.current(), self.storage.recent_model_ids(1)
+            )
             self.load(conversation.id)
             return
         ids = {item.id for item in conversations}
         wanted = select_id or self.current_id
-        self.current_id = wanted if wanted in ids else (conversations[0].id if conversations else None)
+        self.current_id = (
+            wanted if wanted in ids else (conversations[0].id if conversations else None)
+        )
         self.host.conversationsChanged.emit()
         self.refresh_transcript(force_reset=self.current_id != previous_id)
         self.host.stateChanged.emit()
@@ -88,7 +94,9 @@ class ConversationService(QObject):
     def new_conversation(self) -> None:
         if self._busy:
             return
-        conversation = self.controller.create_new(self.current(), self.storage.recent_model_ids(1))
+        conversation = self.controller.create_new(
+            self.current(), self.storage.recent_model_ids(1)
+        )
         self.current_id = conversation.id
         self.show_archived = False
         self.search_query = ""
@@ -133,7 +141,9 @@ class ConversationService(QObject):
     def toggle_archive(self) -> None:
         conversation = self.current()
         if conversation and not self._busy:
-            self.storage.archive_conversation(conversation.id, not bool(conversation.archived_at))
+            self.storage.archive_conversation(
+                conversation.id, not bool(conversation.archived_at)
+            )
             self.current_id = None
             self.load()
 
@@ -147,7 +157,12 @@ class ConversationService(QObject):
             self.current_id = None
             self.load()
 
-        self.host.confirm(f"delete:{conversation.id}", "Delete conversation?", f"Delete “{conversation.title}”? This cannot be undone.", delete)
+        self.host.confirm(
+            f"delete:{conversation.id}",
+            "Delete conversation?",
+            f"Delete “{conversation.title}”? This cannot be undone.",
+            delete,
+        )
 
     def fork(self) -> None:
         conversation = self.current()
@@ -179,7 +194,12 @@ class ConversationService(QObject):
         conversation = self.current()
         preset = self.storage.get_prompt_preset(preset_id)
         if conversation and preset:
-            self.storage.update_conversation(conversation.id, system_prompt=preset.content, prompt_preset_id=preset.id, prompt_preset_snapshot=preset.content)
+            self.storage.update_conversation(
+                conversation.id,
+                system_prompt=preset.content,
+                prompt_preset_id=preset.id,
+                prompt_preset_snapshot=preset.content,
+            )
             self.host.settingsChanged.emit()
 
     def navigate_branch(self, message_id: int, direction: int) -> None:
@@ -223,12 +243,27 @@ class ConversationService(QObject):
         conversation = self.current()
         if not conversation:
             return
-        limit = max(4_000, int(model_context_length(conversation.model, self.host.settings.catalog.models()) * 0.4))
-        _context, summary, covered = compact_messages(context_source(conversation.system_prompt, self.storage.list_messages(conversation.id)), limit)
+        limit = max(
+            4_000,
+            int(
+                model_context_length(conversation.model, self.host.settings.catalog.models())
+                * 0.4
+            ),
+        )
+        _context, summary, covered = compact_messages(
+            context_source(
+                conversation.system_prompt, self.storage.list_messages(conversation.id)
+            ),
+            limit,
+        )
         if not covered:
-            self.host.infoRequested.emit("Context", "The active branch is already below the compaction target.")
+            self.host.infoRequested.emit(
+                "Context", "The active branch is already below the compaction target."
+            )
             return
-        self.storage.save_compaction(conversation.id, conversation.active_leaf_id, covered, summary, conversation.model)
+        self.storage.save_compaction(
+            conversation.id, conversation.active_leaf_id, covered, summary, conversation.model
+        )
         self.host.set_status(f"Compacted {len(covered)} older message(s)")
 
     def inspect_context(self) -> None:
@@ -237,7 +272,9 @@ class ConversationService(QObject):
             return
         messages = self.storage.list_messages(conversation.id)
         estimate = sum(estimate_tokens(item.content) for item in messages)
-        limit = int(model_context_length(conversation.model, self.host.settings.catalog.models()) * 0.8)
+        limit = int(
+            model_context_length(conversation.model, self.host.settings.catalog.models()) * 0.8
+        )
         compactions = self.storage.list_compactions(conversation.id)
         latest = compactions[-1]["summary"] if compactions else "No saved compaction."
         self.host.infoRequested.emit(
@@ -252,7 +289,10 @@ class ConversationService(QObject):
     def show_usage(self) -> None:
         total = self.storage.usage_summary()
         current = self.storage.usage_summary(self.current_id)
-        self.host.infoRequested.emit("Usage", f"Current conversation\n{usage_text(current)}\n\nAll conversations\n{usage_text(total)}")
+        self.host.infoRequested.emit(
+            "Usage",
+            f"Current conversation\n{usage_text(current)}\n\nAll conversations\n{usage_text(total)}",
+        )
 
     # -- transcript --------------------------------------------------------------------
 
@@ -269,7 +309,11 @@ class ConversationService(QObject):
             generation = self.host.generation
             activities = assemble_activities(
                 self.storage.list_generation_runs(conversation.id),
-                self.storage.list_run_events(conversation.id, event_types=ACTIVITY_EVENT_TYPES, payload_keys=ACTIVITY_PAYLOAD_KEYS),
+                self.storage.list_run_events(
+                    conversation.id,
+                    event_types=ACTIVITY_EVENT_TYPES,
+                    payload_keys=ACTIVITY_PAYLOAD_KEYS,
+                ),
             )
             values = assemble_transcript(
                 self.storage.list_messages(conversation.id),
@@ -289,7 +333,9 @@ class ConversationService(QObject):
             self._html_cache = html_cache
             self.transcript = values
             summary = self.storage.usage_summary(conversation.id)
-            if not generation.running and (summary["input_tokens"] or summary["output_tokens"] or summary["cost"]):
+            if not generation.running and (
+                summary["input_tokens"] or summary["output_tokens"] or summary["cost"]
+            ):
                 self.host.set_status(usage_text(summary))
         self.transcript_model.replace(self.transcript, reset=force_reset)
         self.host.transcriptChanged.emit()

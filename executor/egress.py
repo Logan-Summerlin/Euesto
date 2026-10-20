@@ -12,12 +12,16 @@ from __future__ import annotations
 import os
 import re
 
-_PROXY_URL = re.compile(r"^http://(?:\d{1,3}(?:\.\d{1,3}){3}|[a-z0-9][a-z0-9.-]{0,252}):\d{1,5}$")
+_PROXY_URL = re.compile(
+    r"^http://(?:\d{1,3}(?:\.\d{1,3}){3}|[a-z0-9][a-z0-9.-]{0,252}):\d{1,5}$"
+)
 
 
 def proxy_url(environ: dict[str, str] | None = None) -> str | None:
     """The validated proxy URL, or None when egress is not enabled (the default)."""
-    value = (os.environ if environ is None else environ).get("LOCAL_CHAT_EGRESS_PROXY", "").strip()
+    value = (
+        (os.environ if environ is None else environ).get("LOCAL_CHAT_EGRESS_PROXY", "").strip()
+    )
     if not value:
         return None
     if not _PROXY_URL.fullmatch(value):
@@ -52,5 +56,9 @@ def egress_status(environ: dict[str, str] | None = None) -> dict[str, object]:
         return {"enabled": False, "mode": "misconfigured"}
     if url is None:
         return {"enabled": False, "mode": "none"}
-    hosts = [item.strip() for item in env.get("LOCAL_CHAT_EGRESS_ALLOWED_HOSTS", "").split(",") if item.strip()]
+    hosts = [
+        item.strip()
+        for item in env.get("LOCAL_CHAT_EGRESS_ALLOWED_HOSTS", "").split(",")
+        if item.strip()
+    ]
     return {"enabled": True, "mode": "allowlisted_proxy", "proxy": url, "allowed_hosts": hosts}

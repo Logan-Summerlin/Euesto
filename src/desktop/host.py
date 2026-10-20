@@ -49,7 +49,14 @@ class BridgeHost(Protocol):
 
     def set_status(self, text: str) -> None: ...
 
-    def confirm(self, token: str, title: str, body: str, on_accept: Callable[[], None], on_decline: Callable[[], None] | None = None) -> None: ...
+    def confirm(
+        self,
+        token: str,
+        title: str,
+        body: str,
+        on_accept: Callable[[], None],
+        on_decline: Callable[[], None] | None = None,
+    ) -> None: ...
 
     def reload_models(self) -> None: ...
 

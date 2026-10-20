@@ -63,8 +63,14 @@ class ChatRequest:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ChatRequest:
         expected = {
-            "model", "messages", "options", "server_tools", "supported_parameters",
-            "client_request_id", "provider_preferences", "mode",
+            "model",
+            "messages",
+            "options",
+            "server_tools",
+            "supported_parameters",
+            "client_request_id",
+            "provider_preferences",
+            "mode",
         }
         unknown = set(data) - expected
         if unknown:
@@ -117,7 +123,11 @@ class AgentRunRequest:
     approval_policy: Literal["prompt", "accept_edits", "auto"] = "prompt"
 
     def __post_init__(self) -> None:
-        if self.mode not in {"plan", "agent"} or not self.model.strip() or not self.workspace_id:
+        if (
+            self.mode not in {"plan", "agent"}
+            or not self.model.strip()
+            or not self.workspace_id
+        ):
             raise ValueError("Plan/Agent mode, model, and workspace identity are required")
         if not self.budget_profile.strip():
             raise ValueError("Agent budget profile is required")
@@ -154,7 +164,12 @@ class AgentRunRequest:
         if any(not isinstance(item, dict) for item in self.skills):
             raise ValueError("Skills must be objects")
         allowed_skill_fields = {
-            "name", "description", "instructions", "required_tools", "references", "scope"
+            "name",
+            "description",
+            "instructions",
+            "required_tools",
+            "references",
+            "scope",
         }
         if any(set(item) - allowed_skill_fields for item in self.skills):
             raise ValueError("Skills contain unknown fields")
@@ -182,14 +197,26 @@ class AgentRunRequest:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> AgentRunRequest:
         expected = {
-            "model", "messages", "mode", "workspace_id", "approval_policy", "session_id",
-            "context_limit_tokens", "skills", "workspace_config", "budget_profile",
-            "provider_preferences", "investigation_model_id", "investigation_call_budget",
+            "model",
+            "messages",
+            "mode",
+            "workspace_id",
+            "approval_policy",
+            "session_id",
+            "context_limit_tokens",
+            "skills",
+            "workspace_config",
+            "budget_profile",
+            "provider_preferences",
+            "investigation_model_id",
+            "investigation_call_budget",
         }
         if set(data) - expected:
             raise ValueError("Unknown agent run fields")
         messages = data.get("messages")
-        if not isinstance(messages, list) or any(not isinstance(item, dict) for item in messages):
+        if not isinstance(messages, list) or any(
+            not isinstance(item, dict) for item in messages
+        ):
             raise ValueError("messages must be an object array")
         return cls(
             model=str(data.get("model") or ""),
@@ -199,7 +226,9 @@ class AgentRunRequest:
             approval_policy=str(data.get("approval_policy") or "prompt"),
             session_id=str(data["session_id"]) if data.get("session_id") else None,
             context_limit_tokens=int(data.get("context_limit_tokens") or 100_000),
-            skills=tuple(dict(item) for item in data.get("skills") or () if isinstance(item, dict)),
+            skills=tuple(
+                dict(item) for item in data.get("skills") or () if isinstance(item, dict)
+            ),
             workspace_config=_object(data.get("workspace_config")),
             budget_profile=str(data.get("budget_profile") or "coding"),
             provider_preferences=_object(data.get("provider_preferences")),

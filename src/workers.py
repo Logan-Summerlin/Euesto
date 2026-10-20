@@ -128,7 +128,9 @@ class ChatWorker(_StreamWorker):
                     if value:
                         result[key] = value
         except Exception as exc:
-            self._fail(str(exc) if isinstance(exc, GatewayError) else f"Unexpected error: {exc}")
+            self._fail(
+                str(exc) if isinstance(exc, GatewayError) else f"Unexpected error: {exc}"
+            )
             return
         self._finish(result)
 
@@ -166,7 +168,9 @@ class AgentWorker(_StreamWorker):
     def for_resume(cls, client: GatewayClient, run_id: str, api_key: str) -> AgentWorker:
         return cls(
             client,
-            lambda stop_event: client.resume_agent(run_id, api_key=api_key, stop_event=stop_event),
+            lambda stop_event: client.resume_agent(
+                run_id, api_key=api_key, stop_event=stop_event
+            ),
             failure_context="Agent resume",
         )
 
@@ -182,7 +186,9 @@ class AgentWorker(_StreamWorker):
                 elif event.type not in {"tool.output", "tool.completed"}:
                     self.eventReceived.emit(event)
                     if event.type == "run.failed":
-                        raise GatewayError(str(event.payload.get("message") or "Agent run failed."))
+                        raise GatewayError(
+                            str(event.payload.get("message") or "Agent run failed.")
+                        )
         except Exception as exc:
             self.last_usage = dict(usage)
             self._fail(
@@ -281,12 +287,14 @@ class PublicationWorker(QThread):
                 checkpoint_id=published.checkpoint_id,
                 error=reseed_error,
             )
-            result.update({
-                "publication_id": self.manifest.publication_id,
-                "batch_index": self.manifest.batch_index,
-                "batch_count": self.manifest.batch_count,
-                "progress": describe_progress(record),
-            })
+            result.update(
+                {
+                    "publication_id": self.manifest.publication_id,
+                    "batch_index": self.manifest.batch_index,
+                    "batch_count": self.manifest.batch_count,
+                    "progress": describe_progress(record),
+                }
+            )
             if client is not None and reseed_error is None and self.manifest.has_more_batches:
                 following, batch_error = _attempt(
                     lambda: client.next_publication_batch(self.manifest),

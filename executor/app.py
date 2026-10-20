@@ -47,8 +47,23 @@ from .tools.apply_patch import apply_patch_paths
 from .tools.bash import cancel as cancel_bash
 
 DEVELOPER_EXECUTABLE_CANDIDATES = (
-    "python", "python3", "pytest", "ruff", "node", "npm", "pnpm", "yarn", "make",
-    "gcc", "g++", "clang", "go", "cargo", "rustc", "java", "javac",
+    "python",
+    "python3",
+    "pytest",
+    "ruff",
+    "node",
+    "npm",
+    "pnpm",
+    "yarn",
+    "make",
+    "gcc",
+    "g++",
+    "clang",
+    "go",
+    "cargo",
+    "rustc",
+    "java",
+    "javac",
 )
 
 
@@ -71,9 +86,13 @@ class ExecutorService:
                 raise ExecutorToolError(INVALID_ARGUMENTS, f"Unknown tool: {request.tool}")
             output, data = await run(request, root)
             if request.mode == "agent" and request.tool in MUTATION_TOOLS:
-                data["workspace_status"] = self.workspace_status(self._post_mutation_files(request, data))
+                data["workspace_status"] = self.workspace_status(
+                    self._post_mutation_files(request, data)
+                )
                 output = f"{output} {data['workspace_status']['summary']}"
-            return _success_result(request.request_id, output, data, time.perf_counter() - started)
+            return _success_result(
+                request.request_id, output, data, time.perf_counter() - started
+            )
         except Exception as exc:
             classified = classify_error(exc)
             return ToolResult(
@@ -155,7 +174,9 @@ class ExecutorService:
             )
 
         def run_status(request: ToolRequest, root: Path) -> Awaitable[tuple[str, dict]]:
-            return asyncio.to_thread(status, config.work_root, config.source_root, self.snapshot, request.arguments)
+            return asyncio.to_thread(
+                status, config.work_root, config.source_root, self.snapshot, request.arguments
+            )
 
         def run_grep(request: ToolRequest, root: Path) -> Awaitable[tuple[str, dict]]:
             return asyncio.to_thread(
@@ -168,10 +189,14 @@ class ExecutorService:
             )
 
         def run_find(request: ToolRequest, root: Path) -> Awaitable[tuple[str, dict]]:
-            return asyncio.to_thread(find, root, request.arguments, **search("max_find_results", request))
+            return asyncio.to_thread(
+                find, root, request.arguments, **search("max_find_results", request)
+            )
 
         def run_ls(request: ToolRequest, root: Path) -> Awaitable[tuple[str, dict]]:
-            return asyncio.to_thread(ls, root, request.arguments, **search("max_ls_results", request))
+            return asyncio.to_thread(
+                ls, root, request.arguments, **search("max_ls_results", request)
+            )
 
         return {
             "read": run_read,
@@ -200,9 +225,13 @@ class ExecutorService:
             paths = apply_patch_paths(request.arguments)
         else:
             paths = [str(data.get("path") or "")]
-        return refresh_visible_files(self.config.work_root, base, [path for path in paths if path])
+        return refresh_visible_files(
+            self.config.work_root, base, [path for path in paths if path]
+        )
 
-    def workspace_status(self, current: dict[str, tuple[str, int, int]] | None = None) -> dict[str, object]:
+    def workspace_status(
+        self, current: dict[str, tuple[str, int, int]] | None = None
+    ) -> dict[str, object]:
         changes = workspace_changes(self.snapshot, self.config.work_root, current)
         created = [change.path for change in changes if change.operation == "create"]
         modified = [change.path for change in changes if change.operation == "update"]
@@ -211,7 +240,9 @@ class ExecutorService:
             "created": created,
             "modified": modified,
             "deleted": deleted,
-            "permission_changes": [change.path for change in changes if change.permission_changed],
+            "permission_changes": [
+                change.path for change in changes if change.permission_changed
+            ],
             "staged": bool(changes),
             "publication": "pending_review" if changes else "no_changes",
             "summary": (
@@ -263,12 +294,18 @@ class ExecutorService:
         if change.operation == "delete":
             return PublishOperation(**base, staged_sha256=None)
         raw = (self.config.work_root / change.path).read_bytes()
-        staged = {**base, "staged_sha256": change.staged_sha256, "staged_mode": change.staged_mode}
+        staged = {
+            **base,
+            "staged_sha256": change.staged_sha256,
+            "staged_mode": change.staged_mode,
+        }
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
             # Binary or non-UTF-8 files are carried byte-for-byte; the broker copies them.
-            return PublishOperation(**staged, content_base64=base64.b64encode(raw).decode("ascii"))
+            return PublishOperation(
+                **staged, content_base64=base64.b64encode(raw).decode("ascii")
+            )
         return PublishOperation(**staged, content=text)
 
     def discard(self) -> Snapshot:
@@ -277,10 +314,17 @@ class ExecutorService:
 
     def mark_published(self, manifest: PublishManifest | PublicationReceipt) -> Snapshot:
         if manifest.workspace_id != self.config.workspace_id:
-            raise ExecutorToolError(INVALID_ARGUMENTS, "Publication manifest belongs to another workspace")
+            raise ExecutorToolError(
+                INVALID_ARGUMENTS, "Publication manifest belongs to another workspace"
+            )
         if manifest.source_snapshot_id != self.snapshot.snapshot_id:
-            raise ExecutorToolError(STAGING_CONFLICT, "Publication manifest is stale for the current staging baseline")
-        self.snapshot = advance_published_staging(self.config.work_root, self.snapshot, manifest.operations)
+            raise ExecutorToolError(
+                STAGING_CONFLICT,
+                "Publication manifest is stale for the current staging baseline",
+            )
+        self.snapshot = advance_published_staging(
+            self.config.work_root, self.snapshot, manifest.operations
+        )
         return self.snapshot
 
 
@@ -310,7 +354,9 @@ Handler = Callable[[Request], Awaitable[JSONResponse]]
 NONCE_TTL_SECONDS = 300
 
 
-def create_app(config: ExecutorConfig | None = None, service: ExecutorService | None = None) -> Starlette:
+def create_app(
+    config: ExecutorConfig | None = None, service: ExecutorService | None = None
+) -> Starlette:
     resolved = config or ExecutorConfig.from_environment()
     executor = service or ExecutorService(resolved)
     nonces: dict[str, float] = {}
@@ -321,7 +367,9 @@ def create_app(config: ExecutorConfig | None = None, service: ExecutorService | 
         async def endpoint(request: Request) -> JSONResponse:
             authorization = request.headers.get("authorization", "")
             nonce = request.headers.get("x-executor-nonce", "")
-            if not authorization.startswith("Bearer ") or not hmac.compare_digest(authorization[7:], resolved.token):
+            if not authorization.startswith("Bearer ") or not hmac.compare_digest(
+                authorization[7:], resolved.token
+            ):
                 return _error("auth.invalid", "Invalid executor credential.", 401)
             if len(nonce) < 20 or nonce in nonces:
                 return _error("auth.replay", "Missing or replayed executor nonce.", 401)
@@ -335,14 +383,16 @@ def create_app(config: ExecutorConfig | None = None, service: ExecutorService | 
         return endpoint
 
     async def status(request: Request) -> JSONResponse:
-        return JSONResponse({
-            "ready": True,
-            "workspace_id": resolved.workspace_id,
-            "snapshot_id": executor.snapshot.snapshot_id,
-            "tools": sorted(EXECUTOR_TOOLS),
-            "environment": _environment_context(resolved, executor.snapshot),
-            "workspace_status": executor.workspace_status(),
-        })
+        return JSONResponse(
+            {
+                "ready": True,
+                "workspace_id": resolved.workspace_id,
+                "snapshot_id": executor.snapshot.snapshot_id,
+                "tools": sorted(EXECUTOR_TOOLS),
+                "environment": _environment_context(resolved, executor.snapshot),
+                "workspace_status": executor.workspace_status(),
+            }
+        )
 
     async def tool(request: Request) -> JSONResponse:
         try:
@@ -366,7 +416,9 @@ def create_app(config: ExecutorConfig | None = None, service: ExecutorService | 
 
     async def mark_published(request: Request) -> JSONResponse:
         try:
-            snapshot = executor.mark_published(PublicationReceipt.from_dict(await _json(request)))
+            snapshot = executor.mark_published(
+                PublicationReceipt.from_dict(await _json(request))
+            )
         except (OSError, UnicodeError, TypeError, ValueError, RuntimeError) as exc:
             return _error("staging.mark_published_failed", str(exc), 409)
         return _snapshot_response(snapshot)
@@ -389,7 +441,12 @@ def create_app(config: ExecutorConfig | None = None, service: ExecutorService | 
         ("/v1/staging/discard", discard, "POST"),
         ("/v1/tools/{request_id:str}/cancel", cancel, "POST"),
     )
-    app = Starlette(routes=[Route(path, authenticated(handler), methods=[method]) for path, handler, method in routes])
+    app = Starlette(
+        routes=[
+            Route(path, authenticated(handler), methods=[method])
+            for path, handler, method in routes
+        ]
+    )
     app.state.executor = executor
     return app
 
@@ -402,15 +459,24 @@ async def _json(request: Request) -> dict:
 
 
 def _error(code: str, message: str, status: int) -> JSONResponse:
-    return JSONResponse({"error": {"code": code, "message": message, "retryable": False, "details": {}}}, status_code=status)
+    return JSONResponse(
+        {"error": {"code": code, "message": message, "retryable": False, "details": {}}},
+        status_code=status,
+    )
 
 
 def _snapshot_response(snapshot: Snapshot) -> JSONResponse:
-    return JSONResponse({"snapshot_id": snapshot.snapshot_id, "file_count": snapshot.file_count})
+    return JSONResponse(
+        {"snapshot_id": snapshot.snapshot_id, "file_count": snapshot.file_count}
+    )
 
 
 def _environment_context(config: ExecutorConfig, snapshot: Snapshot) -> dict[str, object]:
-    available = [name for name in DEVELOPER_EXECUTABLE_CANDIDATES if shutil.which(name, path="/usr/local/bin:/usr/bin:/bin") is not None]
+    available = [
+        name
+        for name in DEVELOPER_EXECUTABLE_CANDIDATES
+        if shutil.which(name, path="/usr/local/bin:/usr/bin:/bin") is not None
+    ]
     try:
         unpublished_changes = bool(workspace_changes(snapshot, config.work_root))
     except (OSError, ValueError):
@@ -430,12 +496,18 @@ def _environment_context(config: ExecutorConfig, snapshot: Snapshot) -> dict[str
         "gpu_access": False,
         "command_style": "bash -lc",
         "developer_executables": available,
-        "agent_snapshot": {"snapshot_id": snapshot.snapshot_id, "file_count": len(snapshot.hashes), "total_bytes": snapshot.total_bytes},
+        "agent_snapshot": {
+            "snapshot_id": snapshot.snapshot_id,
+            "file_count": len(snapshot.hashes),
+            "total_bytes": snapshot.total_bytes,
+        },
         "workspace_empty": snapshot.empty,
         "source_snapshot_id": snapshot.snapshot_id,
         "staging_lifetime": "same_executor_instance",
         "unpublished_changes": unpublished_changes,
-        "publication_status": "host_publication_pending_review" if unpublished_changes else "no_unpublished_changes",
+        "publication_status": "host_publication_pending_review"
+        if unpublished_changes
+        else "no_unpublished_changes",
         "storage_headroom_bytes": headroom,
         "limits": config.limits_status(),
     }

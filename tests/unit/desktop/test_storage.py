@@ -129,7 +129,10 @@ def test_edit_regenerate_and_branch_navigation_preserve_old_paths(tmp_path: Path
         "Edited answer",
         "Second",
     ]
-    assert [item.id for item in storage.siblings(regenerated.id or 0)] == [first_answer.id, regenerated.id]
+    assert [item.id for item in storage.siblings(regenerated.id or 0)] == [
+        first_answer.id,
+        regenerated.id,
+    ]
     storage.close()
 
 

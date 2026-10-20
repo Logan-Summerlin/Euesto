@@ -4,6 +4,7 @@
 This intentionally installs into the active interpreter (normally ``.venv``), never into
  the user site, and refuses Python versions other than the supported 3.12 series.
 """
+
 from __future__ import annotations
 
 import importlib.metadata
@@ -24,7 +25,15 @@ def main() -> int:
         return 2
     commands = [
         [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
-        [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "-r", str(LOCK)],
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "-r",
+            str(LOCK),
+        ],
     ]
     for command in commands:
         print("+", " ".join(command), flush=True)

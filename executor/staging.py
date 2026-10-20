@@ -235,7 +235,9 @@ def advance_published_staging(
         value = current.get(operation.path)
         if operation.operation == "delete":
             if value is not None:
-                raise RuntimeError(f"Published delete no longer matches staging: {operation.path}")
+                raise RuntimeError(
+                    f"Published delete no longer matches staging: {operation.path}"
+                )
             hashes.pop(operation.path, None)
             sizes.pop(operation.path, None)
             modes.pop(operation.path, None)
@@ -246,7 +248,9 @@ def advance_published_staging(
             and operation.staged_mode in (None, value[2])
         )
         if not matches:
-            raise RuntimeError(f"Published staging no longer matches the manifest: {operation.path}")
+            raise RuntimeError(
+                f"Published staging no longer matches the manifest: {operation.path}"
+            )
         hashes[operation.path], sizes[operation.path], modes[operation.path] = value
     return Snapshot(str(uuid.uuid4()), hashes, sum(sizes.values()), sizes, modes)
 
@@ -384,7 +388,10 @@ def publication_batches(changes: Sequence[WorkspaceChange]) -> list[list[Workspa
                 f"Staged file exceeds the {PUBLISH_BATCH_MAX_BYTES}-byte publication batch limit: "
                 f"{change.path}",
             )
-        full = len(current) >= PUBLISH_BATCH_MAX_OPERATIONS or size + item_size > PUBLISH_BATCH_MAX_BYTES
+        full = (
+            len(current) >= PUBLISH_BATCH_MAX_OPERATIONS
+            or size + item_size > PUBLISH_BATCH_MAX_BYTES
+        )
         if current and full:
             batches.append(current)
             current, size = [], 0

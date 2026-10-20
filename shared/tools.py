@@ -10,7 +10,17 @@ from .coercion import optional_nonnegative_int, optional_string
 
 # The executor's nine tools, in the order the gateway advertises them. investigate_repository
 # runs in the gateway (a nested Plan-tool loop) and never reaches the executor itself.
-EXECUTOR_TOOLS = ("read", "write", "edit", "apply_patch", "bash", "grep", "find", "ls", "status")
+EXECUTOR_TOOLS = (
+    "read",
+    "write",
+    "edit",
+    "apply_patch",
+    "bash",
+    "grep",
+    "find",
+    "ls",
+    "status",
+)
 TOOL_NAMES = frozenset({*EXECUTOR_TOOLS, "investigate_repository"})
 PLAN_TOOLS = frozenset({"read", "grep", "find", "ls"})
 # Read-only tools: Plan's four, Agent-only staged-change review (status), and investigation.
@@ -97,7 +107,9 @@ class ToolRequest:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ToolRequest:
-        _require_known_fields(data, {"request_id", "run_id", "tool", "mode", "arguments"}, "tool request")
+        _require_known_fields(
+            data, {"request_id", "run_id", "tool", "mode", "arguments"}, "tool request"
+        )
         arguments = data.get("arguments") or {}
         if not isinstance(arguments, dict):
             raise ValueError("Tool arguments must be an object")
@@ -174,7 +186,9 @@ class PublishOperation:
                 raise ValueError("Deleted files cannot include staged content")
             return
         if (self.content is None) == (self.content_base64 is None):
-            raise ValueError("Staged content must be exactly one of text content or content_base64")
+            raise ValueError(
+                "Staged content must be exactly one of text content or content_base64"
+            )
         if hashlib.sha256(self.payload()).hexdigest() != self.staged_sha256:
             raise ValueError("Staged content hash mismatch")
         if self.staged_mode is not None and not 0 <= int(self.staged_mode) <= 0o7777:
@@ -244,7 +258,13 @@ class PublishManifest:
     batch_count: int = 1
 
     def __post_init__(self) -> None:
-        identity = (self.manifest_id, self.run_id, self.workspace_id, self.source_snapshot_id, self.approval_id)
+        identity = (
+            self.manifest_id,
+            self.run_id,
+            self.workspace_id,
+            self.source_snapshot_id,
+            self.approval_id,
+        )
         if not all(identity):
             raise ValueError("Publish manifest identity is incomplete")
         paths = [item.path.casefold() for item in self.operations]
@@ -252,7 +272,10 @@ class PublishManifest:
             raise ValueError("Publish manifest contains aliased paths")
         if not self.publication_id:
             object.__setattr__(self, "publication_id", self.manifest_id)
-        if any(isinstance(value, bool) or not isinstance(value, int) for value in (self.batch_index, self.batch_count)):
+        if any(
+            isinstance(value, bool) or not isinstance(value, int)
+            for value in (self.batch_index, self.batch_count)
+        ):
             raise ValueError("Publication batch numbers must be integers")
         _check_batch_position(self.batch_index, self.batch_count)
 
@@ -274,7 +297,9 @@ class PublishManifest:
             workspace_id=str(data.get("workspace_id") or ""),
             source_snapshot_id=str(data.get("source_snapshot_id") or ""),
             approval_id=str(data.get("approval_id") or ""),
-            operations=tuple(PublishOperation(**item) for item in raw if isinstance(item, dict)),
+            operations=tuple(
+                PublishOperation(**item) for item in raw if isinstance(item, dict)
+            ),
             publication_id=str(data.get("publication_id") or ""),
             batch_index=_batch_number(data.get("batch_index")),
             batch_count=_batch_number(data.get("batch_count")),
@@ -315,7 +340,13 @@ class PublicationReceipt:
     operations: tuple[PublishedOperation, ...]
 
     def __post_init__(self) -> None:
-        identity = (self.manifest_id, self.run_id, self.workspace_id, self.source_snapshot_id, self.publication_id)
+        identity = (
+            self.manifest_id,
+            self.run_id,
+            self.workspace_id,
+            self.source_snapshot_id,
+            self.publication_id,
+        )
         if not all(identity):
             raise ValueError("Publication receipt identity is incomplete")
         if len(self.operations) > PUBLISH_BATCH_MAX_OPERATIONS:
@@ -333,7 +364,9 @@ class PublicationReceipt:
             batch_index=manifest.batch_index,
             batch_count=manifest.batch_count,
             operations=tuple(
-                PublishedOperation(item.path, item.operation, item.staged_sha256, item.staged_mode)
+                PublishedOperation(
+                    item.path, item.operation, item.staged_sha256, item.staged_mode
+                )
                 for item in manifest.operations
             ),
         )
@@ -345,7 +378,9 @@ class PublicationReceipt:
     def from_dict(cls, data: dict[str, Any]) -> PublicationReceipt:
         if set(data) - {item.name for item in fields(cls)}:
             raise ValueError("Unknown publication receipt fields")
-        raw = _bounded_operations(data, "Publication receipt operations must be a bounded array")
+        raw = _bounded_operations(
+            data, "Publication receipt operations must be a bounded array"
+        )
         operation_fields = {item.name for item in fields(PublishedOperation)}
         operations = []
         for item in raw:

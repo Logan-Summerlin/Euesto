@@ -55,7 +55,7 @@ This is the one authoritative list of check commands; other documents link here.
 pytest -m "not slow and not docker"
 pytest -m "slow and not docker"
 pytest -m docker
-ruff check .
+ruff check . && ruff format --check .
 python -m compileall -q app.py src server shared executor egress tests scripts
 pyside6-qmllint qml/Main.qml qml/Sidebar.qml qml/Transcript.qml qml/Composer.qml
 python scripts/qml_smoke.py

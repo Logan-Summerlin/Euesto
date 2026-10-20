@@ -58,18 +58,40 @@ def _hashes_for_one_write(tmp_path: Path, monkeypatch, file_count: int) -> tuple
     _tree(source, file_count)
     service = ExecutorService(_config(source, work))
     # First mutation populates the checkpoint object store; it is the one-time cost.
-    first = asyncio.run(service.execute(ToolRequest("w0", "run", "write", "agent", {"path": "pkg0/module0.py", "content": "value = 'first'\n"})))
+    first = asyncio.run(
+        service.execute(
+            ToolRequest(
+                "w0",
+                "run",
+                "write",
+                "agent",
+                {"path": "pkg0/module0.py", "content": "value = 'first'\n"},
+            )
+        )
+    )
     assert first.ok, first.to_dict()
     _settle()
     visible_files(work)  # warm: every digest is now observed after its file last changed
     counter = HashCounter(monkeypatch)
-    result = asyncio.run(service.execute(ToolRequest("w1", "run", "write", "agent", {"path": "pkg0/module1.py", "content": "value = 'changed'\n"})))
+    result = asyncio.run(
+        service.execute(
+            ToolRequest(
+                "w1",
+                "run",
+                "write",
+                "agent",
+                {"path": "pkg0/module1.py", "content": "value = 'changed'\n"},
+            )
+        )
+    )
     assert result.ok, result.to_dict()
     monkeypatch.undo()
     return len(counter.paths), result.data
 
 
-def test_single_file_mutation_hashing_does_not_scale_with_repository_size(tmp_path: Path, monkeypatch) -> None:
+def test_single_file_mutation_hashing_does_not_scale_with_repository_size(
+    tmp_path: Path, monkeypatch
+) -> None:
     small, small_data = _hashes_for_one_write(tmp_path, monkeypatch, 50)
     large, large_data = _hashes_for_one_write(tmp_path, monkeypatch, 1_500)
     # Checkpoint + post-mutation status re-hash only what changed, whatever the tree size.
@@ -137,7 +159,9 @@ def test_checkpoint_restore_is_unchanged_with_a_warm_cache(tmp_path: Path) -> No
 @pytest.mark.posix
 @pytest.mark.slow
 @pytest.mark.timeout(600)
-def test_large_workspace_mutation_is_dominated_by_the_write_not_the_tree_hash(tmp_path: Path, monkeypatch) -> None:
+def test_large_workspace_mutation_is_dominated_by_the_write_not_the_tree_hash(
+    tmp_path: Path, monkeypatch
+) -> None:
     """Benchmark: 50,000 small files. Once warm, one write re-hashes O(1) files and its
     checkpoint step is cheaper than a single cold hash of the tree."""
     source = tmp_path / "source"
@@ -148,7 +172,13 @@ def test_large_workspace_mutation_is_dominated_by_the_write_not_the_tree_hash(tm
         (directory / f"f{index}.txt").write_bytes(os.urandom(512))
     work = tmp_path / "work"
     service = ExecutorService(_config(source, work))
-    assert asyncio.run(service.execute(ToolRequest("w0", "run", "write", "agent", {"path": "d0/new.txt", "content": "seed\n"}))).ok
+    assert asyncio.run(
+        service.execute(
+            ToolRequest(
+                "w0", "run", "write", "agent", {"path": "d0/new.txt", "content": "seed\n"}
+            )
+        )
+    ).ok
     _settle()
     visible_files(work)
     clear_hash_cache(work)
@@ -159,7 +189,13 @@ def test_large_workspace_mutation_is_dominated_by_the_write_not_the_tree_hash(tm
     visible_files(work)
     counter = HashCounter(monkeypatch)
     started = time.perf_counter()
-    result = asyncio.run(service.execute(ToolRequest("w1", "run", "write", "agent", {"path": "d0/new.txt", "content": "changed\n"})))
+    result = asyncio.run(
+        service.execute(
+            ToolRequest(
+                "w1", "run", "write", "agent", {"path": "d0/new.txt", "content": "changed\n"}
+            )
+        )
+    )
     elapsed = time.perf_counter() - started
     assert result.ok, result.to_dict()
     assert len(counter.paths) <= 4
@@ -200,7 +236,12 @@ def test_executor_serves_read_only_tools_concurrently(tmp_path: Path, monkeypatc
 
     async def scenario() -> float:
         started = time.perf_counter()
-        results = await asyncio.gather(*(service.execute(ToolRequest(f"ls-{index}", "run", "ls", "agent", {})) for index in range(4)))
+        results = await asyncio.gather(
+            *(
+                service.execute(ToolRequest(f"ls-{index}", "run", "ls", "agent", {}))
+                for index in range(4)
+            )
+        )
         assert all(result.ok for result in results)
         return time.perf_counter() - started
 

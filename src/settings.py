@@ -69,4 +69,3 @@ def save_gateway_token(token: str) -> None:
     if len(value.encode("utf-8")) < MIN_GATEWAY_TOKEN_BYTES:
         raise ValueError("Gateway token must contain at least 256 bits")
     keyring.set_password(KEYRING_SERVICE, GATEWAY_KEYRING_USERNAME, value)
-

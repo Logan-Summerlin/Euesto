@@ -5,6 +5,7 @@ run's executor session. The loop has its own capped budget, debits every model c
 the parent's budget, and keeps its own evidence ledger: nested results never enter the
 parent's context, so they neither consume nor are starved by the parent's result allowance.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -103,15 +104,19 @@ class RepositoryInvestigation:
                 {"role": "system", "content": _system_prompt(child)},
                 {"role": "user", "content": _investigation_prompt(query, self.inspected)},
             ]
-            await self.append(self.run_id, "subagent.started", {
-                **self.link,
-                "model": self.model,
-                "budget": {
-                    "max_tool_calls": child.max_tool_calls,
-                    "max_iterations": child.max_iterations,
-                    "max_wall_seconds": child.max_wall_seconds,
+            await self.append(
+                self.run_id,
+                "subagent.started",
+                {
+                    **self.link,
+                    "model": self.model,
+                    "budget": {
+                        "max_tool_calls": child.max_tool_calls,
+                        "max_iterations": child.max_iterations,
+                        "max_wall_seconds": child.max_wall_seconds,
+                    },
                 },
-            })
+            )
             return await self._finish(await self._investigate(child), child.usage())
         except BudgetExceededError as exc:
             # The child's limits are checked before each step, so this is the parent's budget
@@ -128,10 +133,12 @@ class RepositoryInvestigation:
         except Exception as exc:
             message = str(exc)[:2000]
             await self.append(self.run_id, "subagent.failed", {**self.link, "message": message})
-            return json.dumps({
-                "error": message,
-                "fallback": "Continue with read, grep, find, and ls directly.",
-            })
+            return json.dumps(
+                {
+                    "error": message,
+                    "fallback": "Continue with read, grep, find, and ls directly.",
+                }
+            )
 
     @property
     def _has_evidence(self) -> bool:
@@ -173,12 +180,19 @@ class RepositoryInvestigation:
                 if stop_reason is not None:
                     # Every tool call in the assistant message needs a result, or the provider
                     # rejects the synthesis request that follows.
-                    self.messages.append(tool_message(parse_tool_call(call)[0], json.dumps({
-                        "ok": False,
-                        "error_code": "investigation.budget_reserved",
-                        "output": "Not executed: the remaining investigation budget is reserved "
-                        "for the final summary.",
-                    })))
+                    self.messages.append(
+                        tool_message(
+                            parse_tool_call(call)[0],
+                            json.dumps(
+                                {
+                                    "ok": False,
+                                    "error_code": "investigation.budget_reserved",
+                                    "output": "Not executed: the remaining investigation budget is reserved "
+                                    "for the final summary.",
+                                }
+                            ),
+                        )
+                    )
                     continue
                 child.consume_tool_call()
                 await self._tool_call(call)
@@ -228,7 +242,11 @@ class RepositoryInvestigation:
         reserve = 0.0 if synthesis else investigation_synthesis_reserve(child)
         # The synthesis turn is the one that produces the answer, so it always gets the full
         # reserve.
-        floor = INVESTIGATION_SYNTHESIS_RESERVE_SECONDS if synthesis else INVESTIGATION_MIN_TURN_SECONDS
+        floor = (
+            INVESTIGATION_SYNTHESIS_RESERVE_SECONDS
+            if synthesis
+            else INVESTIGATION_MIN_TURN_SECONDS
+        )
         delay = 1.0
         for attempt in range(1, INVESTIGATION_PROVIDER_ATTEMPTS + 1):
             available = child.remaining_wall_seconds - reserve
@@ -288,9 +306,11 @@ class RepositoryInvestigation:
             # The parent already has this content: refuse without touching the executor.
             if repeated not in self.skipped:
                 self.skipped.append(repeated)
-            await self.append(self.run_id, "subagent.tool_call", {
-                **self.link, "request": tool.to_dict(), "skipped": True
-            })
+            await self.append(
+                self.run_id,
+                "subagent.tool_call",
+                {**self.link, "request": tool.to_dict(), "skipped": True},
+            )
             result = ToolResult(
                 sub_id,
                 False,
@@ -299,19 +319,21 @@ class RepositoryInvestigation:
                 error_code="investigation.already_inspected",
                 data={"path": repeated},
             )
-            await self.append(self.run_id, "subagent.tool_result", {
-                **self.link, "result": result.to_dict(), "skipped": True
-            })
+            await self.append(
+                self.run_id,
+                "subagent.tool_result",
+                {**self.link, "result": result.to_dict(), "skipped": True},
+            )
         else:
             if args.get("path"):
                 self.files.add(str(args["path"]))
-            await self.append(self.run_id, "subagent.tool_call", {
-                **self.link, "request": tool.to_dict()
-            })
+            await self.append(
+                self.run_id, "subagent.tool_call", {**self.link, "request": tool.to_dict()}
+            )
             result = await self.executor.execute(tool)
-            await self.append(self.run_id, "subagent.tool_result", {
-                **self.link, "result": result.to_dict()
-            })
+            await self.append(
+                self.run_id, "subagent.tool_result", {**self.link, "result": result.to_dict()}
+            )
             self.observed.update(_observed_files(sub_name, args, result))
         self.messages.append(self._result_message(sub_id, sub_name, result))
 
@@ -324,9 +346,11 @@ class RepositoryInvestigation:
             "mode": "plan",
             "arguments": bounded_excerpt(raw_arguments, 4_000),
         }
-        await self.append(self.run_id, "subagent.tool_call", {
-            **self.link, "request": request, "rejected": True
-        })
+        await self.append(
+            self.run_id,
+            "subagent.tool_call",
+            {**self.link, "request": request, "rejected": True},
+        )
         result = ToolResult(
             sub_id,
             False,
@@ -334,9 +358,11 @@ class RepositoryInvestigation:
             error_code=error_code,
             data={"allowed_tools": sorted(PLAN_TOOLS)},
         )
-        await self.append(self.run_id, "subagent.tool_result", {
-            **self.link, "result": result.to_dict(), "rejected": True
-        })
+        await self.append(
+            self.run_id,
+            "subagent.tool_result",
+            {**self.link, "result": result.to_dict(), "rejected": True},
+        )
         self.messages.append(self._result_message(sub_id, sub_name, result))
 
     def _result_message(self, sub_id: str, name: str, result: ToolResult) -> Message:
@@ -347,7 +373,9 @@ class RepositoryInvestigation:
                 output=bounded_excerpt(result.output, INVESTIGATION_MAX_OUTPUT_CHARS),
                 truncated=True,
             )
-        text = bounded_tool_result(name, result, INVESTIGATION_RESULT_BYTES - self.evidence_bytes)
+        text = bounded_tool_result(
+            name, result, INVESTIGATION_RESULT_BYTES - self.evidence_bytes
+        )
         self.evidence_bytes += len(text.encode())
         return tool_message(sub_id, text)
 
@@ -368,9 +396,9 @@ class RepositoryInvestigation:
         ).to_dict()
 
     async def _finish(self, payload: dict[str, Any], usage: dict[str, Any]) -> str:
-        await self.append(self.run_id, "subagent.completed", {
-            **self.link, "usage": usage, **payload
-        })
+        await self.append(
+            self.run_id, "subagent.completed", {**self.link, "usage": usage, **payload}
+        )
         return json.dumps(payload)
 
 
@@ -400,7 +428,9 @@ def _parse_investigation_arguments(raw_arguments: str) -> tuple[str, tuple[str, 
     arguments = parse_arguments(raw_arguments)
     unknown = set(arguments) - {"query", "inspected_paths"}
     if unknown:
-        raise ValueError(f"Unknown investigate_repository arguments: {', '.join(sorted(unknown))}")
+        raise ValueError(
+            f"Unknown investigate_repository arguments: {', '.join(sorted(unknown))}"
+        )
     query = arguments.get("query")
     if not isinstance(query, str) or not query.strip():
         raise ValueError("query is required")
@@ -422,14 +452,14 @@ def _system_prompt(child: RunBudget) -> str:
         "Never intentionally spend the final available tool call on exploratory work; when one tool "
         "call or one iteration remains, stop using repository tools and return your best-supported "
         "summary. Large files are returned in bounded excerpts; use grep or read with "
-        "start_line/end_line to target the relevant lines. "
-        + REPORT_FORMAT_INSTRUCTIONS
+        "start_line/end_line to target the relevant lines. " + REPORT_FORMAT_INSTRUCTIONS
     )
 
 
 def _investigation_prompt(query: str, inspected: tuple[str, ...]) -> str:
     prompt = (
-        "Investigate this repository question and return a concise factual summary. Query: " + query
+        "Investigate this repository question and return a concise factual summary. Query: "
+        + query
     )
     if inspected:
         prompt += (
@@ -441,7 +471,11 @@ def _investigation_prompt(query: str, inspected: tuple[str, ...]) -> str:
 
 
 def _stop_reason(
-    child: RunBudget, last_turn_cost: float, ledger_bytes: int, *, reserve_iteration: bool = True
+    child: RunBudget,
+    last_turn_cost: float,
+    ledger_bytes: int,
+    *,
+    reserve_iteration: bool = True,
 ) -> str | None:
     """Why exploration must stop now to leave room for synthesis, or ``None`` to continue."""
     if (
@@ -474,7 +508,9 @@ def _fallback_summary(
     else:
         lead = "The investigation model returned no final summary."
     seen = sorted(observed) or sorted(files)
-    tail = f" Files it examined: {', '.join(seen[:40])}." if seen else " No files were examined."
+    tail = (
+        f" Files it examined: {', '.join(seen[:40])}." if seen else " No files were examined."
+    )
     return lead + tail + " Verify directly with read, grep, find, and ls."
 
 

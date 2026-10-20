@@ -1,4 +1,5 @@
 """Pagination cursors and listing lines shared by the read-only tools."""
+
 from __future__ import annotations
 
 import base64
@@ -25,7 +26,10 @@ def decode_cursor(value: object, tool: str, *, maximum: int | None = MAX_CURSOR_
     except (ValueError, UnicodeError, binascii.Error):
         raise ExecutorToolError(INVALID_ARGUMENTS, f"Invalid {tool} result cursor") from None
     if offset < 0 or (maximum is not None and offset > maximum):
-        raise ExecutorToolError(INVALID_ARGUMENTS, f"{tool.capitalize()} result cursor is outside the bounded pagination range")
+        raise ExecutorToolError(
+            INVALID_ARGUMENTS,
+            f"{tool.capitalize()} result cursor is outside the bounded pagination range",
+        )
     return offset
 
 
@@ -44,8 +48,14 @@ def listing_directory(root: Path, arguments: dict, allowed: frozenset[str], tool
 
 def requested_results(arguments: dict, default: int) -> int:
     requested = arguments.get("max_results", default)
-    if not isinstance(requested, int) or isinstance(requested, bool) or not 1 <= requested <= 2000:
-        raise ExecutorToolError(INVALID_ARGUMENTS, "max_results must be an integer from 1 to 2000")
+    if (
+        not isinstance(requested, int)
+        or isinstance(requested, bool)
+        or not 1 <= requested <= 2000
+    ):
+        raise ExecutorToolError(
+            INVALID_ARGUMENTS, "max_results must be an integer from 1 to 2000"
+        )
     return requested
 
 

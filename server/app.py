@@ -144,7 +144,9 @@ async def _run_events(request: Request) -> Response:
     try:
         after_id = int(request.headers.get("last-event-id", "0"))
     except ValueError:
-        return _error("request.invalid_event_id", "Last-Event-ID must be an integer.", status=400)
+        return _error(
+            "request.invalid_event_id", "Last-Event-ID must be an integer.", status=400
+        )
     if _service(request).journal.get_run(run_id) is None:
         return _error("run.not_found", "Run not found.", status=404)
     return StreamingResponse(
@@ -197,14 +199,16 @@ async def _permission_rules(request: Request) -> Response:
     workspace = request.query_params.get("workspace_id", "")
     if not workspace:
         return _error("workspace.required", "workspace_id is required.", status=422)
-    return JSONResponse({
-        "rules": [
-            rule.to_dict()
-            for rule in _service(request).journal.permission_rules(
-                workspace, include_disabled=True
-            )
-        ]
-    })
+    return JSONResponse(
+        {
+            "rules": [
+                rule.to_dict()
+                for rule in _service(request).journal.permission_rules(
+                    workspace, include_disabled=True
+                )
+            ]
+        }
+    )
 
 
 async def _delete_permission_rule(request: Request) -> Response:

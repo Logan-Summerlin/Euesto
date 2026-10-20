@@ -141,7 +141,9 @@ class GenerationController:
         catalog: list[ModelOption],
     ) -> PreparedGeneration:
         context_limit = int(model_context_length(model, catalog) * 0.8)
-        messages, summary, covered = compact_messages(context_source(conversation.system_prompt, context_messages), context_limit)
+        messages, summary, covered = compact_messages(
+            context_source(conversation.system_prompt, context_messages), context_limit
+        )
         if covered:
             existing = self.storage.list_compactions(conversation.id)
             if not existing or existing[-1].get("covered_message_ids") != covered:

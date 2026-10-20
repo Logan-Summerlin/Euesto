@@ -4,7 +4,11 @@ from server.agent.context import compact_agent_context, estimate_message_tokens
 
 
 def _turn(index: int) -> list[dict]:
-    call = {"id": f"c{index}", "type": "function", "function": {"name": "read", "arguments": '{"path":"a.py"}'}}
+    call = {
+        "id": f"c{index}",
+        "type": "function",
+        "function": {"name": "read", "arguments": '{"path":"a.py"}'},
+    }
     return [
         {"role": "assistant", "content": f"step {index}", "tool_calls": [call]},
         {"role": "tool", "tool_call_id": f"c{index}", "content": "x" * 5_000},

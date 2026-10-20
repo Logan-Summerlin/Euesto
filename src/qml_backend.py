@@ -53,7 +53,9 @@ class DesktopBridge(QObject):
         self.storage = storage or Storage(database_path())
         self.status_text = "Ready"
         self._models: list[dict[str, Any]] = []
-        self._pending_confirmation: dict[str, tuple[Callable[[], None], Callable[[], None] | None]] = {}
+        self._pending_confirmation: dict[
+            str, tuple[Callable[[], None], Callable[[], None] | None]
+        ] = {}
         self._window: QWindow | None = None
         self.tray: TrayService | None = None
         self.hotkey: GlobalQuickChatHotkey | None = None
@@ -75,7 +77,14 @@ class DesktopBridge(QObject):
         self.status_text = text
         self.stateChanged.emit()
 
-    def confirm(self, token: str, title: str, body: str, on_accept: Callable[[], None], on_decline: Callable[[], None] | None = None) -> None:
+    def confirm(
+        self,
+        token: str,
+        title: str,
+        body: str,
+        on_accept: Callable[[], None],
+        on_decline: Callable[[], None] | None = None,
+    ) -> None:
         self._pending_confirmation[token] = (on_accept, on_decline)
         self.confirmRequested.emit(token, title, body)
 
@@ -209,7 +218,10 @@ class DesktopBridge(QObject):
 
     @Property(str, notify=settingsChanged)
     def reasoningEffort(self) -> str:
-        return self.settings.request_options(self.history.current_model()).reasoning_effort or "default"
+        return (
+            self.settings.request_options(self.history.current_model()).reasoning_effort
+            or "default"
+        )
 
     @Property("QVariantMap", notify=settingsChanged)
     def modelOptions(self) -> dict[str, Any]:
@@ -309,7 +321,9 @@ class DesktopBridge(QObject):
         self.settings.start_catalog_refresh(report_errors=True)
 
     @Slot(str, bool, float, int, int, result="QVariantList")
-    def filteredModels(self, query: str, text_only: bool, max_price: float, max_rank: int, year: int) -> list[dict[str, Any]]:
+    def filteredModels(
+        self, query: str, text_only: bool, max_price: float, max_rank: int, year: int
+    ) -> list[dict[str, Any]]:
         return filter_model_entries(self._models, query, text_only, max_price, max_rank, year)
 
     @Slot(str)
@@ -471,7 +485,12 @@ class DesktopBridge(QObject):
         if self._window is window:
             return
         self._window = window
-        self.tray = TrayService(window, show_quick_chat=self.showQuickChat, toggle_visibility=self.toggleWindowVisibility, close=self.shutdown)
+        self.tray = TrayService(
+            window,
+            show_quick_chat=self.showQuickChat,
+            toggle_visibility=self.toggleWindowVisibility,
+            close=self.shutdown,
+        )
         self.hotkey = GlobalQuickChatHotkey(window, self.showQuickChat)
         application = QGuiApplication.instance()
         if application:
@@ -490,7 +509,10 @@ class DesktopBridge(QObject):
     def toggleWindowVisibility(self) -> None:
         if not self._window:
             return
-        if self._window.isVisible() and self._window.visibility() != QWindow.Visibility.Minimized:
+        if (
+            self._window.isVisible()
+            and self._window.visibility() != QWindow.Visibility.Minimized
+        ):
             self._window.hide()
         else:
             self.showQuickChat()

@@ -40,8 +40,14 @@ def status(
     if set(arguments) - STATUS_ARGUMENTS:
         raise ExecutorToolError(INVALID_ARGUMENTS, "Unknown status arguments")
     requested = arguments.get("max_results", DEFAULT_STATUS_RESULTS)
-    if not isinstance(requested, int) or isinstance(requested, bool) or not 1 <= requested <= MAX_STATUS_RESULTS:
-        raise ExecutorToolError(INVALID_ARGUMENTS, f"max_results must be an integer from 1 to {MAX_STATUS_RESULTS}")
+    if (
+        not isinstance(requested, int)
+        or isinstance(requested, bool)
+        or not 1 <= requested <= MAX_STATUS_RESULTS
+    ):
+        raise ExecutorToolError(
+            INVALID_ARGUMENTS, f"max_results must be an integer from 1 to {MAX_STATUS_RESULTS}"
+        )
     include_diffs = arguments.get("include_diffs", False)
     if not isinstance(include_diffs, bool):
         raise ExecutorToolError(INVALID_ARGUMENTS, "include_diffs must be a boolean")
@@ -74,7 +80,10 @@ def status(
         "limit": requested,
         "truncated": has_more,
         "publication_batches": _batch_count(all_changes),
-        "publication_batch_limits": {"max_operations": PUBLISH_BATCH_MAX_OPERATIONS, "max_bytes": PUBLISH_BATCH_MAX_BYTES},
+        "publication_batch_limits": {
+            "max_operations": PUBLISH_BATCH_MAX_OPERATIONS,
+            "max_bytes": PUBLISH_BATCH_MAX_BYTES,
+        },
     }
     if scopes is not None:
         data["paths"] = scopes
@@ -93,9 +102,13 @@ def status(
             elif item.get("kind") != "text":
                 lines.append(f"[{item['path']}: {item['kind']} — no textual diff]")
         if diff_truncated:
-            lines.append("… [status diff budget exhausted; narrow `paths` or page with `cursor`] …")
+            lines.append(
+                "… [status diff budget exhausted; narrow `paths` or page with `cursor`] …"
+            )
     if has_more:
-        lines.append(f"… {len(changes) - cursor - len(page)} more change(s); continue with next_cursor.")
+        lines.append(
+            f"… {len(changes) - cursor - len(page)} more change(s); continue with next_cursor."
+        )
     return "\n".join(lines), data
 
 
@@ -104,13 +117,17 @@ def _scopes(value: object) -> list[str] | None:
         return None
     valid = isinstance(value, list) and 1 <= len(value) <= MAX_STATUS_PATHS
     if not valid or not all(isinstance(item, str) and item for item in value):
-        raise ExecutorToolError(INVALID_ARGUMENTS, f"paths must be a list of 1 to {MAX_STATUS_PATHS} relative paths")
+        raise ExecutorToolError(
+            INVALID_ARGUMENTS, f"paths must be a list of 1 to {MAX_STATUS_PATHS} relative paths"
+        )
     scopes: list[str] = []
     for item in value:
         try:
             normalized = normalize_relative(item)
         except UnsafePath as exc:
-            raise ExecutorToolError(PATH_INVALID, f"Invalid status path {item!r}: {exc}") from exc
+            raise ExecutorToolError(
+                PATH_INVALID, f"Invalid status path {item!r}: {exc}"
+            ) from exc
         if normalized != "." and is_tool_excluded(normalized):
             raise ExecutorToolError(PATH_MISSING, f"file not found: {item}")
         scopes.append(normalized)
@@ -183,17 +200,25 @@ def _diffs(
     exhausted = False
     for change in changes:
         if exhausted:
-            results.append({"path": change.path, "kind": "omitted", "reason": "diff_budget_exhausted"})
+            results.append(
+                {"path": change.path, "kind": "omitted", "reason": "diff_budget_exhausted"}
+            )
             continue
         if change.operation == "update" and change.base_sha256 == change.staged_sha256:
-            results.append({
-                "path": change.path,
-                "kind": "mode_only",
-                "base_mode": _octal(change.base_mode),
-                "staged_mode": _octal(change.staged_mode),
-            })
+            results.append(
+                {
+                    "path": change.path,
+                    "kind": "mode_only",
+                    "base_mode": _octal(change.base_mode),
+                    "staged_mode": _octal(change.staged_mode),
+                }
+            )
             continue
-        before = _baseline_bytes(work_root, source_root, change) if change.operation != "create" else b""
+        before = (
+            _baseline_bytes(work_root, source_root, change)
+            if change.operation != "create"
+            else b""
+        )
         after = _staged_bytes(work_root, change) if change.operation != "delete" else b""
         if before is None or after is None:
             reason = "too_large" if _too_large(change) else "baseline_unavailable"
@@ -202,47 +227,66 @@ def _diffs(
         before_text = _text(before)
         after_text = _text(after)
         if before_text is None or after_text is None:
-            results.append({
-                "path": change.path,
-                "kind": "binary",
-                "base_size_bytes": change.base_size_bytes,
-                "staged_size_bytes": change.staged_size_bytes,
-            })
+            results.append(
+                {
+                    "path": change.path,
+                    "kind": "binary",
+                    "base_size_bytes": change.base_size_bytes,
+                    "staged_size_bytes": change.staged_size_bytes,
+                }
+            )
             continue
-        lines = list(difflib.unified_diff(
-            before_text.splitlines(keepends=True), after_text.splitlines(keepends=True),
-            fromfile=f"baseline/{change.path}" if change.operation != "create" else "/dev/null",
-            tofile=f"staged/{change.path}" if change.operation != "delete" else "/dev/null",
-        ))
+        lines = list(
+            difflib.unified_diff(
+                before_text.splitlines(keepends=True),
+                after_text.splitlines(keepends=True),
+                fromfile=f"baseline/{change.path}"
+                if change.operation != "create"
+                else "/dev/null",
+                tofile=f"staged/{change.path}" if change.operation != "delete" else "/dev/null",
+            )
+        )
         accepted: list[str] = []
         for line in lines:
             if not line.endswith("\n"):
                 line += "\n\\ No newline at end of file\n"
             encoded = len(line.encode("utf-8"))
-            if used_lines >= MAX_STATUS_DIFF_LINES or used_bytes + encoded > MAX_STATUS_DIFF_BYTES:
+            if (
+                used_lines >= MAX_STATUS_DIFF_LINES
+                or used_bytes + encoded > MAX_STATUS_DIFF_BYTES
+            ):
                 exhausted = True
                 break
             accepted.append(line)
             used_lines += 1
             used_bytes += encoded
         added = sum(1 for line in lines if line.startswith("+") and not line.startswith("+++"))
-        removed = sum(1 for line in lines if line.startswith("-") and not line.startswith("---"))
-        results.append({
-            "path": change.path,
-            "kind": "text",
-            "text": "".join(accepted).rstrip("\n"),
-            "truncated": len(accepted) < len(lines),
-            "added_lines": added,
-            "removed_lines": removed,
-        })
+        removed = sum(
+            1 for line in lines if line.startswith("-") and not line.startswith("---")
+        )
+        results.append(
+            {
+                "path": change.path,
+                "kind": "text",
+                "text": "".join(accepted).rstrip("\n"),
+                "truncated": len(accepted) < len(lines),
+                "added_lines": added,
+                "removed_lines": removed,
+            }
+        )
     return results, exhausted
 
 
 def _too_large(change: WorkspaceChange) -> bool:
-    return max(int(change.base_size_bytes or 0), int(change.staged_size_bytes or 0)) > MAX_STATUS_DIFF_FILE_BYTES
+    return (
+        max(int(change.base_size_bytes or 0), int(change.staged_size_bytes or 0))
+        > MAX_STATUS_DIFF_FILE_BYTES
+    )
 
 
-def _baseline_bytes(work_root: Path, source_root: Path, change: WorkspaceChange) -> bytes | None:
+def _baseline_bytes(
+    work_root: Path, source_root: Path, change: WorkspaceChange
+) -> bytes | None:
     """Baseline content by hash: the checkpoint object store first, then the source mount."""
     digest = change.base_sha256
     if not digest or int(change.base_size_bytes or 0) > MAX_STATUS_DIFF_FILE_BYTES:
@@ -283,4 +327,3 @@ def _text(content: bytes) -> str | None:
         return content.decode("utf-8")
     except UnicodeDecodeError:
         return None
-

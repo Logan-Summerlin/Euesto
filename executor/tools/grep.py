@@ -124,7 +124,9 @@ def _iter_files(root: Path, scope: Path) -> Iterator[Path]:
     for directory, dirnames, filenames in os.walk(scope, topdown=True):
         current = Path(directory)
         dirnames[:] = sorted(
-            name for name in dirnames if not is_tool_excluded(current.joinpath(name).relative_to(root).as_posix())
+            name
+            for name in dirnames
+            if not is_tool_excluded(current.joinpath(name).relative_to(root).as_posix())
         )
         for name in sorted(filenames, key=str.casefold):
             yield current / name

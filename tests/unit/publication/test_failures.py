@@ -45,7 +45,10 @@ def test_publication_reports_unexpected_baseline_error_instead_of_leaking_from_t
     failed: list[str] = []
 
     worker = PublicationWorker(
-        _manifest(), tmp_path / "workspace", tmp_path / "recovery", reseed_client=BrokenGateway()
+        _manifest(),
+        tmp_path / "workspace",
+        tmp_path / "recovery",
+        reseed_client=BrokenGateway(),
     )
     worker.complete.connect(completed.append)
     worker.failed.connect(failed.append)

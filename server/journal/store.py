@@ -120,7 +120,15 @@ class JournalStore:
                 ),
             )
             state = event.type.removeprefix("run.") if event.type.startswith("run.") else None
-            if state in {"started", "waiting", "paused", "resumed", "cancelled", "failed", "completed"}:
+            if state in {
+                "started",
+                "waiting",
+                "paused",
+                "resumed",
+                "cancelled",
+                "failed",
+                "completed",
+            }:
                 if state == "resumed":
                     state = "started"
                 self._connection.execute(
@@ -167,7 +175,12 @@ class JournalStore:
         for run_id in self.nonterminal_runs():
             run = self.get_run(run_id)
             snapshot = self.load_run_snapshot(run_id)
-            if run and run["mode"] in {"plan", "agent"} and snapshot and snapshot["safe_to_resume"]:
+            if (
+                run
+                and run["mode"] in {"plan", "agent"}
+                and snapshot
+                and snapshot["safe_to_resume"]
+            ):
                 self.append(
                     run_id,
                     "run.paused",
@@ -319,7 +332,8 @@ class JournalStore:
     def load_workspace_config(self, workspace_id: str) -> dict[str, Any]:
         with self._lock:
             row = self._connection.execute(
-                "SELECT payload_json FROM workspace_configs WHERE workspace_id = ?", (workspace_id,)
+                "SELECT payload_json FROM workspace_configs WHERE workspace_id = ?",
+                (workspace_id,),
             ).fetchone()
         if not row:
             return {}

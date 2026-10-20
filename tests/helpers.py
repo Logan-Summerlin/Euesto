@@ -1,4 +1,5 @@
 """Plain helper functions shared by tests (the test folders are not packages)."""
+
 from __future__ import annotations
 
 from pathlib import Path

@@ -108,12 +108,16 @@ class AgentRuntime:
             status = await self.executor.status()
             if status.get("workspace_id") != request.workspace_id:
                 raise RuntimeError("executor workspace identity mismatch")
-            await self.append(run_id, "run.resumed" if resumed else "run.started", {
-                "mode": request.mode,
-                "workspace_id": request.workspace_id,
-                "approval_policy": request.approval_policy,
-                "budget": budget.snapshot(),
-            })
+            await self.append(
+                run_id,
+                "run.resumed" if resumed else "run.started",
+                {
+                    "mode": request.mode,
+                    "workspace_id": request.workspace_id,
+                    "approval_policy": request.approval_policy,
+                    "budget": budget.snapshot(),
+                },
+            )
             if not resumed:
                 messages = await self._with_workspace_context(run_id, request, messages)
             context = _render_executor_context(
@@ -121,22 +125,30 @@ class AgentRuntime:
             )
             if context:
                 messages.insert(0, {"role": "system", "content": context})
-            await self.append(run_id, "context.inspected", {
-                "estimated_tokens": estimate_message_tokens(messages),
-                "limit_tokens": request.context_limit_tokens,
-                "message_count": len(messages),
-                "session_id": request.session_id,
-                "budget": budget.snapshot(),
-            })
+            await self.append(
+                run_id,
+                "context.inspected",
+                {
+                    "estimated_tokens": estimate_message_tokens(messages),
+                    "limit_tokens": request.context_limit_tokens,
+                    "message_count": len(messages),
+                    "session_id": request.session_id,
+                    "budget": budget.snapshot(),
+                },
+            )
             self._save_snapshot(run_id, request, messages, visible, budget, True)
             await self._agent_loop(run_id, request, api_key, messages, visible, budget)
         except ApprovalTimeoutError as exc:
-            await self.append(run_id, "approval.timeout", {
-                "approval_id": exc.approval_id,
-                "message": str(exc),
-                "reason": "wall_time_budget",
-                "budget": budget.snapshot(),
-            })
+            await self.append(
+                run_id,
+                "approval.timeout",
+                {
+                    "approval_id": exc.approval_id,
+                    "message": str(exc),
+                    "reason": "wall_time_budget",
+                    "budget": budget.snapshot(),
+                },
+            )
             await self._fail(run_id, "approval.timeout", str(exc), budget)
         except ProviderError as exc:
             await self._fail(run_id, exc.code, str(exc), budget, retryable=exc.retryable)
@@ -152,40 +164,57 @@ class AgentRuntime:
             self._api_keys.pop(run_id, None)
 
     async def _fail(
-        self, run_id: str, code: str, message: str, budget: RunBudget, *, retryable: bool = False
+        self,
+        run_id: str,
+        code: str,
+        message: str,
+        budget: RunBudget,
+        *,
+        retryable: bool = False,
     ) -> None:
-        await self.append(run_id, "run.failed", {
-            "code": code,
-            "message": message,
-            "retryable": retryable,
-            "budget": budget.snapshot(),
-        })
+        await self.append(
+            run_id,
+            "run.failed",
+            {
+                "code": code,
+                "message": message,
+                "retryable": retryable,
+                "budget": budget.snapshot(),
+            },
+        )
 
     async def _approve_budget_profile(
         self, run_id: str, request: AgentRunRequest, profile: BudgetProfile, budget: RunBudget
     ) -> None:
         """Ask once per session before running a profile well above the standard budget."""
         session_key = request.session_id or f"run:{run_id}"
-        if not requires_budget_approval(profile) or session_key in self._approved_budget_sessions:
+        if (
+            not requires_budget_approval(profile)
+            or session_key in self._approved_budget_sessions
+        ):
             return
         approval_id = str(uuid.uuid4())
-        await self.append(run_id, "approval.required", {
-            "approval_id": approval_id,
-            "kind": "budget",
-            "budget_profile": profile.name,
-            "standard_profile": "coding",
-            "budgets": {
-                "max_iterations": profile.max_iterations,
-                "max_tool_calls": profile.max_tool_calls,
-                "max_wall_seconds": profile.max_wall_seconds,
-                "max_cost": profile.max_cost,
+        await self.append(
+            run_id,
+            "approval.required",
+            {
+                "approval_id": approval_id,
+                "kind": "budget",
+                "budget_profile": profile.name,
+                "standard_profile": "coding",
+                "budgets": {
+                    "max_iterations": profile.max_iterations,
+                    "max_tool_calls": profile.max_tool_calls,
+                    "max_wall_seconds": profile.max_wall_seconds,
+                    "max_cost": profile.max_cost,
+                },
+                "approval_reason": (
+                    "This profile exceeds the standard coding profile by more than 2x on at least "
+                    "one approved resource budget."
+                ),
+                "available_decisions": ["deny", "allow_run"],
             },
-            "approval_reason": (
-                "This profile exceeds the standard coding profile by more than 2x on at least "
-                "one approved resource budget."
-            ),
-            "available_decisions": ["deny", "allow_run"],
-        })
+        )
         decision = await self.approvals.wait(
             run_id, approval_id, timeout=budget.remaining_wall_seconds
         )
@@ -222,11 +251,15 @@ class AgentRuntime:
         while True:
             if self.pause_requested(run_id):
                 self._save_snapshot(run_id, request, messages, visible, budget, True)
-                await self.append(run_id, "run.paused", {
-                    "reason": "user.requested",
-                    "resumable": True,
-                    "budget": budget.snapshot(),
-                })
+                await self.append(
+                    run_id,
+                    "run.paused",
+                    {
+                        "reason": "user.requested",
+                        "resumable": True,
+                        "budget": budget.snapshot(),
+                    },
+                )
                 return
             messages = compact_agent_context(
                 messages, max(4_000, int(request.context_limit_tokens * 0.8))
@@ -242,18 +275,24 @@ class AgentRuntime:
             if not turn.tool_calls:
                 if content:
                     await self.append(run_id, "model.delta", {"text": content})
-                await self.append(run_id, "usage.updated", {
-                    **turn.usage, "budget": budget.snapshot(), **budget.usage()
-                })
+                await self.append(
+                    run_id,
+                    "usage.updated",
+                    {**turn.usage, "budget": budget.snapshot(), **budget.usage()},
+                )
                 self._save_turn(run_id, request, messages, transcript, budget, False)
                 if request.mode == "agent" and run_mutated:
                     await self._offer_publish(run_id, request.approval_policy)
-                await self.append(run_id, "run.completed", {
-                    "iterations": budget.iterations,
-                    "tool_calls": budget.tool_calls,
-                    **budget.usage(),
-                    "budget": budget.snapshot(),
-                })
+                await self.append(
+                    run_id,
+                    "run.completed",
+                    {
+                        "iterations": budget.iterations,
+                        "tool_calls": budget.tool_calls,
+                        **budget.usage(),
+                        "budget": budget.snapshot(),
+                    },
+                )
                 return
             # The investigation call cap is per turn: each model turn starts with a fresh allowance.
             self._investigation_calls.pop(run_id, None)
@@ -266,11 +305,13 @@ class AgentRuntime:
                     )
                     run_mutated = mutated or run_mutated
                     continue
-                for buffer in await self._execute_parallel_group(run_id, request, group, budget):
+                for buffer in await self._execute_parallel_group(
+                    run_id, request, group, budget
+                ):
                     messages.extend(buffer)
-            await self.append(run_id, "usage.updated", {
-                "budget": budget.snapshot(), **budget.usage()
-            })
+            await self.append(
+                run_id, "usage.updated", {"budget": budget.snapshot(), **budget.usage()}
+            )
             self._save_turn(run_id, request, messages, transcript, budget, True)
 
     async def _execute_parallel_group(
@@ -292,7 +333,10 @@ class AgentRuntime:
                 )
 
         await asyncio.gather(
-            *(run_one(raw_call, buffer) for raw_call, buffer in zip(group, buffers, strict=True))
+            *(
+                run_one(raw_call, buffer)
+                for raw_call, buffer in zip(group, buffers, strict=True)
+            )
         )
         return buffers
 
@@ -321,9 +365,9 @@ class AgentRuntime:
             failure = {"ok": False, "error_code": "tool.invalid_request", "output": str(exc)}
             messages.append(tool_message(request_id, json.dumps(failure)))
             return False
-        await self.append(run_id, "tool.requested", {
-            **tool_request.to_dict(), "budget": budget.snapshot()
-        })
+        await self.append(
+            run_id, "tool.requested", {**tool_request.to_dict(), "budget": budget.snapshot()}
+        )
         decision = await self._permission(run_id, request, tool_request, budget)
         if decision == PermissionDecision.DENY:
             result = ToolResult(
@@ -339,18 +383,26 @@ class AgentRuntime:
                     self.active_request.pop(run_id, None)
         await self.append(run_id, "tool.output", result.to_dict())
         if name == "bash" and bool(result.data.get("rolled_back")):
-            await self.append(run_id, "mutation.rollback", {
-                "request_id": request_id,
-                "tool": name,
-                "reason": result.data.get("rollback_reason", "unknown"),
-                "checkpoint_id": result.data.get("checkpoint_id"),
-            })
+            await self.append(
+                run_id,
+                "mutation.rollback",
+                {
+                    "request_id": request_id,
+                    "tool": name,
+                    "reason": result.data.get("rollback_reason", "unknown"),
+                    "checkpoint_id": result.data.get("checkpoint_id"),
+                },
+            )
         if result.data.get("checkpoint_id"):
-            await self.append(run_id, "checkpoint.created", {
-                "checkpoint_id": str(result.data["checkpoint_id"]),
-                "request_id": request_id,
-                "tool": name,
-            })
+            await self.append(
+                run_id,
+                "checkpoint.created",
+                {
+                    "checkpoint_id": str(result.data["checkpoint_id"]),
+                    "request_id": request_id,
+                    "tool": name,
+                },
+            )
         messages.append(tool_message(request_id, self._model_tool_result(run_id, name, result)))
         if name not in MUTATION_TOOLS or not result.ok:
             return False
@@ -374,16 +426,24 @@ class AgentRuntime:
         if decision != PermissionDecision.ASK:
             return decision
         approval_id = str(uuid.uuid4())
-        await self.append(run_id, "approval.required", {
-            "approval_id": approval_id,
-            "kind": "tool",
-            "tool": tool_request.tool,
-            "arguments": tool_request.arguments,
-            "mutation": tool_request.tool in MUTATION_TOOLS,
-            "available_decisions": ["deny", "allow_once", "allow_run", "allow_rule"],
-        })
+        await self.append(
+            run_id,
+            "approval.required",
+            {
+                "approval_id": approval_id,
+                "kind": "tool",
+                "tool": tool_request.tool,
+                "arguments": tool_request.arguments,
+                "mutation": tool_request.tool in MUTATION_TOOLS,
+                "available_decisions": ["deny", "allow_once", "allow_run", "allow_rule"],
+            },
+        )
         decision = await self.approvals.wait(
-            run_id, approval_id, tool_request, request.workspace_id, budget.remaining_wall_seconds
+            run_id,
+            approval_id,
+            tool_request,
+            request.workspace_id,
+            budget.remaining_wall_seconds,
         )
         if decision == PermissionDecision.ALLOW_RUN:
             rule = _run_rule_for_request(tool_request, request.workspace_id)
@@ -416,9 +476,15 @@ class AgentRuntime:
         self._save_snapshot(run_id, request, messages, visible, budget, safe_to_resume)
 
     async def _project_instructions(self, run_id: str, request: AgentRunRequest) -> str:
-        result = await self.executor.execute(ToolRequest(
-            str(uuid.uuid4()), run_id, "read", request.mode, {"path": "AGENTS.md", "max_bytes": 64_000}
-        ))
+        result = await self.executor.execute(
+            ToolRequest(
+                str(uuid.uuid4()),
+                run_id,
+                "read",
+                request.mode,
+                {"path": "AGENTS.md", "max_bytes": 64_000},
+            )
+        )
         if not result.ok:
             return ""
         return (
@@ -430,11 +496,15 @@ class AgentRuntime:
         approval_id = str(uuid.uuid4())
         manifest = await self.executor.manifest(run_id, approval_id)
         if manifest.operations:
-            await self.append(run_id, "checkpoint.created", {
-                "checkpoint_id": manifest.approval_id,
-                "publish_manifest": manifest.to_dict(),
-                "auto_publish": approval_policy == "auto",
-            })
+            await self.append(
+                run_id,
+                "checkpoint.created",
+                {
+                    "checkpoint_id": manifest.approval_id,
+                    "publish_manifest": manifest.to_dict(),
+                    "auto_publish": approval_policy == "auto",
+                },
+            )
 
     # -- repository investigation ----------------------------------------------------------
 
@@ -452,11 +522,13 @@ class AgentRuntime:
         self._investigation_calls[run_id] = count + 1
         limit = request.investigation_call_budget
         if count >= limit:
-            content = json.dumps({
-                "error": f"Investigation call budget exhausted ({limit} calls per turn).",
-                "remaining": 0,
-                "fallback": "Continue with the repository tools directly.",
-            })
+            content = json.dumps(
+                {
+                    "error": f"Investigation call budget exhausted ({limit} calls per turn).",
+                    "remaining": 0,
+                    "fallback": "Continue with the repository tools directly.",
+                }
+            )
         else:
             investigation = RepositoryInvestigation(
                 self.executor,
@@ -611,4 +683,3 @@ def _render_executor_context(
             f"${budget.get('remaining_cost', 0):.2f} cost remaining."
         )
     return "\n".join(lines)[:2600]
-

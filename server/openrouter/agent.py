@@ -281,9 +281,13 @@ async def agent_turn(
     message = _normalize_message(choices[0]["message"])
     content = message.get("content")
     if isinstance(content, list):
-        content = "".join(str(item.get("text") or "") for item in content if isinstance(item, dict))
+        content = "".join(
+            str(item.get("text") or "") for item in content if isinstance(item, dict)
+        )
     calls = tuple(item for item in message.get("tool_calls") or () if isinstance(item, dict))
-    return AgentTurn(str(content or ""), calls, message, normalize_usage(data.get("usage") or {}))
+    return AgentTurn(
+        str(content or ""), calls, message, normalize_usage(data.get("usage") or {})
+    )
 
 
 def _json_or_empty(response: httpx.Response) -> dict[str, Any]:
@@ -317,14 +321,16 @@ def _normalize_message(raw: dict[str, Any]) -> dict[str, Any]:
         arguments = function.get("arguments")
         if isinstance(arguments, dict):
             arguments = json.dumps(arguments, separators=(",", ":"))
-        calls.append({
-            "id": str(item.get("id") or uuid.uuid4()),
-            "type": "function",
-            "function": {
-                "name": str(function.get("name") or ""),
-                "arguments": str(arguments or "{}"),
-            },
-        })
+        calls.append(
+            {
+                "id": str(item.get("id") or uuid.uuid4()),
+                "type": "function",
+                "function": {
+                    "name": str(function.get("name") or ""),
+                    "arguments": str(arguments or "{}"),
+                },
+            }
+        )
     if calls:
         normalized["tool_calls"] = calls
     return normalized

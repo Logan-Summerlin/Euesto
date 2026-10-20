@@ -33,12 +33,16 @@ def read(root: Path, arguments: dict, *, max_bytes: int) -> tuple[str, dict]:
         raise ExecutorToolError(PATH_MISSING, f"file not found: {relative}") from exc
     require_regular_file(path, "read")
     size_bytes = path.stat().st_size
-    validate_utf8_file(path, "Binary files are not model-readable; read requires valid UTF-8 text")
+    validate_utf8_file(
+        path, "Binary files are not model-readable; read requires valid UTF-8 text"
+    )
 
     has_range = "start_line" in arguments or "end_line" in arguments
     has_offset = "offset" in arguments
     if has_range and has_offset:
-        raise ExecutorToolError(INVALID_ARGUMENTS, "read cannot combine line ranges with byte offsets")
+        raise ExecutorToolError(
+            INVALID_ARGUMENTS, "read cannot combine line ranges with byte offsets"
+        )
 
     start_line = arguments.get("start_line", 1)
     end_line = arguments.get("end_line")
@@ -50,14 +54,21 @@ def read(root: Path, arguments: dict, *, max_bytes: int) -> tuple[str, dict]:
 
     if has_range:
         line_count, start_offset, end_offset = _line_range_offsets(path, start_line, end_line)
-        if start_line < 1 or start_line > line_count or (end_line is not None and end_line < start_line):
-            raise ExecutorToolError(INVALID_ARGUMENTS, 
-                f"line range is outside file: start_line={start_line}, end_line={end_line or line_count}, line_count={line_count}"
+        if (
+            start_line < 1
+            or start_line > line_count
+            or (end_line is not None and end_line < start_line)
+        ):
+            raise ExecutorToolError(
+                INVALID_ARGUMENTS,
+                f"line range is outside file: start_line={start_line}, end_line={end_line or line_count}, line_count={line_count}",
             )
         requested_end = end_line or line_count
         range_clipped = requested_end > line_count
         requested_end = min(requested_end, line_count)
-        raw = _read_bounded(path, start_offset, min(byte_limit, max(0, end_offset - start_offset)))
+        raw = _read_bounded(
+            path, start_offset, min(byte_limit, max(0, end_offset - start_offset))
+        )
         text, consumed_bytes = _decode_bounded(raw)
         next_offset = start_offset + consumed_bytes
         truncated = next_offset < end_offset
@@ -69,8 +80,13 @@ def read(root: Path, arguments: dict, *, max_bytes: int) -> tuple[str, dict]:
             next_line = requested_end + 1
             text = "\n".join(text.splitlines())
         data = _metadata(
-            relative, path, size_bytes, text, start_line=start_line,
-            end_line=min(requested_end, next_line - 1), byte_offset=start_offset,
+            relative,
+            path,
+            size_bytes,
+            text,
+            start_line=start_line,
+            end_line=min(requested_end, next_line - 1),
+            byte_offset=start_offset,
             next_offset=next_offset if truncated else None,
             next_start_line=next_line if truncated else None,
             truncated=truncated,
@@ -82,13 +98,18 @@ def read(root: Path, arguments: dict, *, max_bytes: int) -> tuple[str, dict]:
     if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
         raise ExecutorToolError(INVALID_ARGUMENTS, "offset must be a non-negative integer")
     if offset > size_bytes:
-        raise ExecutorToolError(INVALID_ARGUMENTS, f"offset is outside file: offset={offset}, size_bytes={size_bytes}")
+        raise ExecutorToolError(
+            INVALID_ARGUMENTS,
+            f"offset is outside file: offset={offset}, size_bytes={size_bytes}",
+        )
     if offset < size_bytes:
         with path.open("rb") as handle:
             handle.seek(offset)
             first = handle.read(1)
         if first and 0x80 <= first[0] <= 0xBF:
-            raise ExecutorToolError(INVALID_ARGUMENTS, "offset must be at a UTF-8 character boundary")
+            raise ExecutorToolError(
+                INVALID_ARGUMENTS, "offset must be at a UTF-8 character boundary"
+            )
     raw = _read_bounded(path, offset, byte_limit)
     text, consumed_bytes = _decode_bounded(raw)
     next_offset = offset + consumed_bytes
@@ -96,14 +117,22 @@ def read(root: Path, arguments: dict, *, max_bytes: int) -> tuple[str, dict]:
     if not has_offset and not truncated:
         text = "\n".join(text.splitlines())
     data = _metadata(
-        relative, path, size_bytes, text, start_line=1, end_line=text.count("\n") + 1,
-        byte_offset=offset, next_offset=next_offset if truncated else None,
+        relative,
+        path,
+        size_bytes,
+        text,
+        start_line=1,
+        end_line=text.count("\n") + 1,
+        byte_offset=offset,
+        next_offset=next_offset if truncated else None,
         truncated=truncated,
     )
     return text, data
 
 
-def _line_range_offsets(path: Path, start_line: int, end_line: int | None) -> tuple[int, int, int]:
+def _line_range_offsets(
+    path: Path, start_line: int, end_line: int | None
+) -> tuple[int, int, int]:
     size = path.stat().st_size
     if size == 0:
         return 0, 0, 0
@@ -142,7 +171,7 @@ def _decode_bounded(raw: bytes) -> tuple[str, int]:
             return candidate.decode("utf-8"), len(candidate)
         except UnicodeDecodeError as exc:
             if exc.reason == "unexpected end of data" and exc.end == len(candidate):
-                candidate = candidate[:exc.start]
+                candidate = candidate[: exc.start]
                 continue
             raise ExecutorToolError(INVALID_UTF8, "File is not valid UTF-8 text") from exc
     return "", 0

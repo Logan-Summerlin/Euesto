@@ -22,11 +22,16 @@ class DelayedExecutor:
         self.max_active = 0
 
     async def status(self):
-        return {"workspace_id": "workspace", "environment": {"workspace_root": ".", "limits": {}}}
+        return {
+            "workspace_id": "workspace",
+            "environment": {"workspace_root": ".", "limits": {}},
+        }
 
     async def execute(self, request):
         if request.arguments.get("path") == "AGENTS.md":
-            return ToolResult(request.request_id, False, output="missing", error_code="path.missing")
+            return ToolResult(
+                request.request_id, False, output="missing", error_code="path.missing"
+            )
         self.active += 1
         self.max_active = max(self.max_active, self.active)
         self.log.append(("start", request.request_id, time.perf_counter()))
@@ -35,8 +40,14 @@ class DelayedExecutor:
         finally:
             self.active -= 1
         self.log.append(("end", request.request_id, time.perf_counter()))
-        data = {"checkpoint_id": f"cp-{request.request_id}", "workspace_status": {"staged": True}} if request.tool in {"write", "edit", "apply_patch"} else {}
-        return ToolResult(request.request_id, True, output=f"{request.tool}:{request.request_id}", data=data)
+        data = (
+            {"checkpoint_id": f"cp-{request.request_id}", "workspace_status": {"staged": True}}
+            if request.tool in {"write", "edit", "apply_patch"}
+            else {}
+        )
+        return ToolResult(
+            request.request_id, True, output=f"{request.tool}:{request.request_id}", data=data
+        )
 
 
 class NoApprovals:
@@ -45,10 +56,16 @@ class NoApprovals:
 
 
 def _call(call_id: str, name: str, arguments: dict) -> dict:
-    return {"id": call_id, "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": name, "arguments": json.dumps(arguments)},
+    }
 
 
-def _run(calls: tuple[dict, ...], monkeypatch, *, policy: str = "auto") -> tuple[DelayedExecutor, list[dict], float]:
+def _run(
+    calls: tuple[dict, ...], monkeypatch, *, policy: str = "auto"
+) -> tuple[DelayedExecutor, list[dict], float]:
     executor = DelayedExecutor()
     final: list[dict] = []
     turns = []
@@ -56,9 +73,16 @@ def _run(calls: tuple[dict, ...], monkeypatch, *, policy: str = "auto") -> tuple
     async def fake_agent_turn(model, messages, api_key, mode, *args, **kwargs):
         turns.append(1)
         if len(turns) == 1:
-            return AgentTurn("", calls, {"role": "assistant", "content": "", "tool_calls": list(calls)}, {"total_tokens": 1})
+            return AgentTurn(
+                "",
+                calls,
+                {"role": "assistant", "content": "", "tool_calls": list(calls)},
+                {"total_tokens": 1},
+            )
         final.extend(messages)
-        return AgentTurn("done", (), {"role": "assistant", "content": "done"}, {"total_tokens": 1})
+        return AgentTurn(
+            "done", (), {"role": "assistant", "content": "done"}, {"total_tokens": 1}
+        )
 
     async def append(*_args):
         return None
@@ -69,7 +93,13 @@ def _run(calls: tuple[dict, ...], monkeypatch, *, policy: str = "auto") -> tuple
     monkeypatch.setattr(runtime_module, "agent_turn", fake_agent_turn)
     runtime = AgentRuntime(executor, NoApprovals(), append)
     runtime._offer_publish = no_publish
-    request = AgentRunRequest(model="m", messages=({"role": "user", "content": "go"},), mode="agent", workspace_id="workspace", approval_policy=policy)
+    request = AgentRunRequest(
+        model="m",
+        messages=({"role": "user", "content": "go"},),
+        mode="agent",
+        workspace_id="workspace",
+        approval_policy=policy,
+    )
     started = time.perf_counter()
     asyncio.run(runtime.run("run-1", request, "key"))
     return executor, final, time.perf_counter() - started
@@ -77,10 +107,14 @@ def _run(calls: tuple[dict, ...], monkeypatch, *, policy: str = "auto") -> tuple
 
 def test_grouping_keeps_mutations_serialized_and_merges_consecutive_reads() -> None:
     calls = [
-        _call("a", "read", {"path": "a"}), _call("b", "grep", {"query": "x"}),
+        _call("a", "read", {"path": "a"}),
+        _call("b", "grep", {"query": "x"}),
         _call("c", "write", {"path": "c", "content": "x"}),
-        _call("d", "ls", {}), _call("e", "status", {}), _call("f", "find", {}),
-        _call("g", "bash", {"command": "true"}), _call("h", "investigate_repository", {"query": "q"}),
+        _call("d", "ls", {}),
+        _call("e", "status", {}),
+        _call("f", "find", {}),
+        _call("g", "bash", {"command": "true"}),
+        _call("h", "investigate_repository", {"query": "q"}),
         _call("i", "read", {"path": "i"}),
     ]
     groups = [[item["id"] for item in group] for group in tool_call_groups(calls)]
@@ -89,7 +123,18 @@ def test_grouping_keeps_mutations_serialized_and_merges_consecutive_reads() -> N
 
 
 def test_independent_read_only_calls_complete_in_max_not_sum_of_latencies(monkeypatch) -> None:
-    calls = tuple(_call(f"r{index}", name, {"path": f"f{index}.txt"} if name == "read" else {"query": "x"} if name == "grep" else {}) for index, name in enumerate(("read", "grep", "find", "ls", "read")))
+    calls = tuple(
+        _call(
+            f"r{index}",
+            name,
+            {"path": f"f{index}.txt"}
+            if name == "read"
+            else {"query": "x"}
+            if name == "grep"
+            else {},
+        )
+        for index, name in enumerate(("read", "grep", "find", "ls", "read"))
+    )
     executor, final, _elapsed = _run(calls, monkeypatch)
     reads = [entry for entry in executor.log if entry[1].startswith("r")]
     starts = [stamp for kind, _id, stamp in reads if kind == "start"]
@@ -97,7 +142,9 @@ def test_independent_read_only_calls_complete_in_max_not_sum_of_latencies(monkey
     # All five were in flight together: the whole batch took about one latency, not five.
     assert executor.max_active == 5
     assert max(ends) - min(starts) < DELAY * 2.5
-    tool_messages = [message["tool_call_id"] for message in final if message.get("role") == "tool"]
+    tool_messages = [
+        message["tool_call_id"] for message in final if message.get("role") == "tool"
+    ]
     assert tool_messages == [f"r{index}" for index in range(5)]
 
 
@@ -111,7 +158,11 @@ def test_mixed_batch_applies_mutations_in_call_order_between_read_groups(monkeyp
         _call("e1", "edit", {"path": "a.txt", "old_str": "new", "new_str": "newer"}),
     )
     executor, final, _elapsed = _run(calls, monkeypatch)
-    order = [(kind, call_id) for kind, call_id, _stamp in executor.log if call_id in {"r1", "r2", "w1", "r3", "r4", "e1"}]
+    order = [
+        (kind, call_id)
+        for kind, call_id, _stamp in executor.log
+        if call_id in {"r1", "r2", "w1", "r3", "r4", "e1"}
+    ]
     position = {entry: index for index, entry in enumerate(order)}
     # The write starts only after both earlier reads finish, and later reads start after it ends.
     assert position[("start", "w1")] > max(position[("end", "r1")], position[("end", "r2")])
@@ -119,5 +170,7 @@ def test_mixed_batch_applies_mutations_in_call_order_between_read_groups(monkeyp
     assert position[("start", "e1")] > max(position[("end", "r3")], position[("end", "r4")])
     # Mutations never overlap anything else.
     assert executor.max_active <= 2
-    tool_messages = [message["tool_call_id"] for message in final if message.get("role") == "tool"]
+    tool_messages = [
+        message["tool_call_id"] for message in final if message.get("role") == "tool"
+    ]
     assert tool_messages == ["r1", "r2", "w1", "r3", "r4", "e1"]

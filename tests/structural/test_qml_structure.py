@@ -5,6 +5,7 @@ virtualization) is exercised by ``tests/ui/test_transcript_qml.py``; stream buff
 event persistence by ``tests/unit/desktop/test_desktop_services.py``. Only what those cannot
 observe is pinned here.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -23,7 +24,9 @@ def test_desktop_starts_qml_with_the_fusion_style_and_packages_it() -> None:
     assert "QQmlApplicationEngine" in app_source
     # The style must be chosen once, before the application object exists.
     assert app_source.count("QQuickStyle.setStyle(") == 1
-    assert app_source.index('QQuickStyle.setStyle("Fusion")') < app_source.index("QApplication(sys.argv)")
+    assert app_source.index('QQuickStyle.setStyle("Fusion")') < app_source.index(
+        "QApplication(sys.argv)"
+    )
     assert all((ROOT / "qml" / name).is_file() for name in QML_COMPONENTS)
     assert 'project_root / "qml"' in spec_source
 
@@ -33,7 +36,10 @@ def test_settings_load_optional_values_without_assigning_undefined() -> None:
     assert "function optionalText(value)" in source
     assert "temperature.text = optionalText(options.temperature)" in source
     assert "topP.text = optionalText(options.top_p)" in source
-    assert 'Shortcut { sequence: "Ctrl+Comma"; onActivated: settingsDialog.openAndLoad() }' in source
+    assert (
+        'Shortcut { sequence: "Ctrl+Comma"; onActivated: settingsDialog.openAndLoad() }'
+        in source
+    )
     assert 'text: "Auto"' in source
     assert "backend.requestAutoMode(checked)" in source
     assert "enabled: presetBox.currentIndex >= 0" in source

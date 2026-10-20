@@ -23,7 +23,9 @@ def pytest_configure(config) -> None:
 def pytest_collection_modifyitems(config, items) -> None:
     if sys.platform != "win32":
         return
-    skip = pytest.mark.skip(reason="needs the executor's Linux container (/bin/bash, POSIX modes or ctime)")
+    skip = pytest.mark.skip(
+        reason="needs the executor's Linux container (/bin/bash, POSIX modes or ctime)"
+    )
     for item in items:
         if "posix" in item.keywords:
             item.add_marker(skip)

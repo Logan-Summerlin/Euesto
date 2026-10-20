@@ -81,7 +81,9 @@ class SettingsService(QObject):
     """Preferences, the model catalog, prompt commands and presets, skills, workspace
     configuration, and saved permission rules."""
 
-    def __init__(self, host: BridgeHost, storage: Storage, *, catalog: ModelCatalog | None = None):
+    def __init__(
+        self, host: BridgeHost, storage: Storage, *, catalog: ModelCatalog | None = None
+    ):
         super().__init__(host)  # type: ignore[arg-type]
         self.host = host
         self.storage = storage
@@ -104,7 +106,10 @@ class SettingsService(QObject):
         self.host.settingsChanged.emit()
 
     def server_tools(self) -> dict[str, bool]:
-        return {key: self.storage.get_setting(f"server_tool:{key}", "0") == "1" for key in SERVER_TOOLS}
+        return {
+            key: self.storage.get_setting(f"server_tool:{key}", "0") == "1"
+            for key in SERVER_TOOLS
+        }
 
     def set_server_tool(self, name: str, enabled: bool) -> None:
         if name in SERVER_TOOLS:
@@ -130,7 +135,10 @@ class SettingsService(QObject):
     def save_investigation_model(self, model_id: str) -> None:
         model_id = str(model_id or "").strip()
         if not model_id:
-            self.host.errorRequested.emit("Invalid investigation model", "Choose a model before saving the repository-investigation setting.")
+            self.host.errorRequested.emit(
+                "Invalid investigation model",
+                "Choose a model before saving the repository-investigation setting.",
+            )
             return
         self.storage.set_setting("investigation_model_id", model_id)
         self.host.reload_models()
@@ -139,7 +147,8 @@ class SettingsService(QObject):
 
     def gateway_settings(self) -> dict[str, Any]:
         return {
-            "url": self.storage.get_setting("gateway_url", DEFAULT_GATEWAY_URL) or DEFAULT_GATEWAY_URL,
+            "url": self.storage.get_setting("gateway_url", DEFAULT_GATEWAY_URL)
+            or DEFAULT_GATEWAY_URL,
             "hasToken": bool(self.host.runtime.gateway_token),
             "hasApiKey": bool(get_api_key()),
         }
@@ -205,7 +214,13 @@ class SettingsService(QObject):
             }
             for model in self.catalog.models()
         ]
-        values.sort(key=lambda item: (not item["favorite"], not item["recent"], str(item["label"]).casefold()))
+        values.sort(
+            key=lambda item: (
+                not item["favorite"],
+                not item["recent"],
+                str(item["label"]).casefold(),
+            )
+        )
         # The investigation models stay selectable even when the catalog does not list them.
         ids = {item["id"] for item in values}
         if DEFAULT_INVESTIGATION_MODEL not in ids:
@@ -215,7 +230,9 @@ class SettingsService(QObject):
         return values
 
     def toggle_favorite_model(self, model_id: str) -> None:
-        self.storage.set_model_favorite(model_id, model_id not in self.storage.favorite_model_ids())
+        self.storage.set_model_favorite(
+            model_id, model_id not in self.storage.favorite_model_ids()
+        )
         self.host.reload_models()
 
     def refresh_catalog_if_stale(self) -> None:
@@ -236,7 +253,9 @@ class SettingsService(QObject):
             return
         worker = CatalogWorker(GatewayClient(connection))
         worker.complete.connect(self._catalog_complete)
-        worker.failed.connect(self._catalog_failed if report_errors else self._background_catalog_failed)
+        worker.failed.connect(
+            self._catalog_failed if report_errors else self._background_catalog_failed
+        )
         worker.finished.connect(self._catalog_finished)
         self.catalog_worker = worker
         worker.start()
@@ -251,7 +270,11 @@ class SettingsService(QObject):
 
     @Slot(object)
     def _catalog_complete(self, result: object) -> None:
-        if isinstance(result, dict) and isinstance(result.get("models"), list) and isinstance(result.get("fetched_at"), str):
+        if (
+            isinstance(result, dict)
+            and isinstance(result.get("models"), list)
+            and isinstance(result.get("fetched_at"), str)
+        ):
             self.catalog.cache(result["models"], result["fetched_at"])
             self.host.reload_models()
 
@@ -264,8 +287,13 @@ class SettingsService(QObject):
     # -- prompt commands and presets ---------------------------------------------------
 
     def reload_commands(self) -> None:
-        builtins = [{"name": name, "description": description, "builtin": True} for name, description in BUILTIN_COMMANDS]
-        self.commands = builtins + [{**item, "builtin": False} for item in self.storage.list_prompt_commands()]
+        builtins = [
+            {"name": name, "description": description, "builtin": True}
+            for name, description in BUILTIN_COMMANDS
+        ]
+        self.commands = builtins + [
+            {**item, "builtin": False} for item in self.storage.list_prompt_commands()
+        ]
         self.host.commandsChanged.emit()
 
     def save_prompt_command(self, name: str, description: str, template: str) -> None:
@@ -303,9 +331,17 @@ class SettingsService(QObject):
         if not workspace:
             self.skills = []
         else:
-            active = set(self.storage.workspace_config(self.host.runtime.identity()).get("active_skills") or ())
+            active = set(
+                self.storage.workspace_config(self.host.runtime.identity()).get("active_skills")
+                or ()
+            )
             self.skills = [
-                {"name": skill.name, "description": skill.description, "scope": skill.scope, "active": skill.name in active}
+                {
+                    "name": skill.name,
+                    "description": skill.description,
+                    "scope": skill.scope,
+                    "active": skill.name in active,
+                }
                 for skill in available_skills(app_data_dir() / "skills", Path(workspace))
             ]
         self.host.skillsChanged.emit()
@@ -332,14 +368,22 @@ class SettingsService(QObject):
             return
         try:
             custom_tools = json.loads(declarations or "[]")
-            if not isinstance(custom_tools, list) or any(not isinstance(item, dict) for item in custom_tools):
+            if not isinstance(custom_tools, list) or any(
+                not isinstance(item, dict) for item in custom_tools
+            ):
                 raise ValueError("Custom tools must be a JSON array of objects")
         except (json.JSONDecodeError, ValueError) as exc:
             self.host.errorRequested.emit("Invalid custom capabilities", str(exc))
             return
         identity = self.host.runtime.identity()
         config = self.storage.workspace_config(identity)
-        config.update({"instructions": instructions[:32_000], "custom_tools": custom_tools, "context_policy": config.get("context_policy", "automatic")})
+        config.update(
+            {
+                "instructions": instructions[:32_000],
+                "custom_tools": custom_tools,
+                "context_policy": config.get("context_policy", "automatic"),
+            }
+        )
         self.storage.save_workspace_config(identity, workspace, config)
         self._sync_workspace_config(identity, config)
         self.host.set_status("Workspace configuration saved")
@@ -370,7 +414,9 @@ class SettingsService(QObject):
         if not connection:
             return
         try:
-            self.permissions = GatewayClient(connection).permission_rules(self.host.runtime.identity())
+            self.permissions = GatewayClient(connection).permission_rules(
+                self.host.runtime.identity()
+            )
         except GatewayError as exc:
             self.host.errorRequested.emit("Could not load permissions", str(exc))
             return
@@ -387,7 +433,9 @@ class SettingsService(QObject):
             "Could not delete permission", lambda client: client.delete_permission_rule(rule_id)
         )
 
-    def _change_permission(self, failure: str, change: Callable[[GatewayClient], object]) -> None:
+    def _change_permission(
+        self, failure: str, change: Callable[[GatewayClient], object]
+    ) -> None:
         connection = self.host.runtime.connection()
         if not connection:
             return

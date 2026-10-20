@@ -42,7 +42,10 @@ class GatewaySecurityMiddleware:
             return
         if "origin" in headers:
             await _error(
-                send, 403, "security.browser_origin", "Browser-originated requests are not accepted."
+                send,
+                403,
+                "security.browser_origin",
+                "Browser-originated requests are not accepted.",
             )
             return
         if not self._within_rate_limit(path):
@@ -122,6 +125,9 @@ def _host_name(value: str) -> str:
 
 async def _error(send: Callable, status: int, code: str, message: str) -> None:
     body = json.dumps(ErrorResponse(code, message).to_dict(), separators=(",", ":")).encode()
-    headers = [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())]
+    headers = [
+        (b"content-type", b"application/json"),
+        (b"content-length", str(len(body)).encode()),
+    ]
     await send({"type": "http.response.start", "status": status, "headers": headers})
     await send({"type": "http.response.body", "body": body})

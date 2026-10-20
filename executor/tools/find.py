@@ -29,9 +29,15 @@ def find(
     scope = listing_directory(root, arguments, FIND_ARGUMENTS, "find")
     pattern = arguments.get("glob", "*")
     if not isinstance(pattern, str) or not pattern or len(pattern) > 500:
-        raise ExecutorToolError(INVALID_ARGUMENTS, "find glob must be a bounded non-empty string")
+        raise ExecutorToolError(
+            INVALID_ARGUMENTS, "find glob must be a bounded non-empty string"
+        )
     max_depth = arguments.get("max_depth", 10)
-    if not isinstance(max_depth, int) or isinstance(max_depth, bool) or not 0 <= max_depth <= 20:
+    if (
+        not isinstance(max_depth, int)
+        or isinstance(max_depth, bool)
+        or not 0 <= max_depth <= 20
+    ):
         raise ExecutorToolError(INVALID_ARGUMENTS, "max_depth must be an integer from 0 to 20")
     maximum = min(requested_results(arguments, DEFAULT_FIND_RESULTS), max_results)
     cursor = decode_cursor(arguments.get("cursor"), "find")
@@ -107,7 +113,9 @@ def _iter_matches(
             return
         if path.is_symlink() or is_tool_excluded(path.relative_to(root).as_posix()):
             continue
-        if fnmatch.fnmatch(path.relative_to(scope).as_posix(), pattern) or fnmatch.fnmatch(path.name, pattern):
+        if fnmatch.fnmatch(path.relative_to(scope).as_posix(), pattern) or fnmatch.fnmatch(
+            path.name, pattern
+        ):
             yield path
         if path.is_dir() and depth < max_depth:
             yield from _iter_matches(root, path, scope, depth + 1, max_depth, pattern, walk)

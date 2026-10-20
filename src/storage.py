@@ -18,7 +18,11 @@ from .models import (
 
 _UNSET = object()
 _MESSAGE_COLUMNS = (
-    "conversation_id", "parent_message_id", "role", "content", "created_at",
+    "conversation_id",
+    "parent_message_id",
+    "role",
+    "content",
+    "created_at",
     *MESSAGE_METADATA_FIELDS,
 )
 # Desktop history keeps only this summary of tool output events, or of any oversized event.
@@ -441,7 +445,14 @@ class Storage:
                     finished_at=NULL,
                     error=NULL
                 """,
-                (run_id, conversation_id, parent_message_id, mode, model_id, started_at or utc_now()),
+                (
+                    run_id,
+                    conversation_id,
+                    parent_message_id,
+                    mode,
+                    model_id,
+                    started_at or utc_now(),
+                ),
             )
 
     def finish_generation_run(
@@ -501,13 +512,15 @@ class Storage:
                     for key in payload_keys
                     if key in payload and payload[key] is not None
                 }
-            events.append({
-                "run_id": str(row["run_id"]),
-                "event_id": int(row["event_id"]),
-                "type": str(row["type"]),
-                "payload": payload if isinstance(payload, dict) else {},
-                "created_at": str(row["created_at"]),
-            })
+            events.append(
+                {
+                    "run_id": str(row["run_id"]),
+                    "event_id": int(row["event_id"]),
+                    "type": str(row["type"]),
+                    "payload": payload if isinstance(payload, dict) else {},
+                    "created_at": str(row["created_at"]),
+                }
+            )
         return events
 
     def save_workspace_config(
@@ -545,7 +558,9 @@ class Storage:
     def save_prompt_command(self, name: str, description: str, template: str) -> None:
         normalized = name.strip().lstrip("/").casefold()
         if not normalized or not normalized.replace("-", "").replace("_", "").isalnum():
-            raise ValueError("Command name may contain letters, numbers, hyphens, and underscores")
+            raise ValueError(
+                "Command name may contain letters, numbers, hyphens, and underscores"
+            )
         if not template.strip() or len(template) > 64_000:
             raise ValueError("Command template must be bounded non-empty text")
         timestamp = utc_now()
@@ -600,9 +615,7 @@ class Storage:
         return models
 
     def catalog_fetched_at(self) -> str | None:
-        row = self._connection.execute(
-            "SELECT MAX(fetched_at) FROM model_catalog"
-        ).fetchone()
+        row = self._connection.execute("SELECT MAX(fetched_at) FROM model_catalog").fetchone()
         return str(row[0]) if row and row[0] else None
 
     def set_model_favorite(self, model_id: str, favorite: bool) -> None:

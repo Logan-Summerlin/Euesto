@@ -18,10 +18,24 @@ from shared.tools import PUBLISH_BATCH_MAX_BYTES, PUBLISH_BATCH_MAX_OPERATIONS, 
 # Per-batch ceilings. Larger changesets arrive as ordered batches (see PublicationLedger).
 MAX_PUBLISH_FILES = PUBLISH_BATCH_MAX_OPERATIONS
 MAX_PUBLISH_BYTES = PUBLISH_BATCH_MAX_BYTES
-FORBIDDEN_ROOT_NAMES = frozenset({
-    "windows", "program files", "program files (x86)", "programdata", "appdata", ".ssh", ".aws",
-    ".azure", ".gnupg", "docker", "onedrive", "dropbox", "google drive", "icloud drive",
-})
+FORBIDDEN_ROOT_NAMES = frozenset(
+    {
+        "windows",
+        "program files",
+        "program files (x86)",
+        "programdata",
+        "appdata",
+        ".ssh",
+        ".aws",
+        ".azure",
+        ".gnupg",
+        "docker",
+        "onedrive",
+        "dropbox",
+        "google drive",
+        "icloud drive",
+    }
+)
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
 
@@ -42,7 +56,9 @@ def canonical_workspace(root: Path) -> Path:
     if canonical == anchor or len(canonical.parts) < len(anchor.parts) + 2:
         raise BrokerError("Drive, profile, and other broad roots cannot be workspaces")
     if any(part.casefold() in FORBIDDEN_ROOT_NAMES for part in canonical.parts):
-        raise BrokerError("Protected system, credential, or runtime directories cannot be workspaces")
+        raise BrokerError(
+            "Protected system, credential, or runtime directories cannot be workspaces"
+        )
     if canonical == Path.home().resolve():
         raise BrokerError("The user profile root cannot be a workspace")
     return canonical
@@ -132,11 +148,13 @@ class WorkspaceBroker:
         except Exception as exc:
             restored, rollback_errors = self._restore_touched(checkpoint, metadata, touched)
             (checkpoint / "partial.json").write_text(
-                json.dumps({
-                    "completed": completed,
-                    "restored": restored,
-                    "rollback_errors": rollback_errors,
-                }),
+                json.dumps(
+                    {
+                        "completed": completed,
+                        "restored": restored,
+                        "rollback_errors": rollback_errors,
+                    }
+                ),
                 encoding="utf-8",
             )
             if manifest.batch_count > 1:

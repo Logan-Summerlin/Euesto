@@ -41,7 +41,12 @@ class PermissionRule:
         return asdict(self)
 
     def matches(self, request: ToolRequest, workspace_id: str) -> bool:
-        if not self.enabled or self.workspace_id != workspace_id or self.mode != request.mode or self.tool != request.tool:
+        if (
+            not self.enabled
+            or self.workspace_id != workspace_id
+            or self.mode != request.mode
+            or self.tool != request.tool
+        ):
             return False
         if self.path_prefix is not None:
             normalized_prefix = _permission_path(self.path_prefix)
@@ -49,7 +54,10 @@ class PermissionRule:
             # A multi-file apply_patch matches a path-scoped rule only when every path is in scope.
             if normalized_prefix is None or not paths or any(path is None for path in paths):
                 return False
-            if not all(path == normalized_prefix or path.startswith(normalized_prefix + "/") for path in paths):
+            if not all(
+                path == normalized_prefix or path.startswith(normalized_prefix + "/")
+                for path in paths
+            ):
                 return False
         if self.executable is not None:
             if request.tool != "bash":
@@ -58,7 +66,11 @@ class PermissionRule:
                 tokens = shlex.split(str(request.arguments.get("command") or ""), posix=True)
             except ValueError:
                 return False
-            if not tokens or tokens[0] != self.executable or tokens[1 : 1 + len(self.argument_prefix)] != list(self.argument_prefix):
+            if (
+                not tokens
+                or tokens[0] != self.executable
+                or tokens[1 : 1 + len(self.argument_prefix)] != list(self.argument_prefix)
+            ):
                 return False
         return True
 
@@ -67,7 +79,11 @@ def request_paths(request: ToolRequest) -> list[str]:
     """Workspace paths a request names: one ``path``, or every ``apply_patch`` operation path."""
     if request.tool == "apply_patch":
         operations = request.arguments.get("operations")
-        return [str(item.get("path") or "") for item in operations if isinstance(item, dict)] if isinstance(operations, list) else []
+        return (
+            [str(item.get("path") or "") for item in operations if isinstance(item, dict)]
+            if isinstance(operations, list)
+            else []
+        )
     return [str(request.arguments.get("path") or "")]
 
 
@@ -92,7 +108,9 @@ def rule_scope(request: ToolRequest) -> str | None:
     return "/".join(shared) or None
 
 
-def resolve_permission(request: ToolRequest, workspace_id: str, rules: tuple[PermissionRule, ...] = ()) -> PermissionDecision:
+def resolve_permission(
+    request: ToolRequest, workspace_id: str, rules: tuple[PermissionRule, ...] = ()
+) -> PermissionDecision:
     if request.mode == "plan" and request.tool in MUTATION_TOOLS:
         return PermissionDecision.DENY
     if request.tool not in READ_TOOLS | MUTATION_TOOLS:
@@ -104,12 +122,18 @@ def resolve_permission(request: ToolRequest, workspace_id: str, rules: tuple[Per
         return PermissionDecision.ASK
     if matching:
         # Stable specificity: the narrowest (longest) normalized scope wins.
-        matching.sort(key=lambda rule: len(_permission_path(rule.path_prefix or ".") or ""), reverse=True)
+        matching.sort(
+            key=lambda rule: len(_permission_path(rule.path_prefix or ".") or ""), reverse=True
+        )
         return matching[0].decision
-    return PermissionDecision.ALLOW_RUN if request.tool in READ_TOOLS else PermissionDecision.ASK
+    return (
+        PermissionDecision.ALLOW_RUN if request.tool in READ_TOOLS else PermissionDecision.ASK
+    )
 
 
-def apply_approval_policy(decision: PermissionDecision, request: ToolRequest, policy: str) -> PermissionDecision:
+def apply_approval_policy(
+    decision: PermissionDecision, request: ToolRequest, policy: str
+) -> PermissionDecision:
     """Resolve a rule-level ``ASK`` under the session approval policy.
 
     Only ``ASK`` changes: ``DENY`` (including Plan-mode mutation denial and explicit deny
@@ -119,7 +143,11 @@ def apply_approval_policy(decision: PermissionDecision, request: ToolRequest, po
         return decision
     if policy == "auto":
         return PermissionDecision.ALLOW_RUN
-    if policy == "accept_edits" and request.mode == "agent" and request.tool in STAGED_EDIT_TOOLS:
+    if (
+        policy == "accept_edits"
+        and request.mode == "agent"
+        and request.tool in STAGED_EDIT_TOOLS
+    ):
         return PermissionDecision.ALLOW_RUN
     return PermissionDecision.ASK
 

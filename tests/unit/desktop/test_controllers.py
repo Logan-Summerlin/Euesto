@@ -46,7 +46,11 @@ def test_generation_controller_persists_compaction_and_assistant_link(tmp_path: 
         {"prompt_tokens": 3, "completion_tokens": 2, "actual_model": "model/a"}
     )
 
-    [run] = [item for item in storage.list_generation_runs(conversation.id) if item["run_id"] == "run-1"]
+    [run] = [
+        item
+        for item in storage.list_generation_runs(conversation.id)
+        if item["run_id"] == "run-1"
+    ]
     assert run["status"] == "completed"
     assert run["parent_message_id"] == user.id
     assert run["assistant_message_id"] == assistant_id

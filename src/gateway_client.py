@@ -21,7 +21,9 @@ DEFAULT_GATEWAY_URL = "http://127.0.0.1:8765"
 JSON = {"Content-Type": "application/json"}
 STREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0)
 CHAT_STREAM_ATTEMPTS = 4
-AGENT_TERMINAL_EVENTS = frozenset({"run.completed", "run.cancelled", "run.failed", "run.paused"})
+AGENT_TERMINAL_EVENTS = frozenset(
+    {"run.completed", "run.cancelled", "run.failed", "run.paused"}
+)
 
 
 class GatewayError(RuntimeError):
@@ -42,7 +44,10 @@ class GatewayConnection:
 
     def __post_init__(self) -> None:
         parsed = urlsplit(self.base_url)
-        if parsed.scheme not in {"http", "https"} or parsed.hostname not in {"127.0.0.1", "::1"}:
+        if parsed.scheme not in {"http", "https"} or parsed.hostname not in {
+            "127.0.0.1",
+            "::1",
+        }:
             raise ValueError("Gateway URL must use a numeric loopback address")
         if parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise ValueError("Gateway URL cannot include credentials, query, or fragment")
@@ -76,7 +81,9 @@ class GatewayClient:
 
     def status(self) -> GatewayStatus:
         try:
-            status = GatewayStatus.from_dict(self._send("GET", "/v1/status", timeout=5.0).json())
+            status = GatewayStatus.from_dict(
+                self._send("GET", "/v1/status", timeout=5.0).json()
+            )
         except GatewayError:
             raise
         except (httpx.HTTPError, ValueError, TypeError, json.JSONDecodeError) as exc:
@@ -142,7 +149,9 @@ class GatewayClient:
         try:
             return PublishManifest.from_dict(data)
         except (TypeError, ValueError) as exc:
-            raise _invalid_staging(f"Gateway returned an invalid publication batch: {exc}") from exc
+            raise _invalid_staging(
+                f"Gateway returned an invalid publication batch: {exc}"
+            ) from exc
 
     def discard_staging(self, workspace_id: str) -> dict[str, Any]:
         response = self._send(
@@ -217,7 +226,13 @@ class GatewayClient:
                     return
                 except GatewayError:
                     raise
-                except (httpx.HTTPError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                except (
+                    httpx.HTTPError,
+                    json.JSONDecodeError,
+                    KeyError,
+                    TypeError,
+                    ValueError,
+                ) as exc:
                     if run_id is None or attempt >= CHAT_STREAM_ATTEMPTS:
                         raise GatewayError(
                             f"Gateway stream disconnected: {exc}",
@@ -258,13 +273,19 @@ class GatewayClient:
             "investigation_model_id": investigation_model_id,
             "provider_preferences": dict(provider_preferences or {}),
         }
-        run_id = str(self._send("POST", "/v1/runs", timeout=15, json=payload).json().get("run_id") or "")
+        run_id = str(
+            self._send("POST", "/v1/runs", timeout=15, json=payload).json().get("run_id") or ""
+        )
         if not run_id:
-            raise GatewayError("Gateway omitted the agent run ID.", code="protocol.missing_run_id")
+            raise GatewayError(
+                "Gateway omitted the agent run ID.", code="protocol.missing_run_id"
+            )
         yield from self._stream_agent_events(run_id, stop_event=stop_event)
 
     def resolve_approval(self, run_id: str, approval_id: str, decision: str) -> None:
-        self._send("POST", f"/v1/runs/{run_id}/approvals/{approval_id}", json={"decision": decision})
+        self._send(
+            "POST", f"/v1/runs/{run_id}/approvals/{approval_id}", json={"decision": decision}
+        )
 
     def permission_rules(self, workspace_id: str) -> list[dict[str, Any]]:
         response = self._send("GET", "/v1/permissions", params={"workspace_id": workspace_id})
@@ -343,7 +364,9 @@ class GatewayClient:
     def _send_cancel(self, run_id: str) -> None:
         try:
             with self._client(timeout=5.0) as client:
-                client.post(f"/v1/runs/{run_id}/cancel", headers={**self.headers, **JSON}, json={})
+                client.post(
+                    f"/v1/runs/{run_id}/cancel", headers={**self.headers, **JSON}, json={}
+                )
         except httpx.HTTPError:
             return
 
@@ -379,14 +402,20 @@ class GatewayClient:
 
     def _client(self, *, timeout: httpx.Timeout | float) -> httpx.Client:
         return httpx.Client(
-            base_url=self.connection.base_url.rstrip("/"), timeout=timeout, follow_redirects=False
+            base_url=self.connection.base_url.rstrip("/"),
+            timeout=timeout,
+            follow_redirects=False,
         )
 
     @staticmethod
     def _raise_for_error(response: httpx.Response) -> None:
         if response.status_code < 400:
             return
-        message, code, retryable = f"Gateway error {response.status_code}", "gateway.http_error", False
+        message, code, retryable = (
+            f"Gateway error {response.status_code}",
+            "gateway.http_error",
+            False,
+        )
         try:
             # A streamed response has no body until read; the error envelope is small.
             response.read()
@@ -417,7 +446,9 @@ def _iter_sse(lines: Iterator[str]) -> Iterator[dict[str, Any]]:
 
 
 def _public_messages(messages: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [{"role": message.get("role"), "content": message.get("content")} for message in messages]
+    return [
+        {"role": message.get("role"), "content": message.get("content")} for message in messages
+    ]
 
 
 def _chat_envelope(raw: dict[str, Any]) -> EventEnvelope:

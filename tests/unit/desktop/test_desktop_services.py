@@ -3,6 +3,7 @@
 Each service is exercised in isolation against a small fake host that records what it would
 show in QML (signals, status line, confirmations) and supplies stub sibling services.
 """
+
 from __future__ import annotations
 
 import os
@@ -52,10 +53,23 @@ class Recorder:
 
 class FakeHost(QObject):
     SIGNALS = (
-        "stateChanged", "settingsChanged", "conversationsChanged", "transcriptChanged", "modelsChanged",
-        "permissionsChanged", "commandsChanged", "skillsChanged", "presetsChanged", "focusComposerRequested",
-        "infoRequested", "errorRequested", "approvalRequested", "runtimeSetupStarted", "runtimeSetupFinished",
-        "fileExported", "fileImported",
+        "stateChanged",
+        "settingsChanged",
+        "conversationsChanged",
+        "transcriptChanged",
+        "modelsChanged",
+        "permissionsChanged",
+        "commandsChanged",
+        "skillsChanged",
+        "presetsChanged",
+        "focusComposerRequested",
+        "infoRequested",
+        "errorRequested",
+        "approvalRequested",
+        "runtimeSetupStarted",
+        "runtimeSetupFinished",
+        "fileExported",
+        "fileImported",
     )
 
     def __init__(self) -> None:
@@ -67,11 +81,39 @@ class FakeHost(QObject):
         self.confirmations: dict[str, tuple[str, str, Any, Any]] = {}
         self.model_reloads = 0
         self.permission_loads = 0
-        self.runtime: Any = SimpleNamespace(workspace_path="", gateway_token="", connection=lambda: None, identity=lambda: "workspace", has_capability=lambda _name: False, workspace_ready=lambda: False, show_status=lambda: None)
-        self.settings: Any = SimpleNamespace(reload_skills=lambda: None, refresh_catalog_if_stale=lambda: None, catalog=SimpleNamespace(models=lambda: []), catalog_autorefresh_attempted=False)
+        self.runtime: Any = SimpleNamespace(
+            workspace_path="",
+            gateway_token="",
+            connection=lambda: None,
+            identity=lambda: "workspace",
+            has_capability=lambda _name: False,
+            workspace_ready=lambda: False,
+            show_status=lambda: None,
+        )
+        self.settings: Any = SimpleNamespace(
+            reload_skills=lambda: None,
+            refresh_catalog_if_stale=lambda: None,
+            catalog=SimpleNamespace(models=lambda: []),
+            catalog_autorefresh_attempted=False,
+        )
         noop = lambda *_args, **_kwargs: None  # noqa: E731
-        self.history: Any = SimpleNamespace(refresh_transcript=noop, schedule_transcript_refresh=noop, new_conversation=noop, fork=noop, compact_context=noop, inspect_context=noop, show_usage=noop)
-        self.generation: Any = SimpleNamespace(running=False, live_events=[], auto_mode=False, stop_auto=lambda: None, reset_for_workspace_change=lambda: None, continue_queued_input=lambda: None)
+        self.history: Any = SimpleNamespace(
+            refresh_transcript=noop,
+            schedule_transcript_refresh=noop,
+            new_conversation=noop,
+            fork=noop,
+            compact_context=noop,
+            inspect_context=noop,
+            show_usage=noop,
+        )
+        self.generation: Any = SimpleNamespace(
+            running=False,
+            live_events=[],
+            auto_mode=False,
+            stop_auto=lambda: None,
+            reset_for_workspace_change=lambda: None,
+            continue_queued_input=lambda: None,
+        )
         self.staging: Any = SimpleNamespace(busy=False, publishing=False)
 
     def set_status(self, text: str) -> None:
@@ -105,8 +147,11 @@ def storage(tmp_path: Path):
 
 def _status(workspace: Path, **extra: Any) -> GatewayStatus:
     values = {
-        "ready": True, "executor_present": True, "executor_status": "ready",
-        "active_workspace": workspace_id(workspace), "supported_modes": ("chat", "plan", "agent"),
+        "ready": True,
+        "executor_present": True,
+        "executor_status": "ready",
+        "active_workspace": workspace_id(workspace),
+        "supported_modes": ("chat", "plan", "agent"),
         "capabilities": ({"name": "agent_auto"}, {"name": "agent_accept_edits"}),
     }
     values.update(extra)
@@ -135,7 +180,9 @@ def test_runtime_workspace_readiness_and_capabilities(host, storage, tmp_path: P
     assert not runtime.workspace_ready() and not runtime.mode_available("agent")
 
 
-def test_runtime_health_labels_and_catalog_refresh_only_when_healthy(host, storage, tmp_path: Path) -> None:
+def test_runtime_health_labels_and_catalog_refresh_only_when_healthy(
+    host, storage, tmp_path: Path
+) -> None:
     refreshes: list[int] = []
     host.settings.refresh_catalog_if_stale = lambda: refreshes.append(1)
     workspace = tmp_path / "projects" / "demo"
@@ -144,21 +191,27 @@ def test_runtime_health_labels_and_catalog_refresh_only_when_healthy(host, stora
     runtime.apply_health(HealthResult(HealthState.STARTING, "starting"))
     assert runtime.gateway_text == "Gateway: starting" and refreshes == []
     runtime.workspace_path = str(workspace)
-    runtime.apply_health(HealthResult(HealthState.READY, "ok", _status(workspace, executor_status="starting")))
+    runtime.apply_health(
+        HealthResult(HealthState.READY, "ok", _status(workspace, executor_status="starting"))
+    )
     assert runtime.gateway_text == "Executor: unavailable" and refreshes == [1]
     runtime.state = "building"
     runtime.apply_health(HealthResult(HealthState.DISCONNECTED, "offline"))
     assert runtime.gateway_text == "Executor: unavailable"  # ignored while the runtime is busy
 
 
-def test_runtime_gateway_token_is_used_from_memory_immediately_after_save(host, storage, monkeypatch) -> None:
+def test_runtime_gateway_token_is_used_from_memory_immediately_after_save(
+    host, storage, monkeypatch
+) -> None:
     saved: list[str] = []
     monkeypatch.setattr(runtime_module, "save_gateway_token", saved.append)
     monkeypatch.setattr(runtime_module, "get_gateway_session_token", lambda: None)
     monkeypatch.setattr(runtime_module, "get_gateway_token", lambda: None)
     monkeypatch.setattr("src.desktop.preferences.get_api_key", lambda: None)
     runtime = _runtime(host, storage)
-    settings = SettingsService(host, storage, catalog=SimpleNamespace(is_stale=lambda: False, models=lambda: []))
+    settings = SettingsService(
+        host, storage, catalog=SimpleNamespace(is_stale=lambda: False, models=lambda: [])
+    )
     assert runtime.connection() is None and settings.gateway_settings()["hasToken"] is False
     assert runtime.save_gateway("http://127.0.0.1:8765", "n" * 43) is True
     assert saved == ["n" * 43]
@@ -169,7 +222,9 @@ def test_runtime_gateway_token_is_used_from_memory_immediately_after_save(host, 
     assert host.errorRequested.calls[-1][0] == "Invalid gateway settings"
 
 
-def test_runtime_prefers_the_active_local_gateway_session_token(host, storage, monkeypatch) -> None:
+def test_runtime_prefers_the_active_local_gateway_session_token(
+    host, storage, monkeypatch
+) -> None:
     monkeypatch.setattr(runtime_module, "get_gateway_token", lambda: "k" * 43)
     monkeypatch.setattr(runtime_module, "get_gateway_session_token", lambda: "s" * 43)
     assert _runtime(host, storage).gateway_token == "s" * 43
@@ -184,7 +239,9 @@ def test_runtime_failure_is_reported(host, storage) -> None:
     assert host.errorRequested.calls == [("Local runtime setup failed", "docker missing")]
 
 
-def test_runtime_select_workspace_resets_session_and_rejects_unsafe_paths(host, storage, tmp_path: Path) -> None:
+def test_runtime_select_workspace_resets_session_and_rejects_unsafe_paths(
+    host, storage, tmp_path: Path
+) -> None:
     resets: list[int] = []
     host.generation.reset_for_workspace_change = lambda: resets.append(1)
     runtime = _runtime(host, storage)
@@ -203,10 +260,18 @@ def test_runtime_select_workspace_resets_session_and_rejects_unsafe_paths(host, 
 # -- SettingsService -------------------------------------------------------------------
 
 
-def test_settings_catalog_autorefresh_happens_once_per_gateway(host, storage, monkeypatch) -> None:
-    settings = SettingsService(host, storage, catalog=SimpleNamespace(is_stale=lambda: True, models=lambda: []))
+def test_settings_catalog_autorefresh_happens_once_per_gateway(
+    host, storage, monkeypatch
+) -> None:
+    settings = SettingsService(
+        host, storage, catalog=SimpleNamespace(is_stale=lambda: True, models=lambda: [])
+    )
     started: list[bool] = []
-    monkeypatch.setattr(settings, "start_catalog_refresh", lambda *, report_errors: started.append(report_errors))
+    monkeypatch.setattr(
+        settings,
+        "start_catalog_refresh",
+        lambda *, report_errors: started.append(report_errors),
+    )
     settings.refresh_catalog_if_stale()
     settings.refresh_catalog_if_stale()
     assert started == [False]
@@ -216,12 +281,29 @@ def test_settings_preferences_round_trip(host, storage) -> None:
     settings = SettingsService(host, storage)
     settings.set_server_tool("web_search", True)
     settings.set_server_tool("shell", True)
-    assert settings.server_tools() == {"web_search": True, "web_fetch": False, "datetime": False}
+    assert settings.server_tools() == {
+        "web_search": True,
+        "web_fetch": False,
+        "datetime": False,
+    }
     settings.set_theme("neon")
     assert settings.theme == "dark"
-    settings.save_model_options("vendor/model", {"max_tokens": "256", "reasoning_effort": "extreme", "stop": ["END"], "data_collection": "allow"})
+    settings.save_model_options(
+        "vendor/model",
+        {
+            "max_tokens": "256",
+            "reasoning_effort": "extreme",
+            "stop": ["END"],
+            "data_collection": "allow",
+        },
+    )
     options = settings.request_options("vendor/model")
-    assert (options.max_tokens, options.reasoning_effort, options.stop, options.data_collection) == (256, None, ["END"], "allow")
+    assert (
+        options.max_tokens,
+        options.reasoning_effort,
+        options.stop,
+        options.data_collection,
+    ) == (256, None, ["END"], "allow")
     assert host.statuses[-1] == "Model and privacy controls saved"
 
 
@@ -234,15 +316,21 @@ def test_settings_toggle_favorite_model_round_trips(host, storage) -> None:
     assert host.model_reloads == 2
 
 
-def test_settings_commands_include_builtins_and_invalid_input_is_reported(host, storage) -> None:
+def test_settings_commands_include_builtins_and_invalid_input_is_reported(
+    host, storage
+) -> None:
     settings = SettingsService(host, storage)
     settings.reload_commands()
-    assert {"new", "mode", "pause"} <= {item["name"] for item in settings.commands if item["builtin"]}
+    assert {"new", "mode", "pause"} <= {
+        item["name"] for item in settings.commands if item["builtin"]
+    }
     settings.save_prompt_command("", "", "")
     assert host.errorRequested.calls[-1][0] == "Invalid command"
 
 
-def test_settings_permission_changes_reload_through_the_bridge(host, storage, monkeypatch) -> None:
+def test_settings_permission_changes_reload_through_the_bridge(
+    host, storage, monkeypatch
+) -> None:
     calls: list[tuple] = []
 
     class FakeClient:
@@ -277,7 +365,10 @@ def test_conversations_bootstrap_and_housekeeping(host, storage) -> None:
     history.toggle_pin()
     assert history.conversations[0]["pinned"] is True
     history.fork()
-    assert history.current().title == "Renamed (fork)" and host.statuses[-1] == "Conversation forked"
+    assert (
+        history.current().title == "Renamed (fork)"
+        and host.statuses[-1] == "Conversation forked"
+    )
 
 
 def test_conversation_mutations_are_refused_while_generating(host, storage) -> None:
@@ -288,7 +379,11 @@ def test_conversation_mutations_are_refused_while_generating(host, storage) -> N
     history.rename("Changed")
     history.request_delete()
     history.new_conversation()
-    assert history.current().title == before and host.confirmations == {} and len(history.conversations) == 1
+    assert (
+        history.current().title == before
+        and host.confirmations == {}
+        and len(history.conversations) == 1
+    )
 
 
 def test_conversation_delete_requires_confirmation(host, storage) -> None:
@@ -306,7 +401,12 @@ def test_transcript_shows_live_activity_only_while_generating(host, storage) -> 
     history = ConversationService(host, storage)
     history.load()
     storage.add_message(history.current_id, "user", "hello")
-    live = {"run_id": "run", "event_id": 1, "type": "tool.requested", "payload": {"request_id": "1", "tool": "read"}}
+    live = {
+        "run_id": "run",
+        "event_id": 1,
+        "type": "tool.requested",
+        "payload": {"request_id": "1", "tool": "read"},
+    }
     host.generation.live_events = [live]
     history.refresh_transcript()
     assert [item["kind"] for item in history.transcript] == ["user"]
@@ -331,7 +431,9 @@ def _generation(host: FakeHost, storage: Storage, tmp_path: Path) -> GenerationS
     return generation
 
 
-def test_generation_approval_tiers_reset_with_workspace_and_mode(host, storage, tmp_path: Path) -> None:
+def test_generation_approval_tiers_reset_with_workspace_and_mode(
+    host, storage, tmp_path: Path
+) -> None:
     generation = _generation(host, storage, tmp_path)
     generation.select_mode("agent")
     generation.request_accept_edits(True)
@@ -345,11 +447,16 @@ def test_generation_approval_tiers_reset_with_workspace_and_mode(host, storage, 
     assert generation.approval_policy() == "prompt" and generation.mode == "chat"
 
 
-def test_generation_rejects_agent_mode_without_a_ready_workspace(host, storage, tmp_path: Path) -> None:
+def test_generation_rejects_agent_mode_without_a_ready_workspace(
+    host, storage, tmp_path: Path
+) -> None:
     generation = _generation(host, storage, tmp_path)
     host.runtime.last_status = None
     generation.select_mode("agent")
-    assert generation.mode == "chat" and host.errorRequested.calls[-1][0] == "Workspace is still preparing"
+    assert (
+        generation.mode == "chat"
+        and host.errorRequested.calls[-1][0] == "Workspace is still preparing"
+    )
 
 
 def test_generation_commands_and_publication_gate(host, storage, tmp_path: Path) -> None:
@@ -372,27 +479,59 @@ def test_generation_queues_input_while_running(host, storage, tmp_path: Path) ->
     assert generation.controller.next_input().text == "steer now"
 
 
-def test_generation_routes_manifests_and_stops_auto_on_publication_failure(host, storage, tmp_path: Path) -> None:
+def test_generation_routes_manifests_and_stops_auto_on_publication_failure(
+    host, storage, tmp_path: Path
+) -> None:
     generation = _generation(host, storage, tmp_path)
     manifests: list[dict[str, Any]] = []
-    host.staging.handle_manifest = lambda payload, **kwargs: manifests.append({"payload": payload, **kwargs})
+    host.staging.handle_manifest = lambda payload, **kwargs: manifests.append(
+        {"payload": payload, **kwargs}
+    )
     generation.auto_mode = True
-    event = EventEnvelope(7, "run-1", "checkpoint.created", "2026-01-01T00:00:00Z", {"publish_manifest": {"manifest_id": "m"}, "auto_publish": True})
+    event = EventEnvelope(
+        7,
+        "run-1",
+        "checkpoint.created",
+        "2026-01-01T00:00:00Z",
+        {"publish_manifest": {"manifest_id": "m"}, "auto_publish": True},
+    )
     generation.on_agent_event(event)
-    assert manifests == [{"payload": {"manifest_id": "m"}, "token": "publish:run-1:7", "auto": True, "auto_authorized": False}]
-    generation.on_agent_event(EventEnvelope(8, "run-1", "publication.failed", "2026-01-01T00:00:00Z", {}))
+    assert manifests == [
+        {
+            "payload": {"manifest_id": "m"},
+            "token": "publish:run-1:7",
+            "auto": True,
+            "auto_authorized": False,
+        }
+    ]
+    generation.on_agent_event(
+        EventEnvelope(8, "run-1", "publication.failed", "2026-01-01T00:00:00Z", {})
+    )
     assert generation.auto_mode is False
 
 
 def test_generation_forwards_tool_approvals_to_qml(host, storage, tmp_path: Path) -> None:
     generation = _generation(host, storage, tmp_path)
-    event = EventEnvelope(3, "run-1", "approval.required", "2026-01-01T00:00:00Z", {"approval_id": "a1", "kind": "tool", "tool": "bash", "arguments": {"command": "pytest"}})
+    event = EventEnvelope(
+        3,
+        "run-1",
+        "approval.required",
+        "2026-01-01T00:00:00Z",
+        {
+            "approval_id": "a1",
+            "kind": "tool",
+            "tool": "bash",
+            "arguments": {"command": "pytest"},
+        },
+    )
     generation.on_agent_event(event)
     (request,) = host.approvalRequested.calls
     assert request[0]["key"] == "run-1:a1" and request[0]["allowRule"] is True
 
 
-def test_streamed_text_is_buffered_and_only_activity_events_refresh_the_transcript(host, storage, tmp_path: Path) -> None:
+def test_streamed_text_is_buffered_and_only_activity_events_refresh_the_transcript(
+    host, storage, tmp_path: Path
+) -> None:
     history = ConversationService(host, storage)
     history.load()
     generation = _generation(host, storage, tmp_path)
@@ -410,10 +549,28 @@ def test_streamed_text_is_buffered_and_only_activity_events_refresh_the_transcri
 
     # Deltas and tool output are not persisted; activity events are, and schedule one refresh.
     for event_id, event_type in enumerate(("model.delta", "tool.output", "tool.completed"), 1):
-        generation.on_agent_event(EventEnvelope(event_id, "run-1", event_type, "2026-01-01T00:00:00Z", {"request_id": "1", "tool": "read", "text": "x", "output": "x"}))
+        generation.on_agent_event(
+            EventEnvelope(
+                event_id,
+                "run-1",
+                event_type,
+                "2026-01-01T00:00:00Z",
+                {"request_id": "1", "tool": "read", "text": "x", "output": "x"},
+            )
+        )
     assert storage.list_run_events(history.current_id) == []
-    generation.on_agent_event(EventEnvelope(4, "run-1", "tool.requested", "2026-01-01T00:00:00Z", {"request_id": "1", "tool": "read"}))
-    assert [event["type"] for event in storage.list_run_events(history.current_id)] == ["tool.requested"]
+    generation.on_agent_event(
+        EventEnvelope(
+            4,
+            "run-1",
+            "tool.requested",
+            "2026-01-01T00:00:00Z",
+            {"request_id": "1", "tool": "read"},
+        )
+    )
+    assert [event["type"] for event in storage.list_run_events(history.current_id)] == [
+        "tool.requested"
+    ]
     assert refreshes.count("scheduled") >= 1 and "now" not in refreshes
 
     del history.refresh_transcript
@@ -425,7 +582,17 @@ def test_streamed_text_is_buffered_and_only_activity_events_refresh_the_transcri
 
 
 def _manifest(**overrides: Any) -> PublishManifest:
-    values = {"manifest_id": "m1", "run_id": "run", "workspace_id": "w", "source_snapshot_id": "s", "approval_id": "a", "operations": [], "publication_id": "pub", "batch_index": 1, "batch_count": 1}
+    values = {
+        "manifest_id": "m1",
+        "run_id": "run",
+        "workspace_id": "w",
+        "source_snapshot_id": "s",
+        "approval_id": "a",
+        "operations": [],
+        "publication_id": "pub",
+        "batch_index": 1,
+        "batch_count": 1,
+    }
     values.update(overrides)
     return PublishManifest.from_dict(values)
 
@@ -459,15 +626,25 @@ def staging(host, tmp_path: Path, monkeypatch):
 
 def test_unauthorized_auto_publication_is_blocked(host, staging) -> None:
     service, stopped = staging
-    service.handle_manifest(_manifest().to_dict(), token="publish:run:1", auto=True, auto_authorized=False)
+    service.handle_manifest(
+        _manifest().to_dict(), token="publish:run:1", auto=True, auto_authorized=False
+    )
     assert FakePublicationWorker.started == [] and stopped == [1]
-    assert host.errorRequested.calls[-1] == ("Publication blocked", "Auto publication is not authorized by this desktop session")
+    assert host.errorRequested.calls[-1] == (
+        "Publication blocked",
+        "Auto publication is not authorized by this desktop session",
+    )
 
 
 def test_reviewed_publication_starts_only_after_confirmation(host, staging) -> None:
     service, _stopped = staging
-    service.handle_manifest(_manifest().to_dict(), token="publish:run:1", auto=False, auto_authorized=False)
-    assert FakePublicationWorker.started == [] and host.confirmations["publish:run:1"][0] == "Publish staged changes to the host?"
+    service.handle_manifest(
+        _manifest().to_dict(), token="publish:run:1", auto=False, auto_authorized=False
+    )
+    assert (
+        FakePublicationWorker.started == []
+        and host.confirmations["publish:run:1"][0] == "Publish staged changes to the host?"
+    )
     host.accept("publish:run:1")
     assert len(FakePublicationWorker.started) == 1 and service.busy and service.publishing
 
@@ -477,7 +654,15 @@ def test_multi_batch_publication_confirms_each_batch_and_offers_retry(host, stag
     first = _manifest(batch_count=2)
     service.start_publication(first, auto=False)
     following = _manifest(manifest_id="m2", batch_index=2, batch_count=2)
-    service._on_publication_complete({"completed_paths": ["a"], "checkpoint_id": "abcdef1234", "batch_index": 1, "batch_count": 2, "next_manifest": following.to_dict()})
+    service._on_publication_complete(
+        {
+            "completed_paths": ["a"],
+            "checkpoint_id": "abcdef1234",
+            "batch_index": 1,
+            "batch_count": 2,
+            "next_manifest": following.to_dict(),
+        }
+    )
     assert host.statuses[-1] == "Published 1 file(s) (batch 1 of 2); checkpoint abcdef12"
     service._on_publication_finished()
     assert host.confirmations["publish:pub:2"][0] == "Publish batch 2 of 2?"
@@ -494,9 +679,19 @@ def test_auto_multi_batch_publication_continues_without_prompts(host, staging) -
     service.start_publication(_manifest(batch_count=2), auto=True, client=object())
     FakePublicationWorker.started[-1].continuation_client = object()
     following = _manifest(manifest_id="m2", batch_index=2, batch_count=2)
-    service._on_publication_complete({"completed_paths": [], "checkpoint_id": "c", "batch_index": 1, "batch_count": 2, "next_manifest": following.to_dict()})
+    service._on_publication_complete(
+        {
+            "completed_paths": [],
+            "checkpoint_id": "c",
+            "batch_index": 1,
+            "batch_count": 2,
+            "next_manifest": following.to_dict(),
+        }
+    )
     service._on_publication_finished()
-    assert host.confirmations == {} and FakePublicationWorker.started[-1].manifest.batch_index == 2
+    assert (
+        host.confirmations == {} and FakePublicationWorker.started[-1].manifest.batch_index == 2
+    )
 
 
 def test_auto_batch_without_a_gateway_client_stops_auto(host, staging) -> None:
@@ -504,7 +699,10 @@ def test_auto_batch_without_a_gateway_client_stops_auto(host, staging) -> None:
     host.runtime.connection = lambda: None
     service.start_publication(_manifest(), auto=True)
     assert FakePublicationWorker.started == [] and stopped == [1]
-    assert host.errorRequested.calls[-1] == ("Publication blocked", "Auto publication requires the local gateway")
+    assert host.errorRequested.calls[-1] == (
+        "Publication blocked",
+        "Auto publication requires the local gateway",
+    )
 
 
 def test_idle_publication_finish_resumes_queued_input(host, staging) -> None:

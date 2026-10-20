@@ -21,7 +21,9 @@ def check_expected_sha256(relative: str, expected: object, actual: str | None) -
     if expected is None:
         return
     if not isinstance(expected, str):
-        raise ExecutorToolError(INVALID_ARGUMENTS, "expected_sha256 must be a string when supplied")
+        raise ExecutorToolError(
+            INVALID_ARGUMENTS, "expected_sha256 must be a string when supplied"
+        )
     if expected != actual:
         raise ExecutorToolError(
             STAGING_CONFLICT,
@@ -69,7 +71,12 @@ def guard_shrink(
     shrinks = new_bytes < old_bytes * SHRINK_RATIO and new_lines < old_lines * SHRINK_RATIO
     if old_bytes < 200 or old_lines < 20 or not shrinks:
         return None
-    sizes = {"old_bytes": old_bytes, "new_bytes": new_bytes, "old_lines": old_lines, "new_lines": new_lines}
+    sizes = {
+        "old_bytes": old_bytes,
+        "new_bytes": new_bytes,
+        "old_lines": old_lines,
+        "new_lines": new_lines,
+    }
     message = (
         f"Whole-file edit for {relative} would shrink the file from {old_bytes} to {new_bytes} "
         f"bytes and from {old_lines} to {new_lines} lines"
@@ -81,7 +88,11 @@ def guard_shrink(
             "expected_sha256 to confirm a deliberate rewrite.",
             details={"failure": "shrink_guard", "path": relative, **sizes},
         )
-    return {"path": relative, **sizes, "message": f"{message}; applied because the change was confirmed."}
+    return {
+        "path": relative,
+        **sizes,
+        "message": f"{message}; applied because the change was confirmed.",
+    }
 
 
 def with_shrink_warning(data: dict, warning: dict[str, object] | None) -> dict:
@@ -139,8 +150,12 @@ def bounded_diff(
     truncated = truncated or clipped
     if truncated:
         text = f"{text}\n… [diff truncated; showing a bounded preview] …"
-    added_lines = sum(1 for line in lines if line.startswith("+") and not line.startswith("+++"))
-    removed_lines = sum(1 for line in lines if line.startswith("-") and not line.startswith("---"))
+    added_lines = sum(
+        1 for line in lines if line.startswith("+") and not line.startswith("+++")
+    )
+    removed_lines = sum(
+        1 for line in lines if line.startswith("-") and not line.startswith("---")
+    )
     return {
         "path": path.as_posix(),
         "text": text,

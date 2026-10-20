@@ -1,4 +1,5 @@
 """Active skills render only when the run's mode offers every tool they require."""
+
 from __future__ import annotations
 
 import asyncio
@@ -20,7 +21,9 @@ STATUS_SKILL = {
 
 class NoInstructionsExecutor:
     async def execute(self, request):
-        return ToolResult(request.request_id, False, output="missing", error_code="path.missing")
+        return ToolResult(
+            request.request_id, False, output="missing", error_code="path.missing"
+        )
 
 
 async def _no_events(*_args) -> None:

@@ -74,7 +74,11 @@ def apply_patch(
         raise ExecutorToolError(
             LIMIT_EXCEEDED,
             f"apply_patch content totals {payload} bytes, above the {max_patch_bytes}-byte patch limit",
-            details={"failure": "patch_too_large", "payload_bytes": payload, "max_patch_bytes": max_patch_bytes},
+            details={
+                "failure": "patch_too_large",
+                "payload_bytes": payload,
+                "max_patch_bytes": max_patch_bytes,
+            },
         )
     for index, item in enumerate(operations):
         _validate_shape(index, item)
@@ -86,7 +90,9 @@ def apply_patch(
         "max_staging_bytes": max_staging_bytes,
     }
     results: list[dict] = []
-    with checkpointed(root, max_files=max_checkpoint_files, max_total_bytes=max_checkpoint_bytes) as checkpoint_id:
+    with checkpointed(
+        root, max_files=max_checkpoint_files, max_total_bytes=max_checkpoint_bytes
+    ) as checkpoint_id:
         for index, item in enumerate(operations):
             try:
                 results.append(_apply_one(root, item, **limits))
@@ -96,7 +102,10 @@ def apply_patch(
     _bound_diffs(results)
     paths = list(dict.fromkeys(item["path"] for item in results))
     shrink_warnings = [item["shrink_details"] for item in results if item.get("shrink_warning")]
-    counts = {name: sum(1 for item in results if item["operation"] == name) for name in PATCH_OPERATIONS}
+    counts = {
+        name: sum(1 for item in results if item["operation"] == name)
+        for name in PATCH_OPERATIONS
+    }
     output = (
         f"Applied patch: {_plural(len(results), 'operation')} across {_plural(len(paths), 'file')} "
         f"({counts['write']} write, {counts['edit']} edit, {counts['delete']} delete)."
@@ -129,11 +138,18 @@ def _validate_shape(index: int, item: object) -> None:
         raise _malformed(f"apply_patch operation {index} must be an object", index)
     operation = item.get("operation")
     if operation not in PATCH_OPERATIONS:
-        raise _malformed(f"apply_patch operation {index} must be one of {', '.join(PATCH_OPERATIONS)}", index)
-    allowed = {"write": WRITE_ARGUMENTS, "edit": EDIT_ARGUMENTS, "delete": DELETE_ARGUMENTS}[operation] | {"operation"}
+        raise _malformed(
+            f"apply_patch operation {index} must be one of {', '.join(PATCH_OPERATIONS)}", index
+        )
+    allowed = {"write": WRITE_ARGUMENTS, "edit": EDIT_ARGUMENTS, "delete": DELETE_ARGUMENTS}[
+        operation
+    ] | {"operation"}
     unknown = sorted(set(item) - allowed)
     if unknown:
-        raise _malformed(f"apply_patch operation {index} ({operation}) has unknown fields: {', '.join(unknown)}", index)
+        raise _malformed(
+            f"apply_patch operation {index} ({operation}) has unknown fields: {', '.join(unknown)}",
+            index,
+        )
     if not isinstance(item.get("path"), str) or not item["path"]:
         raise _malformed(f"apply_patch operation {index} requires a path", index)
     normalize_relative(item["path"])
@@ -177,9 +193,13 @@ def _apply_one(
     operation = item["operation"]
     arguments = {key: value for key, value in item.items() if key != "operation"}
     if operation == "write":
-        prepared = prepare_write(root, arguments, max_bytes=max_write_bytes, max_staging_bytes=max_staging_bytes)
+        prepared = prepare_write(
+            root, arguments, max_bytes=max_write_bytes, max_staging_bytes=max_staging_bytes
+        )
         commit_write(root, prepared)
-        data = write_result(prepared, max_bytes=max_write_bytes, max_staging_bytes=max_staging_bytes)
+        data = write_result(
+            prepared, max_bytes=max_write_bytes, max_staging_bytes=max_staging_bytes
+        )
         data["operation"] = "write"
         data["created"] = prepared.old_hash is None
         return data
@@ -233,7 +253,10 @@ def _bound_diffs(results: list[dict]) -> None:
         encoded = text.encode("utf-8")
         if used + len(encoded) > MAX_PATCH_DIFF_BYTES:
             remaining = max(0, MAX_PATCH_DIFF_BYTES - used)
-            diff["text"] = encoded[:remaining].decode("utf-8", errors="ignore") + "\n… [patch diff budget exhausted] …"
+            diff["text"] = (
+                encoded[:remaining].decode("utf-8", errors="ignore")
+                + "\n… [patch diff budget exhausted] …"
+            )
             diff["truncated"] = True
             used = MAX_PATCH_DIFF_BYTES
         else:

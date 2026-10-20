@@ -1,4 +1,5 @@
 """Model tool-call parsing and the bounded, model-facing form of tool results."""
+
 from __future__ import annotations
 
 import json
@@ -57,10 +58,15 @@ def bounded_tool_result(name: str, result: ToolResult, remaining: int) -> str:
         for key in ("checkpoint_id", "old_sha256", "new_sha256"):
             data.pop(key, None)
         if isinstance(data.get("diff"), dict):
-            data["diff"] = {**data["diff"], "text": bounded_excerpt(data["diff"].get("text"), 8_000)}
+            data["diff"] = {
+                **data["diff"],
+                "text": bounded_excerpt(data["diff"].get("text"), 8_000),
+            }
         if isinstance(data.get("operations"), list):
             data["operations"] = [
-                _bounded_operation(item) for item in data["operations"] if isinstance(item, dict)
+                _bounded_operation(item)
+                for item in data["operations"]
+                if isinstance(item, dict)
             ]
     if name == "status" and isinstance(data.get("diffs"), list):
         data["diffs"] = [
@@ -74,18 +80,26 @@ def bounded_tool_result(name: str, result: ToolResult, remaining: int) -> str:
     text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     if len(text.encode()) <= max(0, remaining):
         return text
-    return json.dumps({
-        "ok": result.ok,
-        "error_code": result.error_code,
-        "truncated": True,
-        "output": bounded_excerpt(result.output, 2_000),
-        "data": {"truncated": True},
-    }, separators=(",", ":"))
+    return json.dumps(
+        {
+            "ok": result.ok,
+            "error_code": result.error_code,
+            "truncated": True,
+            "output": bounded_excerpt(result.output, 2_000),
+            "data": {"truncated": True},
+        },
+        separators=(",", ":"),
+    )
 
 
 def _bounded_operation(item: dict[str, Any]) -> dict[str, Any]:
     """An ``apply_patch`` operation result without hashes and with a bounded diff."""
-    item = {key: value for key, value in item.items() if key not in {"old_sha256", "new_sha256"}}
+    item = {
+        key: value for key, value in item.items() if key not in {"old_sha256", "new_sha256"}
+    }
     if isinstance(item.get("diff"), dict):
-        item["diff"] = {**item["diff"], "text": bounded_excerpt(item["diff"].get("text"), 4_000)}
+        item["diff"] = {
+            **item["diff"],
+            "text": bounded_excerpt(item["diff"].get("text"), 4_000),
+        }
     return item

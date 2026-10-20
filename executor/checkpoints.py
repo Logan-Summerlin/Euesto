@@ -44,7 +44,9 @@ def create_checkpoint(
     files = visible_files(work_root)
     total = sum(size for _digest, size, _mode in files.values())
     if len(files) > max_files or total > max_total_bytes:
-        raise ExecutorToolError(LIMIT_EXCEEDED, "Staging is too large for a bounded recovery checkpoint.")
+        raise ExecutorToolError(
+            LIMIT_EXCEEDED, "Staging is too large for a bounded recovery checkpoint."
+        )
     actual_capacity = shutil.disk_usage(work_root).total
     required_capacity = total + max_total_bytes + ExecutorConfig.REQUIRED_TEMP_HEADROOM_BYTES
     if actual_capacity <= required_capacity:
@@ -52,7 +54,7 @@ def create_checkpoint(
             LIMIT_EXCEEDED,
             "Checkpoint would exceed the combined /work resource budget: "
             f"staging={total}, checkpoint={max_total_bytes}, "
-            f"temporary={ExecutorConfig.REQUIRED_TEMP_HEADROOM_BYTES}, capacity={actual_capacity}."
+            f"temporary={ExecutorConfig.REQUIRED_TEMP_HEADROOM_BYTES}, capacity={actual_capacity}.",
         )
 
     root = work_root / ".local-chat-checkpoints"
@@ -84,7 +86,9 @@ def create_checkpoint(
         }
         manifest_path = directory / "manifest.json"
         manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
-        _remember_references(manifest_path, {digest: size for digest, size, _mode in files.values()})
+        _remember_references(
+            manifest_path, {digest: size for digest, size, _mode in files.values()}
+        )
         _remember_files(checkpoint_id, files)
         _prune(root, checkpoint_id, max_checkpoints, max_total_bytes)
         return checkpoint_id
@@ -156,7 +160,9 @@ def restore_checkpoint(
     manifest = _load_manifest(work_root, checkpoint_id)
     raw_files = manifest.get("files")
     if not isinstance(raw_files, dict) or len(raw_files) > max_files:
-        raise ExecutorToolError(LIMIT_EXCEEDED, "Checkpoint file count exceeds the executor limit.")
+        raise ExecutorToolError(
+            LIMIT_EXCEEDED, "Checkpoint file count exceeds the executor limit."
+        )
     expected: dict[str, tuple[str, int, int | None]] = {}
     for relative, value in raw_files.items():
         if not isinstance(relative, str) or not isinstance(value, dict):
@@ -174,7 +180,8 @@ def restore_checkpoint(
     changed = [
         relative
         for relative in sorted(set(current) | set(expected), key=str.casefold)
-        if _content_and_mode(current.get(relative, absent)) != _content_and_mode(expected.get(relative, absent))
+        if _content_and_mode(current.get(relative, absent))
+        != _content_and_mode(expected.get(relative, absent))
     ]
     prepared: dict[str, tuple[bytes, int | None]] = {}
     objects = work_root / ".local-chat-checkpoints" / "objects"
@@ -184,7 +191,9 @@ def restore_checkpoint(
         digest, _size, mode = expected[relative]
         object_path = objects / digest
         if not object_path.is_file() or sha256_file(object_path) != digest:
-            raise ExecutorToolError(CHECKPOINT_CORRUPT, "Checkpoint content is missing or corrupt.")
+            raise ExecutorToolError(
+                CHECKPOINT_CORRUPT, "Checkpoint content is missing or corrupt."
+            )
         prepared[relative] = (object_path.read_bytes(), mode)
     for relative in changed:
         target = safe_path(work_root, relative, must_exist=False)
@@ -218,7 +227,9 @@ def _load_manifest(work_root: Path, checkpoint_id: str) -> dict[str, object]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ExecutorToolError(CHECKPOINT_NOT_FOUND, "Checkpoint was not found or is invalid.") from exc
+        raise ExecutorToolError(
+            CHECKPOINT_NOT_FOUND, "Checkpoint was not found or is invalid."
+        ) from exc
     if not isinstance(value, dict) or value.get("checkpoint_id") != checkpoint_id:
         raise ExecutorToolError(CHECKPOINT_CORRUPT, "Checkpoint manifest identity is invalid.")
     return value
@@ -226,7 +237,11 @@ def _load_manifest(work_root: Path, checkpoint_id: str) -> dict[str, object]:
 
 def _prune(root: Path, current_id: str, max_count: int, max_storage_bytes: int) -> None:
     directories = sorted(
-        (path for path in root.iterdir() if path.is_dir() and _CHECKPOINT_ID.fullmatch(path.name)),
+        (
+            path
+            for path in root.iterdir()
+            if path.is_dir() and _CHECKPOINT_ID.fullmatch(path.name)
+        ),
         key=lambda path: path.stat().st_mtime,
     )
     keep = {path.name for path in directories[-max(1, max_count) :]} | {current_id}
@@ -236,11 +251,15 @@ def _prune(root: Path, current_id: str, max_count: int, max_storage_bytes: int) 
 
     objects = root / "objects"
     while True:
-        kept_directories = [
-            path
-            for path in root.iterdir()
-            if path.is_dir() and _CHECKPOINT_ID.fullmatch(path.name)
-        ] if root.exists() else []
+        kept_directories = (
+            [
+                path
+                for path in root.iterdir()
+                if path.is_dir() and _CHECKPOINT_ID.fullmatch(path.name)
+            ]
+            if root.exists()
+            else []
+        )
         # Sizes come from the manifests (verified at store time), so the object store is
         # never statted blob-by-blob.
         referenced: dict[str, int] = {}
@@ -249,7 +268,9 @@ def _prune(root: Path, current_id: str, max_count: int, max_storage_bytes: int) 
         if sum(referenced.values()) <= max_storage_bytes:
             if objects.exists():
                 with os.scandir(objects) as iterator:
-                    unreferenced = [entry.path for entry in iterator if entry.name not in referenced]
+                    unreferenced = [
+                        entry.path for entry in iterator if entry.name not in referenced
+                    ]
                 for path in unreferenced:
                     try:
                         os.unlink(path)
@@ -258,7 +279,10 @@ def _prune(root: Path, current_id: str, max_count: int, max_storage_bytes: int) 
             return
         removable = [path for path in kept_directories if path.name != current_id]
         if not removable:
-            raise ExecutorToolError(LIMIT_EXCEEDED, "Checkpoint storage budget is exhausted by the current checkpoint set.")
+            raise ExecutorToolError(
+                LIMIT_EXCEEDED,
+                "Checkpoint storage budget is exhausted by the current checkpoint set.",
+            )
         _remove_checkpoint(min(removable, key=lambda path: path.stat().st_mtime))
 
 
@@ -309,7 +333,9 @@ def _store_object(source: Path, object_path: Path, digest: str) -> None:
         with os.fdopen(descriptor, "wb") as writer, source.open("rb") as reader:
             stored = copy_with_sha256(reader, writer)
         if stored != digest:
-            raise ExecutorToolError(CHECKPOINT_CORRUPT, "Checkpoint content verification failed.")
+            raise ExecutorToolError(
+                CHECKPOINT_CORRUPT, "Checkpoint content verification failed."
+            )
         os.replace(temporary, object_path)
     finally:
         temporary.unlink(missing_ok=True)

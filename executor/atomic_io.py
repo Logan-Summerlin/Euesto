@@ -24,7 +24,9 @@ def replacement_mode(target: Path) -> int:
         return 0o666 & ~_UMASK
 
 
-def atomic_write_bytes(target: Path, content: bytes, *, prefix: str = ".local-chat-atomic-") -> None:
+def atomic_write_bytes(
+    target: Path, content: bytes, *, prefix: str = ".local-chat-atomic-"
+) -> None:
     """Replace *target* atomically, keeping the temporary file on its filesystem."""
     mode = replacement_mode(target)
     descriptor, raw_temp = tempfile.mkstemp(prefix=prefix, dir=target.parent)

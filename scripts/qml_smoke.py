@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Deterministic, offscreen QML startup smoke check."""
+
 from __future__ import annotations
 
 import os

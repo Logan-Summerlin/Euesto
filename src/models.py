@@ -98,9 +98,7 @@ class ModelOption:
     @property
     def average_price_per_million(self) -> float | None:
         prices = [
-            price
-            for price in (self.prompt_price, self.completion_price)
-            if price is not None
+            price for price in (self.prompt_price, self.completion_price) if price is not None
         ]
         return (sum(prices) / len(prices)) * 1_000_000 if prices else None
 
@@ -125,9 +123,7 @@ class ModelOption:
             completion_price=optional_float(data.get("completion_price")),
             cached_prompt_price=optional_float(data.get("cached_prompt_price")),
             created=optional_int(data.get("created")),
-            artificial_analysis_score=optional_float(
-                data.get("artificial_analysis_score")
-            ),
+            artificial_analysis_score=optional_float(data.get("artificial_analysis_score")),
             artificial_analysis_rank=optional_int(data.get("artificial_analysis_rank")),
             fetched_at=str(data["fetched_at"]) if data.get("fetched_at") else None,
         )

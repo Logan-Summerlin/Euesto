@@ -51,8 +51,12 @@ def write(
 ) -> tuple[str, dict]:
     if set(arguments) - WRITE_ARGUMENTS:
         raise ExecutorToolError(INVALID_ARGUMENTS, "Unknown write arguments")
-    prepared = prepare_write(root, arguments, max_bytes=max_bytes, max_staging_bytes=max_staging_bytes)
-    with checkpointed(root, max_files=max_checkpoint_files, max_total_bytes=max_checkpoint_bytes) as checkpoint_id:
+    prepared = prepare_write(
+        root, arguments, max_bytes=max_bytes, max_staging_bytes=max_staging_bytes
+    )
+    with checkpointed(
+        root, max_files=max_checkpoint_files, max_total_bytes=max_checkpoint_bytes
+    ) as checkpoint_id:
         commit_write(root, prepared)
     data = write_result(prepared, max_bytes=max_bytes, max_staging_bytes=max_staging_bytes)
     data["checkpoint_id"] = checkpoint_id
@@ -63,7 +67,9 @@ def write(
     return output, data
 
 
-def prepare_write(root: Path, arguments: dict, *, max_bytes: int, max_staging_bytes: int | None = None) -> PreparedWrite:
+def prepare_write(
+    root: Path, arguments: dict, *, max_bytes: int, max_staging_bytes: int | None = None
+) -> PreparedWrite:
     """Validate one write against the current staged state without changing anything."""
     relative = arguments.get("path")
     content = arguments.get("content")
@@ -110,7 +116,9 @@ def prepare_write(root: Path, arguments: dict, *, max_bytes: int, max_staging_by
         diff = bounded_diff(path, original, content, fromfile=relative, tofile=relative)
     else:
         diff = bounded_edit_diff(relative, 1, "<whole-file>", content)
-    return PreparedWrite(relative, path, content, requested_bytes, old_hash, create_parents, diff, shrink_warning)
+    return PreparedWrite(
+        relative, path, content, requested_bytes, old_hash, create_parents, diff, shrink_warning
+    )
 
 
 def commit_write(root: Path, prepared: PreparedWrite) -> None:
@@ -123,7 +131,9 @@ def commit_write(root: Path, prepared: PreparedWrite) -> None:
     atomic_write_text(target, prepared.content)
 
 
-def write_result(prepared: PreparedWrite, *, max_bytes: int, max_staging_bytes: int | None) -> dict:
+def write_result(
+    prepared: PreparedWrite, *, max_bytes: int, max_staging_bytes: int | None
+) -> dict:
     data = {
         "path": prepared.relative,
         "old_sha256": prepared.old_hash,
@@ -147,4 +157,3 @@ def _validate_new_parents(root: Path, parent: str) -> None:
         prefix = "/".join(parts[:index])
         if root.joinpath(*parts[:index]).exists():
             safe_path(root, prefix, must_exist=True)
-

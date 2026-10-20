@@ -30,7 +30,9 @@ def _publish(service: ExecutorService, source: Path, tmp_path: Path) -> PublishM
 
 
 def _changes(service: ExecutorService, work: Path) -> list[tuple[str, str]]:
-    return [(change.path, change.operation) for change in workspace_changes(service.snapshot, work)]
+    return [
+        (change.path, change.operation) for change in workspace_changes(service.snapshot, work)
+    ]
 
 
 def test_mark_published_advances_the_baseline_without_touching_staged_files(
@@ -57,7 +59,9 @@ def test_changes_after_publication_compare_against_the_published_state(tmp_path:
     staged.write_text("follow-up change", encoding="utf-8")
 
     changes = workspace_changes(service.snapshot, work)
-    assert [(change.path, change.operation) for change in changes] == [("created.txt", "update")]
+    assert [(change.path, change.operation) for change in changes] == [
+        ("created.txt", "update")
+    ]
     assert changes[0].base_sha256 == manifest.operations[0].staged_sha256
 
 
@@ -73,7 +77,9 @@ def test_deleting_a_published_file_is_a_pending_delete(tmp_path: Path) -> None:
 
 
 def test_publication_baseline_advances_only_published_paths(tmp_path: Path) -> None:
-    service, _source, work = _service(tmp_path, **{"agent.py": "print('base')", "notes.txt": "base"})
+    service, _source, work = _service(
+        tmp_path, **{"agent.py": "print('base')", "notes.txt": "base"}
+    )
     snapshot = service.snapshot
     agent_path = work / "agent.py"
     agent_path.write_text("print('published')", encoding="utf-8")

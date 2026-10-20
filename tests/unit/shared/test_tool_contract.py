@@ -1,4 +1,5 @@
 """The public tool vocabulary, schemas, mode rules, and executor dispatch agree everywhere."""
+
 from __future__ import annotations
 
 import asyncio
@@ -19,21 +20,65 @@ from shared.tools import (
 )
 from tests.helpers import executor_config
 
-CANONICAL_TOOLS = ("read", "write", "edit", "apply_patch", "bash", "grep", "find", "ls", "status")
+CANONICAL_TOOLS = (
+    "read",
+    "write",
+    "edit",
+    "apply_patch",
+    "bash",
+    "grep",
+    "find",
+    "ls",
+    "status",
+)
 MODEL_TOOL_NAMES = CANONICAL_TOOLS + ("investigate_repository",)
 READ_ONLY_TOOLS = frozenset({"read", "grep", "find", "ls"})
-LEGACY_TOOL_NAMES = frozenset({
-    "list_files", "read_file", "write_file", "edit_file", "search_files", "search_text",
-    "inspect_workspace", "inspect_checkpoint", "patch", "run_command", "move_file", "copy_file",
-    "restore_checkpoint", "move", "copy", "checkpoint", "restore",
-})
+LEGACY_TOOL_NAMES = frozenset(
+    {
+        "list_files",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "search_files",
+        "search_text",
+        "inspect_workspace",
+        "inspect_checkpoint",
+        "patch",
+        "run_command",
+        "move_file",
+        "copy_file",
+        "restore_checkpoint",
+        "move",
+        "copy",
+        "checkpoint",
+        "restore",
+    }
+)
 SCHEMA_PROPERTIES = {
     "read": {"path", "start_line", "end_line", "offset", "max_bytes"},
     "write": {"path", "content", "expected_sha256", "create_parents"},
     "edit": {"path", "old_str", "new_str", "expected_occurrences", "expected_sha256"},
     "apply_patch": {"operations"},
-    "bash": {"command", "working_directory", "timeout_seconds", "env", "stdin", "rollback_on_failure"},
-    "grep": {"query", "path", "regex", "case_sensitive", "include_glob", "exclude_glob", "max_results", "context_lines", "include_metadata", "cursor"},
+    "bash": {
+        "command",
+        "working_directory",
+        "timeout_seconds",
+        "env",
+        "stdin",
+        "rollback_on_failure",
+    },
+    "grep": {
+        "query",
+        "path",
+        "regex",
+        "case_sensitive",
+        "include_glob",
+        "exclude_glob",
+        "max_results",
+        "context_lines",
+        "include_metadata",
+        "cursor",
+    },
     "find": {"path", "glob", "max_depth", "max_results", "details", "cursor"},
     "ls": {"path", "max_results", "details", "cursor"},
     "status": {"paths", "include_diffs", "max_results", "cursor"},
@@ -76,9 +121,21 @@ def test_gateway_status_advertises_the_canonical_local_tools(tmp_path: Path) -> 
 
     socket = tmp_path / "executor.sock"
     socket.touch()
-    service = GatewayService(GatewayConfig("t" * 43, tmp_path / "gateway.sqlite3", executor_socket=socket, executor_token="e" * 43, workspace_id="workspace"))
+    service = GatewayService(
+        GatewayConfig(
+            "t" * 43,
+            tmp_path / "gateway.sqlite3",
+            executor_socket=socket,
+            executor_token="e" * 43,
+            workspace_id="workspace",
+        )
+    )
     try:
-        local = [name for name in service.status().supported_tools if not name.startswith("openrouter:")]
+        local = [
+            name
+            for name in service.status().supported_tools
+            if not name.startswith("openrouter:")
+        ]
     finally:
         asyncio.run(service.close())
     assert tuple(local) == CANONICAL_TOOLS
@@ -124,7 +181,15 @@ def test_mode_boundaries(name: str) -> None:
 @pytest.mark.parametrize("name", sorted(LEGACY_TOOL_NAMES))
 def test_removed_legacy_tools_are_rejected_by_the_request_contract(name: str) -> None:
     with pytest.raises(ValueError, match="Unknown tool"):
-        ToolRequest.from_dict({"request_id": "request", "run_id": "run", "tool": name, "mode": "agent", "arguments": {}})
+        ToolRequest.from_dict(
+            {
+                "request_id": "request",
+                "run_id": "run",
+                "tool": name,
+                "mode": "agent",
+                "arguments": {},
+            }
+        )
 
 
 # Executor dispatch
@@ -139,8 +204,16 @@ def test_executor_dispatches_every_read_only_tool(tmp_path: Path) -> None:
     for mode in ("plan", "agent"):
         for request in (
             ToolRequest("read-1", "run", "read", mode, {"path": "one.txt"}),
-            ToolRequest("grep-1", "run", "grep", mode, {"path": ".", "query": "needle", "max_results": 10}),
-            ToolRequest("find-1", "run", "find", mode, {"path": ".", "glob": "*.txt", "max_results": 10}),
+            ToolRequest(
+                "grep-1",
+                "run",
+                "grep",
+                mode,
+                {"path": ".", "query": "needle", "max_results": 10},
+            ),
+            ToolRequest(
+                "find-1", "run", "find", mode, {"path": ".", "glob": "*.txt", "max_results": 10}
+            ),
             ToolRequest("ls-1", "run", "ls", mode, {"path": ".", "details": False}),
         ):
             result = asyncio.run(service.execute(request))
@@ -155,10 +228,34 @@ def test_executor_dispatches_mutations_only_into_staging(tmp_path: Path) -> None
     (source / "existing.txt").write_text("before\n", encoding="utf-8")
     service = ExecutorService(_config(tmp_path))
     for request in (
-        ToolRequest("write-1", "run", "write", "agent", {"path": "new.txt", "content": "created\n"}),
-        ToolRequest("edit-1", "run", "edit", "agent", {"path": "existing.txt", "old_str": "before", "new_str": "after"}),
-        ToolRequest("patch-1", "run", "apply_patch", "agent", {"operations": [{"operation": "write", "path": "patched.txt", "content": "patched\n"}]}),
-        ToolRequest("bash-1", "run", "bash", "agent", {"command": "printf '%s\\n' command > command.txt"}),
+        ToolRequest(
+            "write-1", "run", "write", "agent", {"path": "new.txt", "content": "created\n"}
+        ),
+        ToolRequest(
+            "edit-1",
+            "run",
+            "edit",
+            "agent",
+            {"path": "existing.txt", "old_str": "before", "new_str": "after"},
+        ),
+        ToolRequest(
+            "patch-1",
+            "run",
+            "apply_patch",
+            "agent",
+            {
+                "operations": [
+                    {"operation": "write", "path": "patched.txt", "content": "patched\n"}
+                ]
+            },
+        ),
+        ToolRequest(
+            "bash-1",
+            "run",
+            "bash",
+            "agent",
+            {"command": "printf '%s\\n' command > command.txt"},
+        ),
     ):
         result = asyncio.run(service.execute(request))
         assert result.ok, result.to_dict()
@@ -170,12 +267,40 @@ def test_executor_dispatches_mutations_only_into_staging(tmp_path: Path) -> None
     assert not (source / "new.txt").exists() and not (source / "patched.txt").exists()
     assert (source / "existing.txt").read_text(encoding="utf-8") == "before\n"
     status = asyncio.run(service.execute(ToolRequest("status-1", "run", "status", "agent", {})))
-    assert status.ok and status.data["counts"] == {"created": 3, "modified": 1, "deleted": 0, "permission_changes": 0}
+    assert status.ok and status.data["counts"] == {
+        "created": 3,
+        "modified": 1,
+        "deleted": 0,
+        "permission_changes": 0,
+    }
 
 
-def test_dispatch_passes_only_operation_specific_effective_limits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dispatch_passes_only_operation_specific_effective_limits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     (tmp_path / "source").mkdir()
-    config = _config(tmp_path, max_read_bytes=100, max_write_bytes=110, max_edit_target_bytes=120, max_edit_result_bytes=130, max_patch_operations=9, max_patch_bytes=135, max_bash_output_bytes=140, max_bash_stdin_bytes=150, max_command_bytes=160, max_checkpoint_bytes=1_000, max_staging_bytes=10_000, max_staged_files=170, max_command_seconds=180, max_search_results=3, max_find_results=4, max_ls_results=5, max_grep_scan_bytes=190, max_grep_output_bytes=195, max_search_seconds=7)
+    config = _config(
+        tmp_path,
+        max_read_bytes=100,
+        max_write_bytes=110,
+        max_edit_target_bytes=120,
+        max_edit_result_bytes=130,
+        max_patch_operations=9,
+        max_patch_bytes=135,
+        max_bash_output_bytes=140,
+        max_bash_stdin_bytes=150,
+        max_command_bytes=160,
+        max_checkpoint_bytes=1_000,
+        max_staging_bytes=10_000,
+        max_staged_files=170,
+        max_command_seconds=180,
+        max_search_results=3,
+        max_find_results=4,
+        max_ls_results=5,
+        max_grep_scan_bytes=190,
+        max_grep_output_bytes=195,
+        max_search_seconds=7,
+    )
     service = ExecutorService(config)
     captured: dict[str, object] = {}
 
@@ -183,6 +308,7 @@ def test_dispatch_passes_only_operation_specific_effective_limits(tmp_path: Path
         def capture(*_args, **limits):
             captured[name] = limits
             return "ok", {}
+
         return capture
 
     async def fake_bash(_request_id, _root, _arguments, **limits):
@@ -204,15 +330,36 @@ def test_dispatch_passes_only_operation_specific_effective_limits(tmp_path: Path
         "ls": {"max_results": 999},
     }
     for name, arguments in requests.items():
-        result = asyncio.run(service.execute(ToolRequest(name, "run", name, "agent", arguments)))
+        result = asyncio.run(
+            service.execute(ToolRequest(name, "run", name, "agent", arguments))
+        )
         assert result.ok, result.to_dict()
     assert captured == {
         "read": {"max_bytes": 100},
         "write": {"max_bytes": 110, "max_staging_bytes": 10_000, **checkpoint},
         "edit": {"max_target_bytes": 120, "max_result_bytes": 130, **checkpoint},
-        "apply_patch": {"max_operations": 9, "max_patch_bytes": 135, "max_write_bytes": 110, "max_edit_target_bytes": 120, "max_edit_result_bytes": 130, "max_staging_bytes": 10_000, **checkpoint},
-        "bash": {"max_seconds": 180, "max_output": 140, "max_command_bytes": 160, "max_stdin_bytes": 150, **checkpoint},
-        "grep": {"max_scan_bytes": 190, "max_output_bytes": 195, "max_results": 3, "max_seconds": 7},
+        "apply_patch": {
+            "max_operations": 9,
+            "max_patch_bytes": 135,
+            "max_write_bytes": 110,
+            "max_edit_target_bytes": 120,
+            "max_edit_result_bytes": 130,
+            "max_staging_bytes": 10_000,
+            **checkpoint,
+        },
+        "bash": {
+            "max_seconds": 180,
+            "max_output": 140,
+            "max_command_bytes": 160,
+            "max_stdin_bytes": 150,
+            **checkpoint,
+        },
+        "grep": {
+            "max_scan_bytes": 190,
+            "max_output_bytes": 195,
+            "max_results": 3,
+            "max_seconds": 7,
+        },
         "find": {"max_results": 4, "max_seconds": 7},
         "ls": {"max_results": 5, "max_seconds": 7},
     }

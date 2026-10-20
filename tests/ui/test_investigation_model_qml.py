@@ -3,6 +3,7 @@
 Regression: the Save button referenced an out-of-scope ``currentText``, so every click raised a
 QML ReferenceError and the saved model could never change from the default.
 """
+
 from __future__ import annotations
 
 import gc
@@ -86,9 +87,16 @@ def _pick(combo: QObject, model_id: str) -> None:
 
 
 def test_save_button_persists_the_picked_model(settings_ui: SettingsUi) -> None:
-    bridge, storage, combo, save = settings_ui.bridge, settings_ui.storage, settings_ui.combo, settings_ui.save
+    bridge, storage, combo, save = (
+        settings_ui.bridge,
+        settings_ui.storage,
+        settings_ui.combo,
+        settings_ui.save,
+    )
     assert combo.property("editText") == DEFAULT_INVESTIGATION_MODEL
-    target = next(item["id"] for item in bridge.models if item["id"] != DEFAULT_INVESTIGATION_MODEL)
+    target = next(
+        item["id"] for item in bridge.models if item["id"] != DEFAULT_INVESTIGATION_MODEL
+    )
     _pick(combo, target)
     save.clicked.emit()
     assert storage.get_setting("investigation_model_id") == target
@@ -97,7 +105,9 @@ def test_save_button_persists_the_picked_model(settings_ui: SettingsUi) -> None:
 
 def test_model_reload_keeps_the_pending_and_saved_selection(settings_ui: SettingsUi) -> None:
     bridge, combo, save = settings_ui.bridge, settings_ui.combo, settings_ui.save
-    target = next(item["id"] for item in bridge.models if item["id"] != DEFAULT_INVESTIGATION_MODEL)
+    target = next(
+        item["id"] for item in bridge.models if item["id"] != DEFAULT_INVESTIGATION_MODEL
+    )
     _pick(combo, target)
     bridge.reload_models()  # e.g. a catalog refresh while the dialog is open
     assert combo.property("editText") == target
@@ -109,7 +119,12 @@ def test_model_reload_keeps_the_pending_and_saved_selection(settings_ui: Setting
 
 
 def test_any_typed_model_id_can_be_saved(settings_ui: SettingsUi) -> None:
-    bridge, storage, combo, save = settings_ui.bridge, settings_ui.storage, settings_ui.combo, settings_ui.save
+    bridge, storage, combo, save = (
+        settings_ui.bridge,
+        settings_ui.storage,
+        settings_ui.combo,
+        settings_ui.save,
+    )
     combo.setProperty("editText", "  vendor/custom-model  ")
     save.clicked.emit()
     assert storage.get_setting("investigation_model_id") == "vendor/custom-model"

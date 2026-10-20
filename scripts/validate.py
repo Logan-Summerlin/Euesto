@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Credential-free validation harness with explicit, reportable tiers."""
+
 from __future__ import annotations
 
 import argparse
@@ -36,15 +37,26 @@ def _safe_env() -> dict[str, str]:
         # Windows subprocesses need these OS-level variables for DLL and
         # service-provider resolution (including asyncio/WinSock startup),
         # executable lookup, and Path.home() (USERPROFILE).
-        for var in ("SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP",
-                    "USERPROFILE", "LOCALAPPDATA"):
+        for var in (
+            "SYSTEMROOT",
+            "SYSTEMDRIVE",
+            "WINDIR",
+            "COMSPEC",
+            "PATHEXT",
+            "TEMP",
+            "TMP",
+            "USERPROFILE",
+            "LOCALAPPDATA",
+        ):
             value = os.environ.get(var)
             if value:
                 env[var] = value
     return env
 
 
-def _run_probe(command: list[str], *, timeout: float, env: dict[str, str]) -> subprocess.CompletedProcess:
+def _run_probe(
+    command: list[str], *, timeout: float, env: dict[str, str]
+) -> subprocess.CompletedProcess:
     """Run a version probe without pipes.
 
     A timed-out probe is killed, but on Windows a grandchild (console-script launchers,
@@ -52,14 +64,22 @@ def _run_probe(command: list[str], *, timeout: float, env: dict[str, str]) -> su
     forever. Output goes to a temporary file instead, so only the direct child is awaited.
     """
     with tempfile.TemporaryFile() as output:
-        completed = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=output,
-                                   stderr=subprocess.STDOUT, timeout=timeout, env=env)
+        completed = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+            env=env,
+        )
         output.seek(0)
         text = output.read().decode("utf-8", "replace")
     return subprocess.CompletedProcess(command, completed.returncode, stdout=text, stderr="")
 
 
-def _version(command: list[str], runner: Callable[..., subprocess.CompletedProcess] = _run_probe) -> tuple[str, str]:
+def _version(
+    command: list[str], runner: Callable[..., subprocess.CompletedProcess] = _run_probe
+) -> tuple[str, str]:
     try:
         result = runner(command, timeout=8, env=_safe_env())
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -70,20 +90,32 @@ def _version(command: list[str], runner: Callable[..., subprocess.CompletedProce
     return version, "" if result.returncode == 0 else f"exit {result.returncode}"
 
 
-def _record(name: str, status: str, version: str = "unknown", detail: str = "") -> dict[str, str]:
+def _record(
+    name: str, status: str, version: str = "unknown", detail: str = ""
+) -> dict[str, str]:
     return {"name": name, "status": status, "version": version, "detail": detail[:240]}
 
 
-def preflight(tier: str = "all", runner: Callable[..., subprocess.CompletedProcess] = _run_probe) -> dict[str, Any]:
-    records = [_record("python", "available", platform.python_version(), sys.executable),
-               _record("repository-root", "available" if Path.cwd().resolve() == ROOT else "failed", detail=str(ROOT))]
+def preflight(
+    tier: str = "all", runner: Callable[..., subprocess.CompletedProcess] = _run_probe
+) -> dict[str, Any]:
+    records = [
+        _record("python", "available", platform.python_version(), sys.executable),
+        _record(
+            "repository-root",
+            "available" if Path.cwd().resolve() == ROOT else "failed",
+            detail=str(ROOT),
+        ),
+    ]
     if sys.version_info[:2] != (3, 12):
         records[0].update(status="failed", detail="Python 3.12 is required")
     for package in PYTHON_PACKAGES:
         try:
             version = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
-            records.append(_record(package, "unavailable", detail="install requirements-dev.lock"))
+            records.append(
+                _record(package, "unavailable", detail="install requirements-dev.lock")
+            )
         except Exception as exc:
             records.append(_record(package, "failed", detail=type(exc).__name__))
         else:
@@ -93,37 +125,107 @@ def preflight(tier: str = "all", runner: Callable[..., subprocess.CompletedProce
         if not shutil.which(executable):
             records.append(_record(name, "unavailable", detail="executable not found"))
             continue
-        command = ["docker", "compose", "version"] if name == "docker compose" else [executable, "--version"]
+        command = (
+            ["docker", "compose", "version"]
+            if name == "docker compose"
+            else [executable, "--version"]
+        )
         version, error = _version(command, runner)
         records.append(_record(name, "failed" if error else "available", version, error))
     for filename in QML_FILES:
-        records.append(_record(filename, "available" if (ROOT / filename).is_file() else "failed",
-                                detail="required QML component"))
+        records.append(
+            _record(
+                filename,
+                "available" if (ROOT / filename).is_file() else "failed",
+                detail="required QML component",
+            )
+        )
     if shutil.which("docker"):
         version, error = _version(["docker", "info", "--format", "{{.ServerVersion}}"], runner)
-        records.append(_record("docker-daemon", "available" if not error else "failed", version, error or "reachable"))
+        records.append(
+            _record(
+                "docker-daemon",
+                "available" if not error else "failed",
+                version,
+                error or "reachable",
+            )
+        )
     else:
-        records.append(_record("docker-daemon", "unavailable", detail="Docker executable unavailable"))
-    supported = tier != "docker" or (platform.system() == "Linux" and shutil.which("docker") is not None)
-    records.append(_record("tier:" + tier, "available" if supported else "unavailable",
-                           detail="Docker validation requires Linux and Docker"))
-    return {"schema_version": 1, "tier": tier, "generated_at": int(time.time()), "checks": records}
+        records.append(
+            _record("docker-daemon", "unavailable", detail="Docker executable unavailable")
+        )
+    supported = tier != "docker" or (
+        platform.system() == "Linux" and shutil.which("docker") is not None
+    )
+    records.append(
+        _record(
+            "tier:" + tier,
+            "available" if supported else "unavailable",
+            detail="Docker validation requires Linux and Docker",
+        )
+    )
+    return {
+        "schema_version": 1,
+        "tier": tier,
+        "generated_at": int(time.time()),
+        "checks": records,
+    }
 
 
 def commands(tier: str) -> list[tuple[str, list[str]]]:
     pytest = [sys.executable, "-m", "pytest"]
-    if tier == "fast": return [("fast", pytest + ["-m", "not slow and not docker"])]
-    if tier == "slow": return [("slow", pytest + ["-m", "slow and not docker"])]
-    if tier == "docker": return [("docker", pytest + ["-m", "docker"])]
-    if tier == "qml": return [("qml", ["pyside6-qmllint", *QML_FILES])]
-    if tier == "ruff": return [("ruff", [sys.executable, "-m", "ruff", "check", "."])]
-    if tier == "compile": return [("compile", [sys.executable, "-m", "compileall", "-q", "app.py", "src", "server", "shared", "executor", "egress", "tests", "scripts"])]
-    if tier == "all": return [*commands("fast"), *commands("slow"), *commands("ruff"), *commands("compile"), *commands("qml"), *commands("docker")]
+    if tier == "fast":
+        return [("fast", pytest + ["-m", "not slow and not docker"])]
+    if tier == "slow":
+        return [("slow", pytest + ["-m", "slow and not docker"])]
+    if tier == "docker":
+        return [("docker", pytest + ["-m", "docker"])]
+    if tier == "qml":
+        return [("qml", ["pyside6-qmllint", *QML_FILES])]
+    if tier == "ruff":
+        ruff = [sys.executable, "-m", "ruff"]
+        return [
+            ("ruff", [*ruff, "check", "."]),
+            ("ruff-format", [*ruff, "format", "--check", "."]),
+        ]
+    if tier == "compile":
+        return [
+            (
+                "compile",
+                [
+                    sys.executable,
+                    "-m",
+                    "compileall",
+                    "-q",
+                    "app.py",
+                    "src",
+                    "server",
+                    "shared",
+                    "executor",
+                    "egress",
+                    "tests",
+                    "scripts",
+                ],
+            )
+        ]
+    if tier == "all":
+        return [
+            *commands("fast"),
+            *commands("slow"),
+            *commands("ruff"),
+            *commands("compile"),
+            *commands("qml"),
+            *commands("docker"),
+        ]
     raise ValueError(f"unknown validation tier: {tier}")
 
 
-def execute(tier: str, allow_unavailable: bool = False, report: dict[str, Any] | None = None,
-            runner: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> int:
+def execute(
+    tier: str,
+    allow_unavailable: bool = False,
+    report: dict[str, Any] | None = None,
+    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> int:
     report = report or {"schema_version": 1, "tier": tier, "checks": []}
     worst = 0
     for name, command in commands(tier):
@@ -136,21 +238,35 @@ def execute(tier: str, allow_unavailable: bool = False, report: dict[str, Any] |
         except subprocess.TimeoutExpired:
             code, detail = 124, "failed: timed out"
         else:
-            detail = "passed" if code == 0 else ("empty test tier" if code == 5 else f"exit {code}")
-        status = "passed" if code == 0 else ("empty" if code == 5 else ("unavailable" if code == 127 else "failed"))
+            detail = (
+                "passed" if code == 0 else ("empty test tier" if code == 5 else f"exit {code}")
+            )
+        status = (
+            "passed"
+            if code == 0
+            else ("empty" if code == 5 else ("unavailable" if code == 127 else "failed"))
+        )
         report.setdefault("checks", []).append(_record(name, status, detail=detail))
-        if status != "passed" and not (allow_unavailable and status in ("unavailable", "empty")):
+        if status != "passed" and not (
+            allow_unavailable and status in ("unavailable", "empty")
+        ):
             worst = worst or (1 if status in ("unavailable", "empty") else code or 1)
     return worst
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("tier", choices=("preflight", "fast", "slow", "docker", "qml", "ruff", "compile", "all"))
+    parser.add_argument(
+        "tier", choices=("preflight", "fast", "slow", "docker", "qml", "ruff", "compile", "all")
+    )
     parser.add_argument("--json", metavar="PATH")
     parser.add_argument("--allow-unavailable", action="store_true")
     args = parser.parse_args(argv)
-    report = preflight(args.tier) if args.tier == "preflight" else {"schema_version": 1, "tier": args.tier, "checks": []}
+    report = (
+        preflight(args.tier)
+        if args.tier == "preflight"
+        else {"schema_version": 1, "tier": args.tier, "checks": []}
+    )
     code = 0 if args.tier == "preflight" else execute(args.tier, args.allow_unavailable, report)
     if args.json:
         Path(args.json).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

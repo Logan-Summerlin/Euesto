@@ -112,12 +112,14 @@ def test_markdown_round_trip_preserves_active_branch_usage(tmp_path: Path) -> No
 
 
 def _export(messages: list[dict], **conversation: object) -> str:
-    return json.dumps({
-        "format": "local-openrouter-chat",
-        "schema_version": 3,
-        "conversation": {"title": "Imported", **conversation},
-        "messages": messages,
-    })
+    return json.dumps(
+        {
+            "format": "local-openrouter-chat",
+            "schema_version": 3,
+            "conversation": {"title": "Imported", **conversation},
+            "messages": messages,
+        }
+    )
 
 
 def test_json_import_inserts_children_listed_before_their_parents(tmp_path: Path) -> None:

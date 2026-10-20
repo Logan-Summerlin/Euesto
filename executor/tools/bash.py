@@ -103,40 +103,60 @@ class BashRunner:
     ) -> tuple[str, dict]:
         command = arguments.get("command")
         if not isinstance(command, str) or not command.strip() or "\x00" in command:
-            raise ExecutorToolError(COMMAND_INVALID_ARGUMENTS, "bash requires a non-empty command")
+            raise ExecutorToolError(
+                COMMAND_INVALID_ARGUMENTS, "bash requires a non-empty command"
+            )
         command_limit = min(max_command_bytes, MAX_COMMAND_BYTES)
         if len(command.encode("utf-8")) > command_limit:
-            raise ExecutorToolError(LIMIT_EXCEEDED, f"bash command exceeds the configured limit of {command_limit} bytes")
+            raise ExecutorToolError(
+                LIMIT_EXCEEDED,
+                f"bash command exceeds the configured limit of {command_limit} bytes",
+            )
 
         working_directory = arguments.get("working_directory", ".")
         if not isinstance(working_directory, str):
-            raise ExecutorToolError(WORKING_DIRECTORY_INVALID, "working_directory must be a string")
+            raise ExecutorToolError(
+                WORKING_DIRECTORY_INVALID, "working_directory must be a string"
+            )
         cwd = safe_path(root, working_directory, must_exist=True)
         if not cwd.is_dir():
-            raise ExecutorToolError(WORKING_DIRECTORY_INVALID, "Working directory is not a directory")
+            raise ExecutorToolError(
+                WORKING_DIRECTORY_INVALID, "Working directory is not a directory"
+            )
 
         raw_timeout = arguments.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
         if not isinstance(raw_timeout, int) or isinstance(raw_timeout, bool):
-            raise ExecutorToolError(COMMAND_INVALID_ARGUMENTS, "timeout_seconds must be an integer")
+            raise ExecutorToolError(
+                COMMAND_INVALID_ARGUMENTS, "timeout_seconds must be an integer"
+            )
         timeout = min(MAX_COMMAND_SECONDS, max_seconds, max(1, raw_timeout))
 
         rollback_on_failure = arguments.get("rollback_on_failure", True)
         if not isinstance(rollback_on_failure, bool):
-            raise ExecutorToolError(COMMAND_INVALID_ARGUMENTS, "rollback_on_failure must be a boolean")
+            raise ExecutorToolError(
+                COMMAND_INVALID_ARGUMENTS, "rollback_on_failure must be a boolean"
+            )
 
         stdin_text = arguments.get("stdin")
         stdin_limit = min(max_stdin_bytes, MAX_STDIN_BYTES)
         if stdin_text is not None and (
-            not isinstance(stdin_text, str) or "\x00" in stdin_text or len(stdin_text.encode("utf-8")) > stdin_limit
+            not isinstance(stdin_text, str)
+            or "\x00" in stdin_text
+            or len(stdin_text.encode("utf-8")) > stdin_limit
         ):
-            raise ExecutorToolError(LIMIT_EXCEEDED, f"bash stdin exceeds the configured limit of {stdin_limit} bytes")
+            raise ExecutorToolError(
+                LIMIT_EXCEEDED,
+                f"bash stdin exceeds the configured limit of {stdin_limit} bytes",
+            )
 
         environment = self._environment(arguments.get("env", {}))
         started = time.perf_counter()
         self._cancelled.discard(request_id)
         try:
             # Any failure, timeout, or cancellation restores the checkpoint before propagating.
-            with checkpointed(root, max_files=max_checkpoint_files, max_total_bytes=max_checkpoint_bytes) as checkpoint_id:
+            with checkpointed(
+                root, max_files=max_checkpoint_files, max_total_bytes=max_checkpoint_bytes
+            ) as checkpoint_id:
                 stdout, stderr, exit_code = await self._execute(
                     request_id, command, cwd, environment, stdin_text, max_output, timeout
                 )
@@ -191,7 +211,9 @@ class BashRunner:
             command,
             cwd=cwd,
             env=environment,
-            stdin=asyncio.subprocess.PIPE if stdin_text is not None else asyncio.subprocess.DEVNULL,
+            stdin=asyncio.subprocess.PIPE
+            if stdin_text is not None
+            else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
@@ -218,13 +240,21 @@ class BashRunner:
     @staticmethod
     def _model_output(stdout: _OutputBuffer, stderr: _OutputBuffer, max_output: int) -> str:
         if not stdout.truncated and not stderr.truncated:
-            combined = stdout.bytes() + (b"\n" if stdout.bytes() and stderr.bytes() else b"") + stderr.bytes()
+            combined = (
+                stdout.bytes()
+                + (b"\n" if stdout.bytes() and stderr.bytes() else b"")
+                + stderr.bytes()
+            )
             return combined[:max_output].decode("utf-8", errors="replace")
         sections = []
         if stdout.total:
-            sections.append(f"[stdout: {stdout.total} bytes]\n{stdout.bytes().decode('utf-8', errors='replace')}")
+            sections.append(
+                f"[stdout: {stdout.total} bytes]\n{stdout.bytes().decode('utf-8', errors='replace')}"
+            )
         if stderr.total:
-            sections.append(f"[stderr: {stderr.total} bytes]\n{stderr.bytes().decode('utf-8', errors='replace')}")
+            sections.append(
+                f"[stderr: {stderr.total} bytes]\n{stderr.bytes().decode('utf-8', errors='replace')}"
+            )
         combined = "\n".join(sections).encode("utf-8")
         if len(combined) <= max_output:
             return combined.decode("utf-8", errors="replace")
@@ -249,11 +279,24 @@ class BashRunner:
                 and not key[0].isdigit()
             )
             if not identifier:
-                raise ExecutorToolError(COMMAND_INVALID_ARGUMENTS, "env variable names must be POSIX identifiers")
-            if key in {"PATH", "HOME", "LD_PRELOAD", "LD_LIBRARY_PATH"} or key.startswith("BASH_ENV"):
-                raise ExecutorToolError(COMMAND_INVALID_ARGUMENTS, f"env variable is restricted: {key}")
-            if not isinstance(value, str) or "\x00" in value or len(value.encode("utf-8")) > MAX_ENV_VALUE_BYTES:
-                raise ExecutorToolError(COMMAND_INVALID_ARGUMENTS, "env variable values must be bounded UTF-8 strings")
+                raise ExecutorToolError(
+                    COMMAND_INVALID_ARGUMENTS, "env variable names must be POSIX identifiers"
+                )
+            if key in {"PATH", "HOME", "LD_PRELOAD", "LD_LIBRARY_PATH"} or key.startswith(
+                "BASH_ENV"
+            ):
+                raise ExecutorToolError(
+                    COMMAND_INVALID_ARGUMENTS, f"env variable is restricted: {key}"
+                )
+            if (
+                not isinstance(value, str)
+                or "\x00" in value
+                or len(value.encode("utf-8")) > MAX_ENV_VALUE_BYTES
+            ):
+                raise ExecutorToolError(
+                    COMMAND_INVALID_ARGUMENTS,
+                    "env variable values must be bounded UTF-8 strings",
+                )
             environment[key] = value
         return environment
 
@@ -285,7 +328,9 @@ class BashRunner:
         return True
 
     @staticmethod
-    async def _read_stream(stream: asyncio.StreamReader | None, max_output: int) -> _OutputBuffer:
+    async def _read_stream(
+        stream: asyncio.StreamReader | None, max_output: int
+    ) -> _OutputBuffer:
         retained = _OutputBuffer(max_output)
         while stream is not None and (chunk := await stream.read(16_384)):
             retained.append(chunk)
@@ -297,4 +342,3 @@ _runner = BashRunner()
 
 bash = _runner.run
 cancel = _runner.cancel
-
