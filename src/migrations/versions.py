@@ -72,12 +72,6 @@ CREATE TABLE IF NOT EXISTS model_recents (
     used_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS model_aliases (
-    alias TEXT PRIMARY KEY COLLATE NOCASE,
-    model_id TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS prompt_presets (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL COLLATE NOCASE,
@@ -165,20 +159,15 @@ V2_MESSAGE_COLUMNS = {
 
 
 def migrate(connection: sqlite3.Connection) -> None:
-    """Create the latest schema and losslessly upgrade a v0.1 flat transcript."""
-    connection.execute("PRAGMA foreign_keys = ON")
-    if not _table_exists(connection, "conversations"):
-        connection.executescript(LATEST_SCHEMA)
-        _ensure_fts(connection)
-        connection.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION}")
-        connection.commit()
-        return
+    """Create the latest schema, first upgrading a v0.1 flat transcript to message trees.
 
+    Every later version only added tables and indexes, which ``LATEST_SCHEMA`` creates
+    idempotently.
+    """
+    connection.execute("PRAGMA foreign_keys = ON")
     version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-    if version < 2:
+    if version < 2 and _table_exists(connection, "conversations"):
         _migrate_v1_to_v2(connection)
-    if version < 4:
-        _migrate_v3_to_v4(connection)
     connection.executescript(LATEST_SCHEMA)
     _ensure_fts(connection)
     connection.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION}")
@@ -186,10 +175,10 @@ def migrate(connection: sqlite3.Connection) -> None:
 
 
 def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
+    """Add tree and metadata columns, chaining each conversation's messages in id order."""
     with connection:
         _add_missing_columns(connection, "conversations", V2_CONVERSATION_COLUMNS)
         _add_missing_columns(connection, "messages", V2_MESSAGE_COLUMNS)
-
         conversation_rows = connection.execute(
             "SELECT id FROM conversations ORDER BY created_at, id"
         ).fetchall()
@@ -211,30 +200,6 @@ def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
                 "UPDATE conversations SET active_leaf_id = ? WHERE id = ?",
                 (parent_id, conversation_id),
             )
-
-
-def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
-    """Add durable run-to-message links without rewriting existing event history."""
-    connection.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS generation_runs (
-            run_id TEXT PRIMARY KEY,
-            conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-            parent_message_id INTEGER REFERENCES messages(id),
-            assistant_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
-            mode TEXT NOT NULL,
-            model_id TEXT NOT NULL,
-            status TEXT NOT NULL,
-            started_at TEXT NOT NULL,
-            finished_at TEXT,
-            error TEXT
-        );
-        CREATE INDEX IF NOT EXISTS idx_generation_runs_conversation
-            ON generation_runs(conversation_id, started_at);
-        CREATE INDEX IF NOT EXISTS idx_generation_runs_assistant
-            ON generation_runs(assistant_message_id);
-        """
-    )
 
 
 def _add_missing_columns(

@@ -153,10 +153,6 @@ class DesktopBridge(QObject):
         return self.runtime.has_capability("agent_accept_edits")
 
     @Property(str, notify=stateChanged)
-    def approvalPolicy(self) -> str:
-        return self.generation.approval_policy()
-
-    @Property(str, notify=stateChanged)
     def workspacePath(self) -> str:
         return self.runtime.workspace_path
 
@@ -230,10 +226,6 @@ class DesktopBridge(QObject):
     @Property("QVariantMap", notify=settingsChanged)
     def gatewaySettings(self) -> dict[str, Any]:
         return self.settings.gateway_settings()
-
-    @Property("QVariantMap", notify=settingsChanged)
-    def usage(self) -> dict[str, Any]:
-        return dict(self.storage.usage_summary(self.history.current_id))
 
     @Slot(str)
     def saveInvestigationModel(self, model_id: str) -> None:
@@ -323,10 +315,6 @@ class DesktopBridge(QObject):
     @Slot(str)
     def toggleFavoriteModel(self, model_id: str) -> None:
         self.settings.toggle_favorite_model(model_id)
-
-    @Slot(str, str)
-    def saveModelAlias(self, alias: str, model_id: str) -> None:
-        self.settings.save_model_alias(alias, model_id)
 
     # -- conversations -----------------------------------------------------------------
 
@@ -462,16 +450,8 @@ class DesktopBridge(QObject):
         self.runtime.retry()
 
     @Slot()
-    def checkGateway(self) -> None:
-        self.runtime.check_gateway()
-
-    @Slot()
     def showGatewayStatus(self) -> None:
         self.runtime.show_status()
-
-    @Slot(result="QVariantList")
-    def resumableRuns(self) -> list[str]:
-        return self.runtime.resumable_runs()
 
     # -- confirmations and window ------------------------------------------------------
 

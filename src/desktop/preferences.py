@@ -193,11 +193,10 @@ class SettingsService(QObject):
         selected = self.ensure_investigation_model()
         favorites = set(self.storage.favorite_model_ids())
         recents = set(self.storage.recent_model_ids())
-        alias_by_model = {model: alias for alias, model in self.storage.model_aliases().items()}
         values = [
             {
                 "id": model.id,
-                "label": alias_by_model.get(model.id, model.label),
+                "label": model.label,
                 "description": model.description,
                 "contextLength": model.context_length,
                 "price": model.average_price_per_million,
@@ -221,14 +220,6 @@ class SettingsService(QObject):
 
     def toggle_favorite_model(self, model_id: str) -> None:
         self.storage.set_model_favorite(model_id, model_id not in self.storage.favorite_model_ids())
-        self.host.reload_models()
-
-    def save_model_alias(self, alias: str, model_id: str) -> None:
-        try:
-            self.storage.save_model_alias(alias, model_id)
-        except ValueError as exc:
-            self.host.errorRequested.emit("Invalid alias", str(exc))
-            return
         self.host.reload_models()
 
     def refresh_catalog_if_stale(self) -> None:

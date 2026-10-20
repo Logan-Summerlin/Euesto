@@ -513,3 +513,14 @@ def test_idle_publication_finish_resumes_queued_input(host, staging) -> None:
     service.start_publication(_manifest(), auto=False)
     service._on_publication_finished()
     assert resumed == [1] and not service.busy
+
+
+def test_staging_review_describes_the_inspected_state() -> None:
+    dirty = staging_module.describe_staged_changes(
+        {"data": {"unpublished_changes": True, "file_count": 1200, "total_bytes": 4096}}
+    )
+    clean = staging_module.describe_staged_changes({"data": {"unpublished_changes": False}})
+
+    assert dirty.startswith("Staging has unpublished changes.")
+    assert "1,200 files, 4,096 bytes" in dirty
+    assert clean.startswith("Staging is clean")

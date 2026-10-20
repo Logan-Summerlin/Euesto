@@ -28,7 +28,6 @@ ROOT = Path(__file__).resolve().parents[2]
 PROPERTIES = {
     'acceptEditsAvailable': ('bool', 'stateChanged', False),
     'acceptEditsEnabled': ('bool', 'stateChanged', False),
-    'approvalPolicy': ('QString', 'stateChanged', False),
     'archivedView': ('bool', 'stateChanged', False),
     'autoModeAvailable': ('bool', 'stateChanged', False),
     'autoModeEnabled': ('bool', 'stateChanged', False),
@@ -59,7 +58,6 @@ PROPERTIES = {
     'theme': ('QString', 'settingsChanged', False),
     'transcript': ('QVariantList', 'transcriptChanged', False),
     'transcriptModel': ('QObject*', None, True),
-    'usage': ('QVariantMap', 'settingsChanged', False),
     'workspacePath': ('QString', 'stateChanged', False),
     'workspaceReady': ('bool', 'stateChanged', False),
 }
@@ -86,7 +84,6 @@ SIGNALS = {
 SLOTS = {
     'applyPromptPreset(QString)': 'void',
     'attachWindow(QWindow*)': 'void',
-    'checkGateway()': 'void',
     'compactContext()': 'void',
     'deletePermission(QString)': 'void',
     'deletePromptCommand(QString)': 'void',
@@ -111,7 +108,6 @@ SLOTS = {
     'requestDiscardStaging()': 'void',
     'resolveApproval(QString,QString)': 'void',
     'resolveConfirmation(QString,bool)': 'void',
-    'resumableRuns()': 'QVariantList',
     'resumeRun(QString)': 'void',
     'retryRuntime()': 'void',
     'reviewStaging()': 'void',
@@ -119,7 +115,6 @@ SLOTS = {
     'saveApiKey(QString)': 'void',
     'saveGateway(QString,QString)': 'void',
     'saveInvestigationModel(QString)': 'void',
-    'saveModelAlias(QString,QString)': 'void',
     'saveModelOptions(QVariantMap)': 'void',
     'savePromptCommand(QString,QString,QString)': 'void',
     'savePromptPreset(QString,QString,QString)': 'void',

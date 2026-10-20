@@ -115,9 +115,6 @@ class RuntimeService(QObject):
         active = getattr(status, "active_workspace", None) if status else None
         return mode in supported and active == self.identity()
 
-    def resumable_runs(self) -> list[str]:
-        return list(getattr(self.last_status, "resumable_runs", ())) if self.last_status else []
-
     def status_report(self) -> str:
         status = self.last_status
         if status is None:

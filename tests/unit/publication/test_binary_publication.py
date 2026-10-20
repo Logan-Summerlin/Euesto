@@ -77,7 +77,7 @@ def test_text_files_keep_the_text_path_next_to_binary_files(tmp_path: Path) -> N
     assert (workspace / "a.txt").read_bytes() == b"two\r\n" and (workspace / "b.dat").read_bytes() == b"\x80\x81"
 
 
-def test_binary_delete_and_undo_round_trip(tmp_path: Path) -> None:
+def test_binary_delete_keeps_a_byte_exact_recovery_copy(tmp_path: Path) -> None:
     workspace, service = _setup(tmp_path, {"img.bin": b"\x00\xff" * 10})
     (service.config.work_root / "img.bin").unlink()
     manifest = service.manifest("run", "approval")
@@ -85,8 +85,8 @@ def test_binary_delete_and_undo_round_trip(tmp_path: Path) -> None:
     broker = WorkspaceBroker(workspace, tmp_path / "recovery")
     published = broker.publish(manifest, {"img.bin"})
     assert not (workspace / "img.bin").exists()
-    broker.undo(published.checkpoint_id)
-    assert (workspace / "img.bin").read_bytes() == b"\x00\xff" * 10
+    recovery_copy = tmp_path / "recovery" / published.checkpoint_id / "files" / "img.bin"
+    assert recovery_copy.read_bytes() == b"\x00\xff" * 10
 
 
 def test_publish_operation_validates_binary_payloads() -> None:

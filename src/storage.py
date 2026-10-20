@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .migrations import migrate
 from .models import (
+    MESSAGE_METADATA_FIELDS,
     Conversation,
     Message,
     ModelOption,
@@ -15,7 +16,14 @@ from .models import (
     utc_now,
 )
 
-_ACTIVE_PARENT = object()
+_UNSET = object()
+_MESSAGE_COLUMNS = (
+    "conversation_id", "parent_message_id", "role", "content", "created_at",
+    *MESSAGE_METADATA_FIELDS,
+)
+# Desktop history keeps only this summary of tool output events, or of any oversized event.
+_RUN_EVENT_SUMMARY_KEYS = ("request_id", "tool", "ok", "error_code")
+_MAX_RUN_EVENT_BYTES = 512_000
 
 
 class Storage:
@@ -108,50 +116,42 @@ class Storage:
         self,
         conversation_id: str,
         *,
-        title: str | None = None,
-        model: str | None = None,
-        system_prompt: str | None = None,
-        prompt_preset_id: str | None | object = _ACTIVE_PARENT,
-        prompt_preset_snapshot: str | None | object = _ACTIVE_PARENT,
+        title: str | object = _UNSET,
+        model: str | object = _UNSET,
+        system_prompt: str | object = _UNSET,
+        prompt_preset_id: str | None | object = _UNSET,
+        prompt_preset_snapshot: str | None | object = _UNSET,
     ) -> None:
-        updates: list[str] = []
-        values: list[object] = []
-        for column, value in (
-            ("title", title),
-            ("model", model),
-            ("system_prompt", system_prompt),
-        ):
-            if value is not None:
-                updates.append(f"{column} = ?")
-                values.append(value)
-        for column, value in (
-            ("prompt_preset_id", prompt_preset_id),
-            ("prompt_preset_snapshot", prompt_preset_snapshot),
-        ):
-            if value is not _ACTIVE_PARENT:
-                updates.append(f"{column} = ?")
-                values.append(value)
-        if not updates:
-            return
-        updates.append("updated_at = ?")
-        values.extend((utc_now(), conversation_id))
-        with self._connection:
-            self._connection.execute(
-                f"UPDATE conversations SET {', '.join(updates)} WHERE id = ?", values
+        changes = {
+            column: value
+            for column, value in (
+                ("title", title),
+                ("model", model),
+                ("system_prompt", system_prompt),
+                ("prompt_preset_id", prompt_preset_id),
+                ("prompt_preset_snapshot", prompt_preset_snapshot),
             )
+            if value is not _UNSET
+        }
+        if changes:
+            self._update_conversation(conversation_id, changes)
 
     def pin_conversation(self, conversation_id: str, pinned: bool) -> None:
-        with self._connection:
-            self._connection.execute(
-                "UPDATE conversations SET pinned_at = ?, updated_at = ? WHERE id = ?",
-                (utc_now() if pinned else None, utc_now(), conversation_id),
-            )
+        self._update_conversation(conversation_id, {"pinned_at": utc_now() if pinned else None})
 
     def archive_conversation(self, conversation_id: str, archived: bool) -> None:
+        self._update_conversation(
+            conversation_id, {"archived_at": utc_now() if archived else None}
+        )
+
+    def _update_conversation(self, conversation_id: str, changes: dict[str, object]) -> None:
+        """Set trusted column names on a conversation and touch its ``updated_at``."""
+        changes = {**changes, "updated_at": utc_now()}
+        assignments = ", ".join(f"{column} = ?" for column in changes)
         with self._connection:
             self._connection.execute(
-                "UPDATE conversations SET archived_at = ?, updated_at = ? WHERE id = ?",
-                (utc_now() if archived else None, utc_now(), conversation_id),
+                f"UPDATE conversations SET {assignments} WHERE id = ?",
+                (*changes.values(), conversation_id),
             )
 
     def delete_conversation(self, conversation_id: str) -> None:
@@ -166,95 +166,49 @@ class Storage:
         role: Role,
         content: str,
         *,
-        parent_message_id: int | None | object = _ACTIVE_PARENT,
+        parent_message_id: int | None | object = _UNSET,
         activate: bool = True,
-        model_id: str | None = None,
-        provider_id: str | None = None,
-        finish_reason: str | None = None,
-        input_tokens: int | None = None,
-        output_tokens: int | None = None,
-        cached_tokens: int | None = None,
-        reasoning_tokens: int | None = None,
-        total_tokens: int | None = None,
-        cost: float | None = None,
-        time_to_first_token: float | None = None,
-        elapsed_seconds: float | None = None,
-        tokens_per_second: float | None = None,
         created_at: str | None = None,
+        **metadata: object,
     ) -> Message:
+        """Append a message; by default under the active leaf, which it then becomes.
+
+        ``metadata`` takes the provider/usage fields in ``MESSAGE_METADATA_FIELDS``.
+        """
+        unknown = set(metadata) - set(MESSAGE_METADATA_FIELDS)
+        if unknown:
+            raise TypeError(f"Unknown message fields: {', '.join(sorted(unknown))}")
         conversation = self.get_conversation(conversation_id)
         if conversation is None:
             raise ValueError("Conversation does not exist")
-        if parent_message_id is _ACTIVE_PARENT:
+        if parent_message_id is _UNSET:
             parent_message_id = conversation.active_leaf_id
         if parent_message_id is not None:
             parent = self.get_message(int(parent_message_id))
             if parent is None or parent.conversation_id != conversation_id:
                 raise ValueError("Parent message is not in this conversation")
-        timestamp = created_at or utc_now()
-        resolved_total = total_tokens
-        if resolved_total is None and (input_tokens is not None or output_tokens is not None):
-            resolved_total = (input_tokens or 0) + (output_tokens or 0)
+        message = Message(
+            None, conversation_id, role, content, created_at or utc_now(), parent_message_id
+        )
+        for key, value in metadata.items():
+            setattr(message, key, value)
+        if message.total_tokens is None and (
+            message.input_tokens is not None or message.output_tokens is not None
+        ):
+            message.total_tokens = (message.input_tokens or 0) + (message.output_tokens or 0)
         with self._connection:
             cursor = self._connection.execute(
-                """
-                INSERT INTO messages (
-                    conversation_id, parent_message_id, role, content,
-                    model_id, provider_id, finish_reason, created_at,
-                    input_tokens, output_tokens, cached_tokens, reasoning_tokens,
-                    total_tokens, cost, time_to_first_token, elapsed_seconds,
-                    tokens_per_second
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    conversation_id,
-                    parent_message_id,
-                    role,
-                    content,
-                    model_id,
-                    provider_id,
-                    finish_reason,
-                    timestamp,
-                    input_tokens,
-                    output_tokens,
-                    cached_tokens,
-                    reasoning_tokens,
-                    resolved_total,
-                    cost,
-                    time_to_first_token,
-                    elapsed_seconds,
-                    tokens_per_second,
-                ),
+                f"INSERT INTO messages ({', '.join(_MESSAGE_COLUMNS)}) "
+                f"VALUES ({', '.join('?' for _ in _MESSAGE_COLUMNS)})",
+                tuple(getattr(message, column) for column in _MESSAGE_COLUMNS),
             )
-            message_id = int(cursor.lastrowid)
+            message.id = int(cursor.lastrowid)
             if activate:
                 self._connection.execute(
-                    """
-                    UPDATE conversations
-                    SET active_leaf_id = ?, updated_at = ? WHERE id = ?
-                    """,
-                    (message_id, timestamp, conversation_id),
+                    "UPDATE conversations SET active_leaf_id = ?, updated_at = ? WHERE id = ?",
+                    (message.id, message.created_at, conversation_id),
                 )
-        return Message(
-            id=message_id,
-            conversation_id=conversation_id,
-            parent_message_id=parent_message_id,
-            role=role,
-            content=content,
-            model_id=model_id,
-            provider_id=provider_id,
-            finish_reason=finish_reason,
-            created_at=timestamp,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cached_tokens=cached_tokens,
-            reasoning_tokens=reasoning_tokens,
-            total_tokens=resolved_total,
-            cost=cost,
-            time_to_first_token=time_to_first_token,
-            elapsed_seconds=elapsed_seconds,
-            tokens_per_second=tokens_per_second,
-        )
+        return message
 
     def get_message(self, message_id: int) -> Message | None:
         row = self._connection.execute(
@@ -364,11 +318,6 @@ class Storage:
         self.set_active_leaf(message.conversation_id, leaf_id)
         return leaf_id
 
-    def branch_position(self, message_id: int) -> tuple[int, int]:
-        siblings = self.siblings(message_id)
-        ids = [item.id for item in siblings]
-        return (ids.index(message_id) + 1, len(ids)) if message_id in ids else (1, 1)
-
     def set_setting(self, key: str, value: str) -> None:
         with self._connection:
             self._connection.execute(
@@ -430,26 +379,15 @@ class Storage:
         payload = getattr(event, "payload", None)
         if not isinstance(payload, dict):
             raise ValueError("Run event payload must be an object")
-        stored_payload = dict(payload)
         event_type = str(event.type)
-        if event_type in {"tool.output", "tool.completed"}:
-            stored_payload = {
-                "request_id": stored_payload.get("request_id"),
-                "tool": stored_payload.get("tool"),
-                "ok": stored_payload.get("ok"),
-                "error_code": stored_payload.get("error_code"),
-                "truncated_for_desktop_history": True,
-            }
-        serialized = json.dumps(stored_payload, separators=(",", ":"))
-        if len(serialized.encode("utf-8")) > 512_000:
-            stored_payload = {
-                "request_id": stored_payload.get("request_id"),
-                "tool": stored_payload.get("tool"),
-                "ok": stored_payload.get("ok"),
-                "error_code": stored_payload.get("error_code"),
-                "truncated_for_desktop_history": True,
-            }
-            serialized = json.dumps(stored_payload, separators=(",", ":"))
+        serialized = json.dumps(payload, separators=(",", ":"))
+        if (
+            event_type in {"tool.output", "tool.completed"}
+            or len(serialized.encode("utf-8")) > _MAX_RUN_EVENT_BYTES
+        ):
+            summary = {key: payload.get(key) for key in _RUN_EVENT_SUMMARY_KEYS}
+            summary["truncated_for_desktop_history"] = True
+            serialized = json.dumps(summary, separators=(",", ":"))
         with self._connection:
             self._connection.execute(
                 """
@@ -525,12 +463,6 @@ class Storage:
                 """,
                 (status, assistant_message_id, finished_at or utc_now(), error, run_id),
             )
-
-    def generation_run(self, run_id: str) -> dict[str, object] | None:
-        row = self._connection.execute(
-            "SELECT * FROM generation_runs WHERE run_id = ?", (run_id,)
-        ).fetchone()
-        return dict(row) if row else None
 
     def list_generation_runs(self, conversation_id: str) -> list[dict[str, object]]:
         rows = self._connection.execute(
@@ -707,31 +639,6 @@ class Storage:
                 "SELECT model_id FROM model_recents ORDER BY used_at DESC LIMIT ?", (limit,)
             ).fetchall()
         ]
-
-    def save_model_alias(self, alias: str, model_id: str) -> None:
-        alias = alias.strip()
-        if not alias:
-            raise ValueError("Alias cannot be empty")
-        with self._connection:
-            self._connection.execute(
-                """
-                INSERT OR REPLACE INTO model_aliases(alias, model_id, created_at)
-                VALUES (?, ?, ?)
-                """,
-                (alias, model_id, utc_now()),
-            )
-
-    def model_aliases(self) -> dict[str, str]:
-        return {
-            str(row[0]): str(row[1])
-            for row in self._connection.execute(
-                "SELECT alias, model_id FROM model_aliases ORDER BY alias"
-            ).fetchall()
-        }
-
-    def resolve_model_id(self, value: str) -> str:
-        aliases = {key.casefold(): target for key, target in self.model_aliases().items()}
-        return aliases.get(value.strip().casefold(), value.strip())
 
     def save_prompt_preset(
         self, name: str, content: str, preset_id: str | None = None

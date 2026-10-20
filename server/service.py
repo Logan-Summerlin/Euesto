@@ -219,7 +219,6 @@ class GatewayService:
             "output": "Staging is dirty." if dirty else "Staging is clean.",
             "data": {
                 "unpublished_changes": dirty,
-                "total_known": int(snapshot.get("file_count") or 0),
                 "snapshot_id": snapshot.get("snapshot_id"),
                 "file_count": int(snapshot.get("file_count") or 0),
                 "total_bytes": int(snapshot.get("total_bytes") or 0),

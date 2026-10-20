@@ -240,9 +240,7 @@ class StagingPublicationService(QObject):
     @Slot(dict)
     def _on_inspected(self, result: dict[str, Any]) -> None:
         self.host.infoRequested.emit("Staged workspace review", describe_staged_changes(result))
-        data = result.get("data") if isinstance(result.get("data"), dict) else {}
-        changes = data.get("changes") if isinstance(data.get("changes"), list) else []
-        self.host.set_status(f"Reviewed {len(changes)} staged change(s)")
+        self.host.set_status("Staging reviewed")
 
     @Slot(str)
     def _on_inspect_failed(self, message: str) -> None:
@@ -257,10 +255,19 @@ class StagingPublicationService(QObject):
 
 
 def describe_staged_changes(result: dict[str, Any]) -> str:
+    """Summarize a staging inspection: whether staging differs from the published baseline.
+
+    Inspection reads executor status rather than running a tool, so it reports the staged
+    snapshot's size, not a per-file list; the publication review shows each changed file.
+    """
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
-    changes = data.get("changes") if isinstance(data.get("changes"), list) else []
-    lines = [f"Staged changes: {len(changes)} shown"]
-    lines.extend(f"{item.get('operation', '?')}: {item.get('path', '?')}" for item in changes[:500] if isinstance(item, dict))
-    if data.get("truncated"):
-        lines.append("More changes are available through the bounded cursor.")
-    return "\n".join(lines)
+    if data.get("unpublished_changes"):
+        state = (
+            "Staging has unpublished changes. Publishing shows each changed file for review; "
+            "discarding resets staging to the workspace."
+        )
+    else:
+        state = "Staging is clean: it matches the workspace baseline."
+    files = int(data.get("file_count") or 0)
+    size = int(data.get("total_bytes") or 0)
+    return f"{state}\nStaged snapshot: {files:,} files, {size:,} bytes."

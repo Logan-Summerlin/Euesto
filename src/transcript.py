@@ -8,20 +8,27 @@ from shared.coercion import optional_int
 
 from .models import Message
 
-ACTIVITY_EVENT_TYPES = frozenset(
-    {
-        "tool.requested",
-        "tool.failed",
-        "approval.required",
-        "run.failed",
-        "run.paused",
-        "checkpoint.created",
-        "checkpoint.restored",
-        "mutation.rollback",
-        "approval.timeout",
-        "publication.failed",
-    }
-)
+# Run events that are not tool calls, with their transcript titles.
+EVENT_TITLES = {
+    "run.failed": "Run failed",
+    "run.paused": "Run paused",
+    "publication.failed": "Host publication unavailable",
+    "mutation.rollback": "Changes discarded (rollback)",
+    "approval.timeout": "Approval timed out",
+    "checkpoint.created": "Checkpoint created",
+    "checkpoint.restored": "Checkpoint restored",
+}
+ACTIVITY_EVENT_TYPES = frozenset({
+    "tool.requested", "tool.failed", "approval.required", "approval.timeout",
+    "run.failed", "run.paused", "checkpoint.created", "checkpoint.restored",
+    "mutation.rollback", "publication.failed",
+})
+# Events that expand their turn's activity so the user sees them.
+ATTENTION_EVENT_TYPES = frozenset({
+    "approval.required", "approval.timeout", "tool.failed", "run.failed", "run.paused",
+    "publication.failed", "mutation.rollback",
+})
+# Payload keys loaded for activity; arguments only feed the file-name label and never reach QML.
 ACTIVITY_PAYLOAD_KEYS = ("tool", "request_id", "arguments", "checkpoint_id")
 
 
@@ -44,51 +51,26 @@ def assemble_activities(
     generation_runs: Iterable[dict[str, object]],
     run_events: Iterable[dict[str, object]],
 ) -> list[TranscriptActivity]:
+    """Group activity events by run, in first-seen order, linked to their run's messages."""
     runs = {str(run.get("run_id")): run for run in generation_runs if run.get("run_id")}
     grouped: dict[str, list[dict[str, object]]] = {}
-    order: list[str] = []
     for event in run_events:
         compact = compact_activity_event(event)
-        if compact is None:
-            continue
-        run_id = str(compact.get("run_id") or "")
-        if not run_id:
-            continue
-        if run_id not in grouped:
-            grouped[run_id] = []
-            order.append(run_id)
-        grouped[run_id].append(compact)
-
+        if compact is not None and compact["run_id"]:
+            grouped.setdefault(str(compact["run_id"]), []).append(compact)
     activities: list[TranscriptActivity] = []
-    for run_id in order:
-        run = runs.get(run_id)
-        assistant_id = optional_int(run.get("assistant_message_id")) if run else None
-        parent_id = optional_int(run.get("parent_message_id")) if run else None
+    for run_id, events in grouped.items():
+        run = runs.get(run_id) or {}
         activities.append(
             TranscriptActivity(
                 run_id=run_id,
-                assistant_message_id=assistant_id,
-                parent_message_id=parent_id,
-                events=tuple(grouped[run_id]),
-                legacy=run is None,
+                assistant_message_id=optional_int(run.get("assistant_message_id")),
+                parent_message_id=optional_int(run.get("parent_message_id")),
+                events=tuple(events),
+                legacy=run_id not in runs,
             )
         )
     return activities
-
-
-def events_for_branch(
-    messages: Iterable[Message], activities: Iterable[TranscriptActivity]
-) -> list[dict[str, object]]:
-    """Flatten only activity belonging to the active message branch."""
-    message_ids = {message.id for message in messages if message.id is not None}
-    selected: list[dict[str, object]] = []
-    for activity in activities:
-        associated = activity.assistant_message_id in message_ids
-        if activity.assistant_message_id is None:
-            associated = activity.legacy or activity.parent_message_id in message_ids
-        if associated:
-            selected.extend(activity.events)
-    return selected
 
 
 def assemble_transcript(
@@ -105,191 +87,138 @@ def assemble_transcript(
     to their parent user turn so activity survives refresh and remains visible.
     """
     branch = list(messages)
-    activity_by_assistant: dict[int, TranscriptActivity] = {}
-    activity_by_parent: dict[int, TranscriptActivity] = {}
-    legacy: list[TranscriptActivity] = []
+    by_assistant: dict[int, TranscriptActivity] = {}
+    by_parent: dict[int, TranscriptActivity] = {}
+    legacy: list[dict[str, object]] = []
     for activity in activities:
         if activity.assistant_message_id is not None:
-            activity_by_assistant[activity.assistant_message_id] = activity
+            by_assistant[activity.assistant_message_id] = activity
         elif activity.parent_message_id is not None:
-            activity_by_parent[activity.parent_message_id] = activity
+            by_parent[activity.parent_message_id] = activity
         elif activity.legacy:
-            legacy.append(activity)
+            legacy.extend(activity.events)
 
     transcript: list[dict[str, Any]] = []
+    if legacy:
+        transcript.append(
+            _item("legacy-activity", "activity", legacy, legacy_summary=True, legacy=True)
+        )
     for message in branch:
         if message.id is None:
             continue
-        activity = (
-            activity_by_assistant.get(message.id)
-            if message.role == "assistant"
-            else activity_by_parent.get(message.id)
+        index = by_assistant if message.role == "assistant" else by_parent
+        activity = index.get(message.id)
+        transcript.append(
+            _item(
+                f"message-{message.id}",
+                message.role,
+                activity.events if activity else (),
+                message_id=message.id,
+                parent_id=message.parent_message_id,
+                content=message.content,
+                model=message.model_id or "",
+                metadata=_message_metadata(message),
+            )
         )
-        transcript.append(_message_item(message, activity))
-
-    if legacy:
-        events = [event for activity in legacy for event in activity.events]
-        transcript.insert(
-            0,
-            {
-                "key": "legacy-activity",
-                "messageId": None,
-                "parentMessageId": None,
-                "kind": "activity",
-                "role": "activity",
-                "content": "",
-                "model": "",
-                "metadata": "",
-                "activity": _activity_items(events),
-                "activitySummary": _activity_summary(events, legacy=True),
-                "activityExpanded": _activity_needs_attention(events),
-                "streaming": False,
-                "legacy": True,
-            },
-        )
-
     live = list(live_events)
     if live_text or live:
-        events = live
-        parent_id = branch[-1].id if branch else None
         transcript.append(
-            {
-                "key": "stream",
-                "messageId": None,
-                "parentMessageId": parent_id,
-                "kind": "assistant",
-                "role": "assistant",
-                "content": live_text,
-                "model": "",
-                "metadata": "Generating…",
-                "activity": _activity_items(events),
-                "activitySummary": _activity_summary(events),
-                "activityExpanded": _activity_needs_attention(events),
-                "streaming": True,
-                "legacy": False,
-            }
+            _item(
+                "stream",
+                "assistant",
+                live,
+                parent_id=branch[-1].id if branch else None,
+                content=live_text,
+                metadata="Generating…",
+                streaming=True,
+            )
         )
     return transcript
 
 
-def _message_item(message: Message, activity: TranscriptActivity | None) -> dict[str, Any]:
-    events = list(activity.events) if activity else []
-    metadata = _message_metadata(message)
+def _item(
+    key: str,
+    kind: str,
+    events: Iterable[dict[str, object]],
+    *,
+    message_id: int | None = None,
+    parent_id: int | None = None,
+    content: str = "",
+    model: str = "",
+    metadata: str = "",
+    streaming: bool = False,
+    legacy: bool = False,
+    legacy_summary: bool = False,
+) -> dict[str, Any]:
+    events = list(events)
     return {
-        "key": f"message-{message.id}",
-        "messageId": message.id,
-        "parentMessageId": message.parent_message_id,
-        "kind": message.role,
-        "role": message.role,
-        "content": message.content,
-        "model": message.model_id or "",
+        "key": key,
+        "messageId": message_id,
+        "parentMessageId": parent_id,
+        "kind": kind,
+        "role": kind,
+        "content": content,
+        "model": model,
         "metadata": metadata,
         "activity": _activity_items(events),
-        "activitySummary": _activity_summary(events),
-        "activityExpanded": _activity_needs_attention(events),
-        "streaming": False,
-        "legacy": False,
+        "activitySummary": _activity_summary(events, legacy=legacy_summary),
+        "activityExpanded": any(event.get("type") in ATTENTION_EVENT_TYPES for event in events),
+        "streaming": streaming,
+        "legacy": legacy,
     }
 
 
-def _activity_items(events: Iterable[dict[str, object]]) -> list[dict[str, Any]]:
-    values = list(events)
-    failed_request_ids = {
+def _activity_items(events: list[dict[str, object]]) -> list[dict[str, Any]]:
+    """Activity rows: one per tool call (flagged when it failed) and one per run event."""
+    failed = {
         str(_payload(event).get("request_id") or "")
-        for event in values
+        for event in events
         if event.get("type") == "tool.failed"
     }
-    requested_request_ids: set[str] = set()
+    requested: set[str] = set()
     result: list[dict[str, Any]] = []
-    for event in values:
+    for event in events:
         payload = _payload(event)
         event_type = str(event.get("type") or "event")
         request_id = str(payload.get("request_id") or "")
         if event_type == "tool.requested":
-            requested_request_ids.add(request_id)
+            requested.add(request_id)
             title = _activity_title(event_type, payload)
-            attention = bool(request_id and request_id in failed_request_ids)
-        elif event_type == "tool.failed":
-            if request_id and request_id in requested_request_ids:
+            attention = bool(request_id and request_id in failed)
+        elif event_type in {"tool.failed", "approval.required"}:
+            # A failure or approval of a requested call is shown on that call's row.
+            if request_id and request_id in requested:
                 continue
             title = _activity_title(event_type, payload)
             attention = True
-        elif event_type == "approval.required":
-            if request_id and request_id in requested_request_ids:
-                continue
-            title = _activity_title(event_type, payload)
-            attention = True
-        elif event_type in {"run.failed", "run.paused", "publication.failed", "mutation.rollback", "approval.timeout"}:
-            title = (
-                "Run failed"
-                if event_type == "run.failed"
-                else "Run paused"
-                if event_type == "run.paused"
-                else "Host publication unavailable"
-                if event_type == "publication.failed"
-                else "Changes discarded (rollback)"
-                if event_type == "mutation.rollback"
-                else "Approval timed out"
-            )
-            attention = True
-        elif event_type in {"checkpoint.created", "checkpoint.restored"}:
-            title = (
-                "Checkpoint restored"
-                if event_type == "checkpoint.restored"
-                else "Checkpoint created"
-            )
-            attention = False
+        elif event_type in EVENT_TITLES:
+            title = EVENT_TITLES[event_type]
+            attention = event_type in ATTENTION_EVENT_TYPES
         else:
             continue
-        result.append(
-            {
-                "key": f"{event.get('run_id', '')}:{event.get('event_id', '')}",
-                "title": title,
-                "eventType": event_type,
-                "rollback": event_type == "mutation.rollback",
-                "attention": attention,
-            }
-        )
+        result.append({
+            "key": f"{event.get('run_id', '')}:{event.get('event_id', '')}",
+            "title": title,
+            "eventType": event_type,
+            "rollback": event_type == "mutation.rollback",
+            "attention": attention,
+        })
     return result
 
 
-def _activity_summary(events: Iterable[dict[str, object]], *, legacy: bool = False) -> str:
-    values = list(events)
-    if not values:
+def _activity_summary(events: list[dict[str, object]], *, legacy: bool = False) -> str:
+    if not events:
         return ""
-    tools = sum(1 for event in values if event.get("type") == "tool.requested")
-    failures = sum(
-        1
-        for event in values
-        if event.get("type") in {"tool.failed", "run.failed", "publication.failed"}
+    types = [event.get("type") for event in events]
+    counts = (
+        (types.count("tool.requested"), "tool call"),
+        (types.count("approval.required"), "approval"),
+        (sum(kind in {"tool.failed", "run.failed", "publication.failed"} for kind in types), "failure"),
     )
-    approvals = sum(1 for event in values if event.get("type") == "approval.required")
-    parts: list[str] = []
-    if tools:
-        parts.append(f"{tools} tool call{'s' if tools != 1 else ''}")
-    if approvals:
-        parts.append(f"{approvals} approval{'s' if approvals != 1 else ''}")
-    if failures:
-        parts.append(f"{failures} failure{'s' if failures != 1 else ''}")
+    parts = [f"{count} {noun}{'s' if count != 1 else ''}" for count, noun in counts if count]
     if legacy:
         parts.append("legacy activity")
     return " · ".join(parts) or "Activity"
-
-
-def _activity_needs_attention(events: Iterable[dict[str, object]]) -> bool:
-    return any(
-        event.get("type")
-        in {
-            "approval.required",
-            "tool.failed",
-            "run.failed",
-            "run.paused",
-            "publication.failed",
-            "mutation.rollback",
-            "approval.timeout",
-        }
-        for event in events
-    )
 
 
 def _message_metadata(message: Message) -> str:
@@ -297,9 +226,7 @@ def _message_metadata(message: Message) -> str:
     if message.model_id:
         parts.append(message.model_id)
     tokens = message.total_tokens
-    if tokens is None and (
-        message.input_tokens is not None or message.output_tokens is not None
-    ):
+    if tokens is None and (message.input_tokens is not None or message.output_tokens is not None):
         tokens = (message.input_tokens or 0) + (message.output_tokens or 0)
     if tokens:
         parts.append(f"{tokens:,} tokens")
@@ -311,6 +238,7 @@ def _message_metadata(message: Message) -> str:
 
 
 def compact_activity_event(event: dict[str, object]) -> dict[str, object] | None:
+    """The QML-safe form of an activity event: no tool arguments, only a file-name label."""
     event_type = str(event.get("type") or "")
     if event_type not in ACTIVITY_EVENT_TYPES:
         return None
@@ -318,7 +246,7 @@ def compact_activity_event(event: dict[str, object]) -> dict[str, object] | None
     compact_payload = {
         key: payload[key]
         for key in ACTIVITY_PAYLOAD_KEYS
-        if key in payload and key != "arguments" and payload[key] is not None
+        if key != "arguments" and payload.get(key) is not None
     }
     file_name = _file_name(str(payload.get("tool") or ""), payload)
     if file_name:
@@ -342,10 +270,7 @@ def _activity_title(event_type: str, payload: dict[str, object]) -> str:
 def _file_name(tool: str, payload: dict[str, object]) -> str | None:
     """Derive a short filename label while keeping tool arguments out of QML."""
     arguments = payload.get("arguments")
-    values = [payload]
-    if isinstance(arguments, dict):
-        values.insert(0, arguments)
-    for value in values:
+    for value in (arguments, payload) if isinstance(arguments, dict) else (payload,):
         for key in ("path", "file", "file_path", "filename"):
             candidate = value.get(key)
             if isinstance(candidate, str) and candidate.strip():
@@ -364,9 +289,7 @@ def _file_name(tool: str, payload: dict[str, object]) -> str | None:
 
 
 def _clean_file_name(value: str) -> str:
-    value = value.strip().replace("\\", "/")
-    value = value.splitlines()[0]
-    return value[:180]
+    return value.strip().replace("\\", "/").splitlines()[0][:180]
 
 
 def _payload(event: dict[str, object]) -> dict[str, object]:

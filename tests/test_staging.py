@@ -166,7 +166,7 @@ def test_publication_preserves_crlf_bytes_and_does_not_report_post_write_mismatc
     assert (workspace / "example.py").read_bytes() == staged
 
 
-def test_undo_preserves_recovery_file_bytes(tmp_path: Path) -> None:
+def test_publication_recovery_copy_preserves_file_bytes(tmp_path: Path) -> None:
     workspace = tmp_path / "projects" / "new-project"
     workspace.mkdir(parents=True)
     original = b"old\r\ncontent\r\n"
@@ -186,9 +186,10 @@ def test_undo_preserves_recovery_file_bytes(tmp_path: Path) -> None:
     manifest = service.manifest("run", "approval")
     broker = WorkspaceBroker(workspace, tmp_path / "recovery")
     result = broker.publish(manifest, {item.path for item in manifest.operations})
-    broker.undo(result.checkpoint_id)
 
-    assert target.read_bytes() == original
+    assert target.read_bytes() == replacement
+    recovery_copy = tmp_path / "recovery" / result.checkpoint_id / "files" / "example.py"
+    assert recovery_copy.read_bytes() == original
 
 
 def _seed_env_and_virtualenv_source(source: Path) -> None:

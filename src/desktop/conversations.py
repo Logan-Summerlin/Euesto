@@ -159,7 +159,7 @@ class ConversationService(QObject):
 
     def select_model(self, model_id: str) -> None:
         conversation = self.current()
-        model_id = self.storage.resolve_model_id(model_id.strip())
+        model_id = model_id.strip()
         if not conversation or not model_id or self._busy:
             return
         self.storage.update_conversation(conversation.id, model=model_id)

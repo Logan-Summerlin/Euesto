@@ -129,11 +129,11 @@ def test_edit_regenerate_and_branch_navigation_preserve_old_paths(tmp_path: Path
         "Edited answer",
         "Second",
     ]
-    assert storage.branch_position(regenerated.id or 0) == (2, 2)
+    assert [item.id for item in storage.siblings(regenerated.id or 0)] == [first_answer.id, regenerated.id]
     storage.close()
 
 
-def test_search_pin_archive_models_aliases_and_presets(tmp_path: Path) -> None:
+def test_search_pin_archive_models_and_presets(tmp_path: Path) -> None:
     storage = Storage(tmp_path / "chat.sqlite3")
     first = storage.create_conversation("Alpha", "model/a", "")
     second = storage.create_conversation("Beta", "model/b", "")
@@ -149,11 +149,9 @@ def test_search_pin_archive_models_aliases_and_presets(tmp_path: Path) -> None:
     storage.replace_model_catalog(models, "2026-01-01T00:00:00+00:00")
     storage.set_model_favorite("vendor/model", True)
     storage.record_recent_model("vendor/model")
-    storage.save_model_alias("cheap", "vendor/model")
     assert storage.list_catalog_models()[0].id == "vendor/model"
     assert storage.favorite_model_ids() == ["vendor/model"]
     assert storage.recent_model_ids() == ["vendor/model"]
-    assert storage.resolve_model_id("CHEAP") == "vendor/model"
 
     preset = storage.save_prompt_preset("Concise", "Answer briefly")
     storage.update_conversation(
