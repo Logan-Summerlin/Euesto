@@ -7,18 +7,12 @@ import pytest
 from executor.app import ExecutorService
 from executor.config import ExecutorConfig
 from executor.staging import seed_staging, workspace_changes
-from src.workspace_broker import WorkspaceBroker, workspace_id
+from src.workspace_broker import WorkspaceBroker
+from tests.helpers import executor_config
 
 
 def make_config(source: Path, work: Path, **limits: int) -> ExecutorConfig:
-    return ExecutorConfig(
-        source_root=source,
-        work_root=work,
-        socket_path=work.parent / "executor.sock",
-        token="t" * 43,
-        workspace_id="workspace",
-        **limits,
-    )
+    return executor_config(source, work_root=work, **limits)
 
 
 def test_seed_staging_skips_dependency_metadata_and_cache_directories(tmp_path: Path) -> None:
@@ -92,13 +86,7 @@ def test_publication_manifest_contains_text_file_without_generated_cache(tmp_pat
 def test_staged_python_file_publishes_to_the_selected_workspace(tmp_path: Path) -> None:
     workspace = tmp_path / "projects" / "new-project"
     workspace.mkdir(parents=True)
-    config = ExecutorConfig(
-        workspace,
-        tmp_path / "work",
-        tmp_path / "executor.sock",
-        "t" * 43,
-        workspace_id(workspace),
-    )
+    config = executor_config(workspace, work_root=tmp_path / "work")
     service = ExecutorService(config)
     (config.work_root / "blackjack.py").write_text("print('ok')", encoding="utf-8")
 
@@ -114,13 +102,7 @@ def test_staged_python_file_publishes_to_the_selected_workspace(tmp_path: Path) 
 def test_publication_chmod_does_not_require_follow_symlinks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workspace = tmp_path / "projects" / "new-project"
     workspace.mkdir(parents=True)
-    config = ExecutorConfig(
-        workspace,
-        tmp_path / "work",
-        tmp_path / "executor.sock",
-        "t" * 43,
-        workspace_id(workspace),
-    )
+    config = executor_config(workspace, work_root=tmp_path / "work")
     service = ExecutorService(config)
     (config.work_root / "blackjack.py").write_text("print('ok')", encoding="utf-8")
     manifest = service.manifest("run", "approval")
@@ -146,13 +128,7 @@ def test_publication_chmod_does_not_require_follow_symlinks(tmp_path: Path, monk
 def test_publication_preserves_crlf_bytes_and_does_not_report_post_write_mismatch(tmp_path: Path) -> None:
     workspace = tmp_path / "projects" / "new-project"
     workspace.mkdir(parents=True)
-    config = ExecutorConfig(
-        workspace,
-        tmp_path / "work",
-        tmp_path / "executor.sock",
-        "t" * 43,
-        workspace_id(workspace),
-    )
+    config = executor_config(workspace, work_root=tmp_path / "work")
     service = ExecutorService(config)
     staged = b"first line\r\nsecond line\r\n"
     (config.work_root / "example.py").write_bytes(staged)
@@ -172,13 +148,7 @@ def test_publication_recovery_copy_preserves_file_bytes(tmp_path: Path) -> None:
     original = b"old\r\ncontent\r\n"
     target = workspace / "example.py"
     target.write_bytes(original)
-    config = ExecutorConfig(
-        workspace,
-        tmp_path / "work",
-        tmp_path / "executor.sock",
-        "t" * 43,
-        workspace_id(workspace),
-    )
+    config = executor_config(workspace, work_root=tmp_path / "work")
     service = ExecutorService(config)
     replacement = b"new\r\ncontent\r\n"
     (config.work_root / "example.py").write_bytes(replacement)

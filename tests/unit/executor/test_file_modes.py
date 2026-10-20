@@ -10,8 +10,8 @@ import pytest
 
 from executor.app import ExecutorService
 from executor.atomic_io import replacement_mode
-from executor.config import ExecutorConfig
 from shared.tools import ToolRequest
+from tests.helpers import executor_config
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
 
@@ -27,7 +27,7 @@ def test_staged_rewrites_keep_file_modes(tmp_path: Path) -> None:
         (source / name).write_text("before\n", encoding="utf-8")
         (source / name).chmod(mode)
     work = tmp_path / "work"
-    service = ExecutorService(ExecutorConfig(source_root=source, work_root=work, socket_path=tmp_path / "executor.sock", token="x" * 32, workspace_id="modes"))
+    service = ExecutorService(executor_config(source))
     new_file_mode = replacement_mode(work / "does-not-exist")
     for request in (
         ToolRequest("w", "run", "write", "agent", {"path": "plain.txt", "content": "after\n"}),

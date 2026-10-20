@@ -26,7 +26,7 @@ PARALLEL_SAFE_TOOLS = PLAN_TOOLS | {"status"}
 # Protocol-level argument cap. It is a malformed-request guard, not a tool limit, so it
 # must never bind below any per-tool limit the executor can be configured to accept.
 # Derivation from the argument-carrying hard ceilings in executor/config.py
-# (ExecutorConfig.HARD_CEILINGS; tests/test_protocol.py asserts this stays in sync):
+# (ExecutorConfig.HARD_CEILINGS; tests/unit/shared/test_protocol.py asserts this stays in sync):
 #   write:       content <= max_write_bytes (8 MB)
 #   bash:        command <= max_command_bytes (1 MB) + stdin <= max_bash_stdin_bytes (8 MB)
 #                + env <= 64 values x 16,384 bytes (~1.05 MB)                     = ~10.05 MB

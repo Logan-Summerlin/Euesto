@@ -9,7 +9,6 @@ import pytest
 
 from executor.app import ExecutorService
 from executor.checkpoints import checkpoint_files
-from executor.config import ExecutorConfig
 from executor.errors import ExecutorToolError
 from executor.tools import apply_patch as apply_patch_export
 from executor.tools import write
@@ -21,6 +20,7 @@ from shared.permissions import (
     rule_scope,
 )
 from shared.tools import MUTATION_TOOLS, ToolRequest
+from tests.helpers import executor_config
 
 LIMITS = {"max_operations": 20, "max_patch_bytes": 100_000, "max_write_bytes": 50_000, "max_edit_target_bytes": 50_000, "max_edit_result_bytes": 50_000, "max_checkpoint_bytes": 100_000_000}
 
@@ -152,15 +152,14 @@ def test_apply_patch_is_a_public_mutation_with_consistent_permissions(tmp_path: 
 def test_executor_dispatches_apply_patch_with_status_and_error_diagnostics(tmp_path: Path) -> None:
     source = tmp_path / "source"; source.mkdir()
     (source / "a.py").write_text("x = 1\n", encoding="utf-8")
-    config = ExecutorConfig(source_root=source, work_root=tmp_path / "work", socket_path=tmp_path / "s.sock", token="t" * 43, workspace_id="ws")
-    service = ExecutorService(config)
+    service = ExecutorService(executor_config(source))
     ok = asyncio.run(service.execute(ToolRequest("p1", "run", "apply_patch", "agent", {"operations": [{"operation": "edit", "path": "a.py", "old_str": "x = 1", "new_str": "x = 2"}, {"operation": "write", "path": "b.py", "content": "y = 1\n"}]})))
     assert ok.ok, ok.to_dict()
     assert ok.data["workspace_status"]["created"] == ["b.py"] and ok.data["workspace_status"]["modified"] == ["a.py"]
     failed = asyncio.run(service.execute(ToolRequest("p2", "run", "apply_patch", "agent", {"operations": [{"operation": "write", "path": "c.py", "content": ""}, {"operation": "edit", "path": "a.py", "old_str": "x = 1", "new_str": "z"}]})))
     assert not failed.ok and failed.error_code == "edit.no_match"
     assert failed.data["failed_operation"] == 1 and failed.data["rolled_back"] is True
-    assert not (config.work_root / "c.py").exists()
+    assert not (service.config.work_root / "c.py").exists()
 
 
 def test_confirmed_whole_file_write_shrink_warns_but_unconfirmed_still_blocks(tmp_path: Path) -> None:

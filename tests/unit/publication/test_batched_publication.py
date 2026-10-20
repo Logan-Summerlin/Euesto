@@ -8,7 +8,6 @@ import httpx
 import pytest
 
 from executor.app import ExecutorService
-from executor.config import ExecutorConfig
 from executor.staging import publication_batches, workspace_changes
 from server.app import create_app
 from server.config import GatewayConfig
@@ -20,8 +19,8 @@ from src.workspace_broker import (
     PublicationLedger,
     WorkspaceBroker,
     describe_progress,
-    workspace_id,
 )
+from tests.helpers import executor_config
 
 TOTAL = 1_200
 
@@ -31,7 +30,7 @@ def _setup(tmp_path: Path) -> tuple[Path, ExecutorService]:
     (workspace / "src").mkdir(parents=True)
     for index in range(0, TOTAL, 2):
         (workspace / "src" / f"m{index:04d}.py").write_text(f"old_name = {index}\n", encoding="utf-8")
-    config = ExecutorConfig(workspace, tmp_path / "work", tmp_path / "executor.sock", "t" * 43, workspace_id(workspace))
+    config = executor_config(workspace, work_root=tmp_path / "work")
     service = ExecutorService(config)
     for index in range(TOTAL):
         (config.work_root / "src" / f"m{index:04d}.py").write_text(f"new_name = {index}\n", encoding="utf-8")
@@ -100,7 +99,7 @@ def test_large_changeset_publishes_in_sequential_batches_and_resumes_after_failu
 def test_single_batch_semantics_and_limits_are_unchanged(tmp_path: Path) -> None:
     workspace = tmp_path / "projects" / "small"
     workspace.mkdir(parents=True)
-    config = ExecutorConfig(workspace, tmp_path / "work", tmp_path / "executor.sock", "t" * 43, workspace_id(workspace))
+    config = executor_config(workspace, work_root=tmp_path / "work")
     service = ExecutorService(config)
     (config.work_root / "a.py").write_text("a\n", encoding="utf-8")
     manifest = service.manifest("run", "approval")
@@ -115,7 +114,7 @@ def test_single_batch_semantics_and_limits_are_unchanged(tmp_path: Path) -> None
 def test_batches_respect_byte_budget_and_reject_oversized_single_files(tmp_path: Path, monkeypatch) -> None:
     workspace = tmp_path / "projects" / "bytes"
     workspace.mkdir(parents=True)
-    config = ExecutorConfig(workspace, tmp_path / "work", tmp_path / "executor.sock", "t" * 43, workspace_id(workspace))
+    config = executor_config(workspace, work_root=tmp_path / "work")
     service = ExecutorService(config)
     for index in range(4):
         (config.work_root / f"f{index}.txt").write_text("x" * 400, encoding="utf-8")

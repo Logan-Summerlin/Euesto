@@ -5,7 +5,14 @@ import json
 import httpx
 import pytest
 
-from src.gateway_client import GatewayClient, GatewayConnection, GatewayError, _iter_sse
+from shared.events import EventEnvelope
+from src.gateway_client import (
+    GatewayClient,
+    GatewayConnection,
+    GatewayError,
+    _iter_sse,
+    _map_event,
+)
 
 
 def _gateway(monkeypatch, handler) -> tuple[GatewayClient, list[tuple[str, str]]]:
@@ -100,3 +107,14 @@ def test_streamed_error_response_reports_the_gateway_error(monkeypatch) -> None:
         list(gateway.stream_chat(api_key="key", model="vendor/model", messages=[]))
     assert (raised.value.code, raised.value.retryable) == ("rate.limited", True)
     assert gateway._active_run_id is None
+
+
+def test_agent_events_map_the_final_model_delta_and_completion() -> None:
+    def envelope(event_id: int, event_type: str, payload: dict) -> EventEnvelope:
+        return EventEnvelope(event_id, "run-1", event_type, "2026-01-01T00:00:00+00:00", payload)
+
+    delta = _map_event(envelope(10, "model.delta", {"text": "Task complete."}), run_id="run-1")
+    completed = _map_event(envelope(11, "run.completed", {"iterations": 1}), run_id="run-1")
+
+    assert delta is not None and (delta.text, delta.done) == ("Task complete.", False)
+    assert completed is not None and completed.done is True

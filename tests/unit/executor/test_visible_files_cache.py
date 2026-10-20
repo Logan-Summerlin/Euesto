@@ -14,10 +14,11 @@ from executor.checkpoints import create_checkpoint, restore_checkpoint
 from executor.config import ExecutorConfig
 from executor.staging import clear_hash_cache, visible_files
 from shared.tools import ToolRequest
+from tests.helpers import executor_config
 
 
 def _config(source: Path, work: Path) -> ExecutorConfig:
-    return ExecutorConfig(source_root=source, work_root=work, socket_path=work.parent / "executor.sock", token="t" * 43, workspace_id="workspace")
+    return executor_config(source, work_root=work)
 
 
 def _tree(root: Path, count: int) -> None:

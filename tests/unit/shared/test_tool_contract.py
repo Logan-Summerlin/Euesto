@@ -17,6 +17,7 @@ from shared.tools import (
     TOOL_NAMES,
     ToolRequest,
 )
+from tests.helpers import executor_config
 
 CANONICAL_TOOLS = ("read", "write", "edit", "apply_patch", "bash", "grep", "find", "ls", "status")
 MODEL_TOOL_NAMES = CANONICAL_TOOLS + ("investigate_repository",)
@@ -45,7 +46,7 @@ def _schemas() -> dict[str, dict]:
 
 
 def _config(tmp_path: Path, **limits: int) -> ExecutorConfig:
-    return ExecutorConfig(source_root=tmp_path / "source", work_root=tmp_path / "work", socket_path=tmp_path / "executor.sock", token="x" * 32, workspace_id="contract-test", **limits)
+    return executor_config(tmp_path / "source", **limits)
 
 
 # Vocabulary

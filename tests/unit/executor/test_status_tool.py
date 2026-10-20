@@ -6,10 +6,10 @@ from pathlib import Path
 import pytest
 
 from executor.app import ExecutorService
-from executor.config import ExecutorConfig
 from executor.tools.status import MAX_STATUS_DIFF_BYTES, MAX_STATUS_DIFF_LINES
 from shared.permissions import PermissionDecision, resolve_permission
 from shared.tools import ToolRequest
+from tests.helpers import executor_config
 
 
 def _service(tmp_path: Path, files: dict[str, str] | None = None) -> ExecutorService:
@@ -19,8 +19,7 @@ def _service(tmp_path: Path, files: dict[str, str] | None = None) -> ExecutorSer
         path = source / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-    config = ExecutorConfig(source_root=source, work_root=tmp_path / "work", socket_path=tmp_path / "executor.sock", token="t" * 43, workspace_id="workspace")
-    return ExecutorService(config)
+    return ExecutorService(executor_config(source))
 
 
 def _status(service: ExecutorService, **arguments):

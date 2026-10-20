@@ -1,4 +1,4 @@
-"""Structural checks: one authoritative, predictably named location for every document."""
+"""Structural checks: one authoritative, predictably named location for every document and test."""
 from __future__ import annotations
 
 import os
@@ -65,6 +65,13 @@ def test_every_archived_document_is_indexed() -> None:
     for path in sorted((ROOT / "archived-doc").glob("*.md")):
         if path.name != "README.md":
             assert f"`{path.name}`" in index, f"archived-doc/README.md must list {path.name}"
+
+
+def test_tests_live_in_uniquely_named_domain_files() -> None:
+    tests = ROOT / "tests"
+    assert not list(tests.glob("test_*.py")), "tests belong in tests/<tier>/ or tests/unit/<domain>/"
+    names = [path.name for path in tests.rglob("test_*.py")]
+    assert len(names) == len(set(names)), "test file names must be unique across test folders"
 
 
 def test_relative_documentation_links_resolve() -> None:

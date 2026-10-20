@@ -11,11 +11,11 @@ import pytest
 
 from executor import errors
 from executor.app import ExecutorService
-from executor.config import ExecutorConfig
 from executor.errors import ERROR_CODES, ExecutorToolError, classify_error
 from executor.paths import UnsafePath
 from executor.permissions import enforce_capability
 from shared.tools import ToolRequest
+from tests.helpers import executor_config
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -62,11 +62,7 @@ def _service(tmp_path: Path) -> ExecutorService:
     (source / "a.txt").write_text("hello world\n", encoding="utf-8")
     (source / "bin.dat").write_bytes(b"\x00\xff\x00binary")
     (source / "dir" / "b.txt").write_text("b\n", encoding="utf-8")
-    config = ExecutorConfig(
-        source_root=source, work_root=tmp_path / "work", socket_path=tmp_path / "executor.sock",
-        token="t" * 43, workspace_id="workspace", max_write_bytes=100, max_bash_stdin_bytes=100,
-    )
-    return ExecutorService(config)
+    return ExecutorService(executor_config(source, max_write_bytes=100, max_bash_stdin_bytes=100))
 
 
 def _codes(tmp_path: Path) -> list[tuple[str, str]]:

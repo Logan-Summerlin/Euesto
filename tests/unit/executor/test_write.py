@@ -9,14 +9,13 @@ from starlette.testclient import TestClient
 
 from executor.app import ExecutorService, create_app
 from executor.config import ExecutorConfig
+from tests.helpers import executor_config
 
 TOKEN = "t" * 43
 
 
 def _profile_config(tmp_path: Path, profile: str) -> ExecutorConfig:
-    source = tmp_path / "source"
-    source.mkdir()
-    return ExecutorConfig(source_root=source, work_root=tmp_path / "work", socket_path=tmp_path / "executor.sock", token=TOKEN, workspace_id="workspace", **ExecutorConfig._profiles()[profile])
+    return executor_config(tmp_path / "source", token=TOKEN, **ExecutorConfig._profiles()[profile])
 
 
 def _post_tool(client: TestClient, tool: str, arguments: dict) -> dict:

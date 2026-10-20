@@ -1,5 +1,5 @@
 from src.models import Message
-from src.transcript import assemble_activities, assemble_transcript
+from src.transcript import TranscriptActivity, assemble_activities, assemble_transcript
 
 
 def _message(message_id: int, role: str, parent: int | None = None) -> Message:
@@ -89,3 +89,33 @@ def test_publication_failure_is_distinct_from_agent_run_failure() -> None:
     assert transcript[1]["activity"][0]["title"] == "Host publication unavailable"
     assert transcript[1]["activity"][0]["attention"] is True
     assert "Run failed" not in transcript[1]["activitySummary"]
+
+
+def _tool_activity(run_id: str, assistant_id: int | None, parent_id: int, tool: str) -> TranscriptActivity:
+    event = {
+        "run_id": run_id,
+        "event_id": 1,
+        "type": "tool.requested",
+        "payload": {"tool": tool, "request_id": f"{run_id}-call"},
+    }
+    return TranscriptActivity(
+        run_id=run_id, assistant_message_id=assistant_id, parent_message_id=parent_id, events=(event,)
+    )
+
+
+def test_incomplete_run_activity_falls_back_to_parent_user_turn() -> None:
+    transcript = assemble_transcript([_message(10, "user")], [_tool_activity("run-1", None, 10, "write")])
+
+    assert transcript[0]["messageId"] == 10
+    assert transcript[0]["activitySummary"] == "1 tool call"
+    assert transcript[0]["activity"][0]["title"] == "write"
+
+
+def test_completed_run_activity_stays_on_assistant_turn() -> None:
+    transcript = assemble_transcript(
+        [_message(10, "user"), _message(11, "assistant", 10)],
+        [_tool_activity("run-2", 11, 10, "edit")],
+    )
+
+    assert transcript[0]["activity"] == []
+    assert transcript[1]["activitySummary"] == "1 tool call"

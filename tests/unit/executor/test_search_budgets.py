@@ -10,6 +10,7 @@ from executor.app import ExecutorService
 from executor.config import ExecutorConfig
 from executor.tools import find, grep, ls
 from shared.tools import ToolRequest
+from tests.helpers import executor_config
 
 # executor.tools re-exports the tool functions under their module names, so reach the
 # modules through importlib to patch their clocks.
@@ -31,9 +32,7 @@ class SteppingClock:
 
 def _service(tmp_path: Path, **limits: int) -> ExecutorService:
     source = tmp_path / "source"
-    source.mkdir(exist_ok=True)
-    config = ExecutorConfig(source_root=source, work_root=tmp_path / "work", socket_path=tmp_path / "executor.sock", token="t" * 43, workspace_id="workspace", **limits)
-    return ExecutorService(config)
+    return ExecutorService(executor_config(source, **limits))
 
 
 def _tree(root: Path, count: int = 40) -> None:

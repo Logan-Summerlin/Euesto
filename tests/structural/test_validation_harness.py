@@ -70,7 +70,7 @@ def test_version_output_is_bounded_and_version_like() -> None:
 
 
 def test_validation_scripts_and_lock_are_repository_owned() -> None:
-    root = Path(__file__).parents[1]
+    root = Path(__file__).resolve().parents[2]
     assert (root / "scripts" / "validate.py").is_file()
     assert (root / "scripts" / "bootstrap.py").is_file()
     assert (root / "scripts" / "qml_smoke.py").is_file()

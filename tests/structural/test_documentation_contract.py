@@ -3,7 +3,7 @@ from pathlib import Path
 from executor.config import ExecutorConfig
 from shared.tools import TOOL_NAMES
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_public_tool_documentation_matches_registry() -> None:

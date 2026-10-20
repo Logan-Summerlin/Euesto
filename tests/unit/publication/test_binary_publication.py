@@ -11,10 +11,10 @@ from pathlib import Path
 import pytest
 
 from executor.app import ExecutorService
-from executor.config import ExecutorConfig
 from executor.staging import workspace_changes
 from shared.tools import PublishManifest, PublishOperation, ToolRequest
-from src.workspace_broker import BrokerError, WorkspaceBroker, workspace_id
+from src.workspace_broker import BrokerError, WorkspaceBroker
+from tests.helpers import executor_config
 
 
 def _png() -> bytes:
@@ -30,7 +30,7 @@ def _setup(tmp_path: Path, files: dict[str, bytes]) -> tuple[Path, ExecutorServi
     for relative, content in files.items():
         (workspace / relative).parent.mkdir(parents=True, exist_ok=True)
         (workspace / relative).write_bytes(content)
-    config = ExecutorConfig(workspace, tmp_path / "work", tmp_path / "executor.sock", "t" * 43, workspace_id(workspace))
+    config = executor_config(workspace, work_root=tmp_path / "work")
     return workspace, ExecutorService(config)
 
 

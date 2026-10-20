@@ -8,7 +8,6 @@ from types import SimpleNamespace
 import pytest
 
 from executor.checkpoints import create_checkpoint
-from executor.config import ExecutorConfig
 from executor.errors import ExecutorToolError
 from server.agent.budgets import (
     EXTENDED_CODING_PROFILE,
@@ -21,12 +20,7 @@ from server.agent.budgets import (
 from server.agent.runtime import AgentRuntime
 from shared.requests import AgentRunRequest
 from shared.tools import ToolResult
-
-
-def make_config(tmp_path: Path, **overrides: object) -> ExecutorConfig:
-    values: dict[str, object] = {"source_root": tmp_path / "source", "work_root": tmp_path / "work", "socket_path": tmp_path / "executor.sock", "token": "x" * 32, "workspace_id": "test-workspace"}
-    values.update(overrides)
-    return ExecutorConfig(**values)  # type: ignore[arg-type]
+from tests.helpers import executor_config
 
 
 def test_standard_coding_profile_is_bounded_and_above_legacy_tool_limit() -> None:
@@ -70,7 +64,7 @@ def test_executor_staging_limit_can_exhaust_before_gateway_budget(tmp_path: Path
     source = tmp_path / "source"
     source.mkdir()
     (source / "large.txt").write_bytes(b"x" * 20)
-    config = make_config(tmp_path, source_root=source, max_staging_bytes=10, max_checkpoint_bytes=10)
+    config = executor_config(source, max_staging_bytes=10, max_checkpoint_bytes=10)
     from executor.staging import seed_staging
     with pytest.raises(RuntimeError, match="staging limits"):
         seed_staging(config)
