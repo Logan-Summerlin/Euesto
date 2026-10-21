@@ -8,11 +8,28 @@ from shared.coercion import optional_float, optional_int
 
 @dataclass(frozen=True, slots=True)
 class BudgetProfile:
+    """Resource budgets plus the model-facing context and result bounds of one profile.
+
+    ``working_set_tokens`` is the compaction high-water cap (the smaller of it and 60% of the
+    model's window applies). Result caps bound each model-facing tool result; none may exceed
+    10% of the working set (four bytes per token). ``max_output_tokens`` caps one model turn.
+    """
+
     name: str
     max_iterations: int
     max_tool_calls: int
     max_wall_seconds: int
     max_cost: float
+    working_set_tokens: int = 96_000
+    result_bytes: int = 24_000
+    read_result_bytes: int = 32_000
+    bash_result_chars: int = 8_000
+    max_output_tokens: int = 16_000
+
+    def result_cap(self, tool: str) -> int:
+        """Model-facing byte cap for one result of ``tool``."""
+        cap = self.read_result_bytes if tool == "read" else self.result_bytes
+        return min(cap, self.working_set_tokens * 4 // 10)
 
 
 STANDARD_CODING_PROFILE = BudgetProfile(
@@ -28,6 +45,10 @@ EXTENDED_CODING_PROFILE = BudgetProfile(
     max_tool_calls=1_800,
     max_wall_seconds=3_600,
     max_cost=4.0,
+    working_set_tokens=160_000,
+    result_bytes=32_000,
+    read_result_bytes=48_000,
+    bash_result_chars=12_000,
 )
 LARGE_CODING_PROFILE = BudgetProfile(
     "large-coding",
@@ -35,6 +56,10 @@ LARGE_CODING_PROFILE = BudgetProfile(
     max_tool_calls=2_700,
     max_wall_seconds=5_400,
     max_cost=8.0,
+    working_set_tokens=256_000,
+    result_bytes=48_000,
+    read_result_bytes=64_000,
+    bash_result_chars=16_000,
 )
 
 BUDGET_PROFILES = {
@@ -93,8 +118,10 @@ class RunBudget:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cached_tokens: int = 0
+    cache_write_tokens: int = 0
     reasoning_tokens: int = 0
     total_tokens: int = 0
+    turns: int = 0
 
     def __post_init__(self) -> None:
         self.started = time.monotonic()
@@ -129,6 +156,7 @@ class RunBudget:
             optional_int(usage.get("completion_tokens", usage.get("output_tokens"))) or 0,
         )
         cached = max(0, optional_int(usage.get("cached_tokens")) or 0)
+        cache_write = max(0, optional_int(usage.get("cache_write_tokens")) or 0)
         reasoning = max(0, optional_int(usage.get("reasoning_tokens")) or 0)
         reported_total = optional_int(usage.get("total_tokens"))
         total = max(
@@ -140,6 +168,8 @@ class RunBudget:
         self.prompt_tokens += prompt
         self.completion_tokens += completion
         self.cached_tokens += cached
+        self.cache_write_tokens += cache_write
+        self.turns += 1
         self.reasoning_tokens += reasoning
         self.total_tokens += total
         self.cost += cost
@@ -151,9 +181,12 @@ class RunBudget:
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "cached_tokens": self.cached_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
             "reasoning_tokens": self.reasoning_tokens,
             "total_tokens": self.total_tokens,
             "cost": self.cost,
+            "turns": self.turns,
+            **usage_ratios(self.prompt_tokens, self.cached_tokens, self.turns),
         }
 
     def consume_tool_call(self) -> None:
@@ -221,8 +254,20 @@ class RunBudget:
         self.prompt_tokens = max(0, int(state.get("prompt_tokens") or 0))
         self.completion_tokens = max(0, int(state.get("completion_tokens") or 0))
         self.cached_tokens = max(0, int(state.get("cached_tokens") or 0))
+        self.cache_write_tokens = max(0, int(state.get("cache_write_tokens") or 0))
+        self.turns = max(0, int(state.get("turns") or 0))
         self.reasoning_tokens = max(0, int(state.get("reasoning_tokens") or 0))
         self.total_tokens = max(0, int(state.get("total_tokens") or 0))
         elapsed = max(0.0, float(state.get("elapsed_seconds") or 0))
         self.started = time.monotonic() - elapsed
         self.check()
+
+
+def usage_ratios(prompt_tokens: int, cached_tokens: int, turns: int) -> dict[str, float]:
+    """Cache hit rate (cached / prompt tokens) and average new prompt tokens per turn."""
+    prompt = max(0, prompt_tokens)
+    cached = min(prompt, max(0, cached_tokens))
+    return {
+        "cache_hit_rate": cached / prompt if prompt else 0.0,
+        "average_new_tokens_per_turn": (prompt - cached) / turns if turns else 0.0,
+    }

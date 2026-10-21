@@ -85,7 +85,6 @@ def _run(monkeypatch, turns: list[AgentTurn], arguments: dict, executor=None):
     executor = executor or RecordingExecutor()
     runtime = AgentRuntime(executor, object(), append)
     runtime._api_keys["run"] = "test-key"
-    runtime._tool_result_bytes["run"] = 0
     messages: list[dict[str, object]] = []
     asyncio.run(
         runtime._investigate_repository(

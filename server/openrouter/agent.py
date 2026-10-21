@@ -16,7 +16,6 @@ RETRYABLE_STATUS = frozenset({408, 409, 425, 429})
 
 STRING = {"type": "string"}
 BOOLEAN = {"type": "boolean"}
-OPTIONAL_SHA256 = {"type": ["string", "null"]}
 OLD_STR = {"type": "string", "minLength": 1}
 OCCURRENCES = {"type": "integer", "minimum": 1, "maximum": 1000}
 
@@ -43,7 +42,8 @@ def _tool(
 LOCAL_TOOL_SCHEMAS = [
     _tool(
         "read",
-        "Read a UTF-8 text file by line range or byte offset.",
+        "Read a UTF-8 text file by line range or byte offset. Search first; read ranges of "
+        "large files.",
         {
             "path": STRING,
             "start_line": _integer(1),
@@ -55,33 +55,24 @@ LOCAL_TOOL_SCHEMAS = [
     ),
     _tool(
         "write",
-        "Create or replace a UTF-8 text file.",
-        {
-            "path": STRING,
-            "content": STRING,
-            "expected_sha256": OPTIONAL_SHA256,
-            "create_parents": BOOLEAN,
-        },
+        "Create or replace a UTF-8 text file. Use for new files or full rewrites.",
+        {"path": STRING, "content": STRING, "create_parents": BOOLEAN},
         ["path", "content"],
     ),
     _tool(
         "edit",
-        "Replace an exact string in a UTF-8 text file. If old_str matches nothing only because "
-        "of LF/CRLF line endings, it is retried once in the file's convention; failures return "
-        "bounded match diagnostics.",
+        "Replace an exact string in a UTF-8 text file.",
         {
             "path": STRING,
             "old_str": OLD_STR,
             "new_str": STRING,
             "expected_occurrences": OCCURRENCES,
-            "expected_sha256": OPTIONAL_SHA256,
         },
         ["path", "old_str", "new_str"],
     ),
     _tool(
         "apply_patch",
-        "Apply ordered write/edit/delete operations across one or more UTF-8 text files as one "
-        "atomic staged change: every operation succeeds or none is applied.",
+        "Apply ordered write/edit/delete operations across files atomically: all or none.",
         {
             "operations": {
                 "type": "array",
@@ -96,7 +87,6 @@ LOCAL_TOOL_SCHEMAS = [
                         "old_str": OLD_STR,
                         "new_str": STRING,
                         "expected_occurrences": OCCURRENCES,
-                        "expected_sha256": OPTIONAL_SHA256,
                         "create_parents": BOOLEAN,
                     },
                     "required": ["operation", "path"],
@@ -131,7 +121,6 @@ LOCAL_TOOL_SCHEMAS = [
             "exclude_glob": STRING,
             "max_results": _integer(1, 5000),
             "context_lines": _integer(0, 5),
-            "include_metadata": BOOLEAN,
             "cursor": STRING,
         },
         ["query"],
@@ -160,8 +149,7 @@ LOCAL_TOOL_SCHEMAS = [
     ),
     _tool(
         "status",
-        "Summarize every staged change awaiting publication (created, modified, deleted, "
-        "permission changes) against the publication baseline, with optional bounded diffs.",
+        "List staged changes awaiting publication; diffs only with include_diffs.",
         {
             "paths": {"type": "array", "items": STRING, "minItems": 1, "maxItems": 50},
             "include_diffs": BOOLEAN,
@@ -171,13 +159,9 @@ LOCAL_TOOL_SCHEMAS = [
     ),
     _tool(
         "investigate_repository",
-        "Delegate a read-only repository investigation. Put the complete investigation request "
-        "in `query`, including relevant symptoms, suspected components or files, error messages, "
-        "hypotheses, and useful context; the investigation model decides which read-only files "
-        "and searches to inspect. Optionally list in `inspected_paths` the files or directories "
-        "you have already read or listed yourself so the investigator does not re-read them. "
-        "Returns a `summary` plus structured `findings` ({file, line, justification, observed}) "
-        "you can verify with one read each.",
+        "Delegate a broad read-only investigation. Put the full request in query; list files "
+        "you already read in inspected_paths. Returns a summary and findings "
+        "({file, line, justification, observed}).",
         {
             "query": {"type": "string", "minLength": 1},
             "inspected_paths": {
@@ -190,6 +174,12 @@ LOCAL_TOOL_SCHEMAS = [
     ),
 ]
 
+# Providers whose prompt caching needs explicit cache_control breakpoints, matched by model-id
+# prefix. Every other provider caches automatically (OpenAI, DeepSeek, Gemini implicit
+# caching, Grok, Moonshot, Z.AI) and gets no breakpoints.
+CACHE_CONTROL_MODEL_PREFIXES = ("anthropic/", "qwen/")
+CACHE_CONTROL = {"type": "ephemeral"}
+
 
 @dataclass(frozen=True, slots=True)
 class AgentTurn:
@@ -197,6 +187,9 @@ class AgentTurn:
     tool_calls: tuple[dict[str, Any], ...]
     message: dict[str, Any]
     usage: dict[str, Any]
+    finish_reason: str | None = None
+    provider: str | None = None
+    model: str | None = None
 
 
 def tool_schemas(mode: str, allowed_tools: set[str] | None = None) -> list[dict[str, Any]]:
@@ -207,25 +200,72 @@ def tool_schemas(mode: str, allowed_tools: set[str] | None = None) -> list[dict[
     return [item for item in LOCAL_TOOL_SCHEMAS if item["function"]["name"] in names]
 
 
+def needs_cache_breakpoints(model: str) -> bool:
+    return model.strip().casefold().startswith(CACHE_CONTROL_MODEL_PREFIXES)
+
+
+def with_cache_breakpoints(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copies of ``messages`` with breakpoints at the end of the leading system messages (the
+    agent prompt and session context) and on the newest message. The stored history is never
+    modified, so it stays byte-stable between turns."""
+    marked = list(messages)
+    prefix_end = 0
+    while prefix_end < len(marked) and marked[prefix_end].get("role") == "system":
+        prefix_end += 1
+    for index in {prefix_end - 1, len(marked) - 1}:
+        if index < 0:
+            continue
+        message = marked[index]
+        content = message.get("content")
+        if isinstance(content, str) and content:
+            marked[index] = {
+                **message,
+                "content": [{"type": "text", "text": content, "cache_control": CACHE_CONTROL}],
+            }
+    return marked
+
+
 def agent_payload(
     model: str,
     messages: list[dict[str, Any]],
     mode: str,
     provider_preferences: dict[str, Any] | None = None,
     allowed_tools: set[str] | None = None,
+    *,
+    session_id: str | None = None,
+    max_tokens: int | None = None,
+    reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     tools = tool_schemas(mode, allowed_tools)
     # An empty allow-list forbids tool calls; the mode's definitions stay so providers can
-    # still validate earlier tool calls in the history.
-    return {
+    # still validate earlier tool calls in the history and the cached prefix is unchanged.
+    payload: dict[str, Any] = {
         "model": model,
-        "messages": messages,
+        "messages": with_cache_breakpoints(messages)
+        if needs_cache_breakpoints(model)
+        else messages,
         "tools": tools or tool_schemas(mode),
         "tool_choice": "auto" if tools else "none",
         "stream": False,
         "usage": {"include": True},
+        # Never set provider.order: a manual order disables sticky routing.
         "provider": provider_routing(provider_preferences or {}),
     }
+    if tools:
+        payload["parallel_tool_calls"] = True
+    if session_id:
+        # Sticky routing keeps one provider (and its cache) across turns and runs.
+        payload["session_id"] = session_id
+    if max_tokens:
+        payload["max_tokens"] = max(1, int(max_tokens))
+    if reasoning_effort:
+        payload["reasoning"] = {"effort": reasoning_effort}
+    return payload
+
+
+def serialize_payload(payload: dict[str, Any]) -> bytes:
+    """Deterministic request bytes: insertion-ordered keys and fixed separators."""
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
 async def agent_turn(
@@ -237,8 +277,20 @@ async def agent_turn(
     allowed_tools: set[str] | None = None,
     *,
     timeout: float = 90,
+    session_id: str | None = None,
+    max_tokens: int | None = None,
+    reasoning_effort: str | None = None,
 ) -> AgentTurn:
-    payload = agent_payload(model, messages, mode, provider_preferences, allowed_tools)
+    payload = agent_payload(
+        model,
+        messages,
+        mode,
+        provider_preferences,
+        allowed_tools,
+        session_id=session_id,
+        max_tokens=max_tokens,
+        reasoning_effort=reasoning_effort,
+    )
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -248,7 +300,9 @@ async def agent_turn(
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(timeout, connect=15.0), follow_redirects=False
         ) as client:
-            response = await client.post(OPENROUTER_URL, headers=headers, json=payload)
+            response = await client.post(
+                OPENROUTER_URL, headers=headers, content=serialize_payload(payload)
+            )
             if response.status_code >= 400:
                 status = response.status_code
                 raise ProviderError(
@@ -258,6 +312,10 @@ async def agent_turn(
                     retryable=status in RETRYABLE_STATUS or status >= 500,
                 )
             data = response.json()
+    except httpx.TimeoutException as exc:
+        raise ProviderError(
+            "provider.timeout", f"Agent request timed out after {timeout:g}s.", retryable=True
+        ) from exc
     except httpx.HTTPError as exc:
         raise ProviderError(
             "provider.connection",
@@ -270,6 +328,12 @@ async def agent_turn(
             "OpenRouter returned a non-JSON agent response.",
             retryable=True,
         ) from exc
+    if not isinstance(data, dict):
+        raise ProviderError(
+            "provider.invalid_agent_response",
+            "OpenRouter returned a malformed agent response.",
+            retryable=True,
+        )
     choices = data.get("choices") or []
     if not choices or not isinstance(choices[0].get("message"), dict):
         # OpenRouter reports upstream failures after the 200 status line as an error body.
@@ -285,8 +349,16 @@ async def agent_turn(
             str(item.get("text") or "") for item in content if isinstance(item, dict)
         )
     calls = tuple(item for item in message.get("tool_calls") or () if isinstance(item, dict))
+    finish = choices[0].get("finish_reason") or choices[0].get("native_finish_reason")
+    provider = data.get("provider")
     return AgentTurn(
-        str(content or ""), calls, message, normalize_usage(data.get("usage") or {})
+        str(content or ""),
+        calls,
+        message,
+        normalize_usage(data.get("usage") or {}),
+        str(finish) if finish else None,
+        str(provider) if provider else None,
+        str(data["model"]) if data.get("model") else None,
     )
 
 

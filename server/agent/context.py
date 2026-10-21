@@ -11,9 +11,17 @@ def estimate_message_tokens(messages: list[dict[str, Any]]) -> int:
 
 
 def compact_agent_context(
-    messages: list[dict[str, Any]], max_tokens: int, *, keep_recent: int = 4
+    messages: list[dict[str, Any]],
+    max_tokens: int,
+    *,
+    keep_recent: int = 4,
+    summary_role: str = "system",
 ) -> list[dict[str, Any]]:
-    """Bound old tool output without breaking assistant/tool-call protocol pairs."""
+    """Bound old tool output without breaking assistant/tool-call protocol pairs.
+
+    The note listing removed exchanges uses ``summary_role``; the parent loop passes ``user``
+    because providers may hoist mid-conversation system messages.
+    """
     if estimate_message_tokens(messages) <= max_tokens:
         return [dict(item) for item in messages]
 
@@ -107,7 +115,7 @@ def compact_agent_context(
     summary = "Earlier context compacted deterministically.\n" + "\n".join(summaries[-20:])
     if removed:
         insert_at = 1 if compacted and compacted[0].get("role") == "system" else 0
-        compacted.insert(insert_at, {"role": "system", "content": summary[:8000]})
+        compacted.insert(insert_at, {"role": summary_role, "content": summary[:8000]})
     while estimate_message_tokens(compacted) > max_tokens:
         candidates = [
             (len(str(item.get("content") or "")), index)
@@ -142,7 +150,10 @@ def _tool_summary(content: str) -> str:
             "compacted": True,
         }
         return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
-    return "[Compacted tool output] " + _bounded_excerpt(content)
+    # Plain-text results: the header line names the tool, target, and continuation, so it is
+    # kept whole and only the body is excerpted.
+    header, _, body = content.partition("\n")
+    return f"{header[:400]}\n[compacted] " + _bounded_excerpt(body)
 
 
 def _assistant_summary(message: dict[str, Any]) -> str:

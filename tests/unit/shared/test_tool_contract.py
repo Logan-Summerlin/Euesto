@@ -56,8 +56,8 @@ LEGACY_TOOL_NAMES = frozenset(
 )
 SCHEMA_PROPERTIES = {
     "read": {"path", "start_line", "end_line", "offset", "max_bytes"},
-    "write": {"path", "content", "expected_sha256", "create_parents"},
-    "edit": {"path", "old_str", "new_str", "expected_occurrences", "expected_sha256"},
+    "write": {"path", "content", "create_parents"},
+    "edit": {"path", "old_str", "new_str", "expected_occurrences"},
     "apply_patch": {"operations"},
     "bash": {
         "command",
@@ -76,7 +76,6 @@ SCHEMA_PROPERTIES = {
         "exclude_glob",
         "max_results",
         "context_lines",
-        "include_metadata",
         "cursor",
     },
     "find": {"path", "glob", "max_depth", "max_results", "details", "cursor"},
@@ -150,8 +149,10 @@ def test_schemas_declare_exactly_the_executor_arguments() -> None:
     for name, properties in SCHEMA_PROPERTIES.items():
         assert schemas[name]["parameters"]["additionalProperties"] is False, name
         assert set(schemas[name]["parameters"]["properties"]) == properties, name
-    for name in ("write", "edit"):
-        assert "expected_sha256" not in schemas[name]["parameters"].get("required", [])
+    # The gateway fills expected_sha256 from the last hash the agent saw, so the model never
+    # spends output tokens on hashes; include_metadata only affected the JSON envelope.
+    operation = schemas["apply_patch"]["parameters"]["properties"]["operations"]["items"]
+    assert "expected_sha256" not in operation["properties"]
 
 
 def test_model_schema_hard_maxima_match_configuration_ceilings() -> None:

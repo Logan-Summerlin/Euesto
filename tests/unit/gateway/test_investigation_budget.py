@@ -717,7 +717,7 @@ def test_provider_failure_without_evidence_reports_failure(monkeypatch):
     assert result["fallback"]
 
 
-def test_investigation_results_do_not_consume_the_parent_result_ledger(monkeypatch):
+def test_investigation_results_keep_their_own_per_result_bound(monkeypatch):
     class LargeExecutor(FakeExecutor):
         async def execute(self, request):
             return ToolResult(request.request_id, True, output="x" * 200_000)
@@ -733,8 +733,6 @@ def test_investigation_results_do_not_consume_the_parent_result_ledger(monkeypat
     monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
     runtime = AgentRuntime(LargeExecutor(), FakeApprovals(), record_event)
     runtime._api_keys["run-1"] = "api-key"
-    # The parent has nearly exhausted its own tool-result allowance.
-    runtime._tool_result_bytes["run-1"] = runtime_module.MAX_TOOL_RESULT_BYTES - 1_000
     _investigate(runtime)
 
     tool_message = next(m for m in seen[1] if m.get("role") == "tool")
@@ -742,4 +740,3 @@ def test_investigation_results_do_not_consume_the_parent_result_ledger(monkeypat
     assert not payload["data"].get("truncated")  # not starved by the parent's ledger
     assert payload["truncated"] is True  # but bounded per result
     assert len(payload["output"]) <= investigation_module.INVESTIGATION_MAX_OUTPUT_CHARS + 100
-    assert runtime._tool_result_bytes == {"run-1": runtime_module.MAX_TOOL_RESULT_BYTES - 1_000}

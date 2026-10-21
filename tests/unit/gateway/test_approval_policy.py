@@ -156,7 +156,9 @@ def _run(
     async def fake_agent_turn(model, messages, *args, **kwargs):
         turns.append(1)
         contexts.extend(
-            str(item.get("content")) for item in messages if item.get("role") == "system"
+            str(item.get("content"))
+            for item in messages
+            if item.get("role") in {"system", "user"}
         )
         if len(turns) == 1:
             return AgentTurn(
@@ -199,7 +201,7 @@ def test_accept_edits_runs_staged_edits_without_prompts_but_still_asks_for_bash(
     required = [payload["tool"] for kind, payload in events if kind == "approval.required"]
     assert required == ["bash"]
     assert any(
-        "accept_edits: write, edit, and apply_patch run without prompts" in item
+        "Approval tier: accept edits. write, edit, and apply_patch run without prompts" in item
         for item in extra
     )
     # Publication is offered for separate approval, never auto-published under this tier.

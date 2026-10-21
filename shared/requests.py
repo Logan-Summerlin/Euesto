@@ -106,6 +106,9 @@ def _object(value: object) -> dict[str, Any]:
     return dict(value)
 
 
+REASONING_EFFORTS = (None, "minimal", "low", "medium", "high")
+
+
 @dataclass(frozen=True, slots=True)
 class AgentRunRequest:
     model: str
@@ -121,8 +124,13 @@ class AgentRunRequest:
     investigation_model_id: str | None = DEFAULT_INVESTIGATION_MODEL
     investigation_call_budget: int = MAX_INVESTIGATION_CALLS
     approval_policy: Literal["prompt", "accept_edits", "auto"] = "prompt"
+    # Sent as ``reasoning.effort`` when set; the desktop sets it only for models that support
+    # reasoning, and budget presets default to "low".
+    reasoning_effort: str | None = None
 
     def __post_init__(self) -> None:
+        if self.reasoning_effort not in REASONING_EFFORTS:
+            raise ValueError("Unknown reasoning effort")
         if (
             self.mode not in {"plan", "agent"}
             or not self.model.strip()
@@ -192,6 +200,7 @@ class AgentRunRequest:
             "provider_preferences": dict(self.provider_preferences),
             "investigation_model_id": self.investigation_model_id,
             "investigation_call_budget": self.investigation_call_budget,
+            "reasoning_effort": self.reasoning_effort,
         }
 
     @classmethod
@@ -210,6 +219,7 @@ class AgentRunRequest:
             "provider_preferences",
             "investigation_model_id",
             "investigation_call_budget",
+            "reasoning_effort",
         }
         if set(data) - expected:
             raise ValueError("Unknown agent run fields")
@@ -237,6 +247,9 @@ class AgentRunRequest:
             investigation_call_budget=int(
                 data.get("investigation_call_budget") or MAX_INVESTIGATION_CALLS
             ),
+            reasoning_effort=str(data["reasoning_effort"])
+            if data.get("reasoning_effort")
+            else None,
         )
 
 

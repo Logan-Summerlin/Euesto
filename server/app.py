@@ -53,8 +53,10 @@ def create_app(
         Route(f"{run}/cancel", _cancel_run, methods=["POST"]),
         Route(f"{run}/pause", _pause_run, methods=["POST"]),
         Route(f"{run}/resume", _resume_run, methods=["POST"]),
+        Route(f"{run}/messages", _steer_run, methods=["POST"]),
         Route(f"{run}/approvals/{{approval_id:str}}", _resolve_approval, methods=["POST"]),
         Route("/v1/permissions", _permission_rules, methods=["GET"]),
+        Route("/v1/notices/{notice_id:str}/acknowledge", _acknowledge_notice, methods=["POST"]),
         Route(rule, _delete_permission_rule, methods=["DELETE"]),
         Route(f"{rule}/enabled", _set_permission_rule_enabled, methods=["PUT"]),
         Route(f"{workspace}/config", _workspace_config, methods=["GET", "PUT"]),
@@ -62,6 +64,7 @@ def create_app(
         Route(f"{workspace}/staging/discard", _discard_staging, methods=["POST"]),
         Route(f"{workspace}/staging/mark-published", _mark_staging_published, methods=["POST"]),
         Route(f"{workspace}/staging/manifest", _publication_batch, methods=["POST"]),
+        Route(f"{workspace}/staging/rebase", _rebase_staging, methods=["POST"]),
     ]
     app = Starlette(
         routes=routes,
@@ -180,6 +183,23 @@ async def _resume_run(request: Request) -> Response:
     )
 
 
+async def _steer_run(request: Request) -> Response:
+    try:
+        data = await _json(request)
+        if set(data) - {"content"} or not isinstance(data.get("content"), str):
+            raise ValueError("Steering needs exactly one text field: content")
+    except ValueError as exc:
+        return _error("request.invalid_steering", str(exc), status=422)
+    await _service(request).steer(request.path_params["run_id"], data["content"])
+    return JSONResponse({"queued": True}, status_code=202)
+
+
+async def _acknowledge_notice(request: Request) -> Response:
+    if not _service(request).journal.acknowledge_notice(request.path_params["notice_id"]):
+        return _error("notice.not_found", "Notice not found.", status=404)
+    return JSONResponse({"acknowledged": True})
+
+
 async def _resolve_approval(request: Request) -> Response:
     try:
         data = await _json(request)
@@ -283,6 +303,11 @@ async def _publication_batch(request: Request) -> Response:
     except (KeyError, TypeError, ValueError) as exc:
         return _error("request.invalid_publication_batch", str(exc), status=422)
     return JSONResponse(manifest.to_dict())
+
+
+async def _rebase_staging(request: Request) -> Response:
+    workspace_id = request.path_params["workspace_id"]
+    return JSONResponse(await _service(request).rebase_staging(workspace_id))
 
 
 async def _inspect_staging(request: Request) -> Response:

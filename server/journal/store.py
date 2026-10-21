@@ -7,7 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from shared.events import TERMINAL_EVENT_TYPES, EventEnvelope
-from shared.permissions import PermissionDecision, PermissionRule, rule_scope
+from shared.permissions import (
+    PermissionDecision,
+    PermissionRule,
+    bash_command_tokens,
+    rule_scope,
+)
 from shared.tools import ToolRequest
 
 
@@ -84,8 +89,55 @@ class JournalStore:
                     payload_json TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS notices (
+                    notice_id TEXT PRIMARY KEY,
+                    message TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    acknowledged INTEGER NOT NULL DEFAULT 0
+                );
                 """
             )
+            self._migrate()
+
+    SCHEMA_VERSION = 1
+
+    def _migrate(self) -> None:
+        """Apply one-time data migrations, tracked in SQLite's ``user_version``."""
+        version = int(self._connection.execute("PRAGMA user_version").fetchone()[0])
+        if version < 1:
+            # Saved Bash rules used to be stored without their command, so they allowed every
+            # command. Disable them; the user re-creates narrow rules from new approvals.
+            cursor = self._connection.execute(
+                "UPDATE permission_rules SET enabled = 0 "
+                "WHERE tool = 'bash' AND executable IS NULL AND enabled = 1"
+            )
+            if cursor.rowcount > 0:
+                self._connection.execute(
+                    "INSERT OR IGNORE INTO notices VALUES (?, ?, datetime('now'), 0)",
+                    (
+                        "broad-bash-rules-disabled",
+                        f"{cursor.rowcount} saved Bash rule(s) allowed every command and were "
+                        "disabled. New 'always allow' approvals save a rule for that command "
+                        "only.",
+                    ),
+                )
+        self._connection.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
+
+    def notices(self) -> list[dict[str, str]]:
+        """Unacknowledged one-time notices for the desktop."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT notice_id, message FROM notices WHERE acknowledged = 0 "
+                "ORDER BY created_at, notice_id"
+            ).fetchall()
+        return [{"notice_id": row["notice_id"], "message": row["message"]} for row in rows]
+
+    def acknowledge_notice(self, notice_id: str) -> bool:
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                "UPDATE notices SET acknowledged = 1 WHERE notice_id = ?", (notice_id,)
+            )
+        return cursor.rowcount > 0
 
     def close(self) -> None:
         with self._lock:
@@ -432,8 +484,16 @@ class JournalStore:
         return cursor.rowcount > 0
 
     def rule_for_request(self, request: ToolRequest, workspace_id: str) -> PermissionRule:
-        executable = str(request.arguments.get("executable") or "") or None
-        arguments = tuple(str(item) for item in request.arguments.get("arguments") or ())
+        """The saved rule an "always allow" approval creates; Bash scopes to its command's
+        tokenized executable and argument prefix, exactly as per-run rules do."""
+        executable: str | None = None
+        arguments: tuple[str, ...] = ()
+        if request.tool == "bash":
+            executable, arguments = bash_command_tokens(
+                str(request.arguments.get("command") or "")
+            )
+            if executable is None:
+                raise ValueError("A Bash rule needs a command with an executable")
         return PermissionRule(
             rule_id=f"rule-{request.request_id}",
             decision=PermissionDecision.ALLOW_RULE,

@@ -59,20 +59,39 @@ class PermissionRule:
                 for path in paths
             ):
                 return False
+        if (
+            request.tool == "bash"
+            and self.executable is None
+            and self.decision != PermissionDecision.DENY
+        ):
+            # An allow rule must name the command it allows; a broad one never matches.
+            return False
         if self.executable is not None:
             if request.tool != "bash":
                 return False
-            try:
-                tokens = shlex.split(str(request.arguments.get("command") or ""), posix=True)
-            except ValueError:
-                return False
+            executable, arguments = bash_command_tokens(
+                str(request.arguments.get("command") or "")
+            )
             if (
-                not tokens
-                or tokens[0] != self.executable
-                or tokens[1 : 1 + len(self.argument_prefix)] != list(self.argument_prefix)
+                executable != self.executable
+                or arguments[: len(self.argument_prefix)] != self.argument_prefix
             ):
                 return False
         return True
+
+
+def bash_command_tokens(command: str) -> tuple[str | None, tuple[str, ...]]:
+    """The executable and arguments a Bash rule is scoped to, as POSIX shell tokens.
+
+    Both per-run and saved rules store exactly these, so a rule never widens to every command.
+    """
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return None, ()
+    if not tokens:
+        return None, ()
+    return tokens[0], tuple(tokens[1:])
 
 
 def request_paths(request: ToolRequest) -> list[str]:

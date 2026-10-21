@@ -87,3 +87,11 @@ class ExecutorClient:
 
     async def discard_staging(self) -> dict:
         return await self._json("POST", "/v1/staging/discard", timeout=30)
+
+    async def workspace_snapshot(self) -> dict:
+        """The deterministic workspace snapshot and published ``AGENTS.md`` for a session."""
+        return await self._json("GET", "/v1/workspace-snapshot", timeout=30)
+
+    async def rebase_staging(self) -> dict:
+        """Absorb host changes made since the staging baseline (see docs/PUBLICATION.md)."""
+        return await self._json("POST", "/v1/staging/rebase", timeout=120)

@@ -29,6 +29,8 @@ from .openrouter.catalog import GatewayCatalog
 from .openrouter.client import OpenRouterGatewayClient
 from .openrouter.errors import ProviderError
 
+MAX_STEERING_CHARS = 8_000
+
 
 class GatewayServiceError(RuntimeError):
     def __init__(self, code: str, message: str, *, retryable: bool = False, status: int = 400):
@@ -121,7 +123,7 @@ class GatewayService:
                     "requires_approval": False,
                     "custom": False,
                 }
-                for name in ("agent_accept_edits", "agent_auto")
+                for name in ("agent_accept_edits", "agent_auto", "agent_steering")
             )
             capabilities += discover_custom_capabilities(
                 self.journal.load_workspace_config(self.config.workspace_id)
@@ -142,6 +144,7 @@ class GatewayService:
             openrouter_key_configured=bool(self.openrouter_key),
             capabilities=capabilities,
             resumable_runs=tuple(self.journal.resumable_runs()),
+            notices=tuple(self.journal.notices()),
         )
 
     def _active_executor(self, workspace_id: str) -> ExecutorClient:
@@ -161,6 +164,23 @@ class GatewayService:
             raise GatewayServiceError(
                 "staging.discard_failed",
                 "The executor could not reseed the staging workspace.",
+                retryable=True,
+                status=409,
+            ) from exc
+
+    async def rebase_staging(self, workspace_id: str) -> dict[str, Any]:
+        """Bring host changes made since the staging baseline into staging (2.4)."""
+        executor = self._active_executor(workspace_id)
+        if any(not task.done() for task in self._tasks.values()):
+            raise GatewayServiceError(
+                "staging.busy", "Wait for the active run to finish before rebasing.", status=409
+            )
+        try:
+            return await executor.rebase_staging()
+        except Exception as exc:
+            raise GatewayServiceError(
+                "staging.rebase_failed",
+                "The executor could not rebase staging onto the host workspace.",
                 retryable=True,
                 status=409,
             ) from exc
@@ -270,7 +290,7 @@ class GatewayService:
                 "Recreate the executor for the selected workspace.",
                 status=409,
             )
-        if request.approval_policy == "auto" and not request.investigation_model_id:
+        if request.approval_policy == "auto":
             assert self.executor is not None
             environment = await self._staging_environment(self.executor)
             if environment.get("unpublished_changes"):
@@ -393,10 +413,44 @@ class GatewayService:
                     "Publish approvals cannot become saved rules.",
                     status=422,
                 )
-            self.journal.save_permission_rule(
-                self.journal.rule_for_request(pending.request, pending.workspace_id)
-            )
+            try:
+                rule = self.journal.rule_for_request(pending.request, pending.workspace_id)
+            except ValueError as exc:
+                raise GatewayServiceError(
+                    "approval.invalid_scope", str(exc), status=422
+                ) from exc
+            self.journal.save_permission_rule(rule)
         return self.approvals.resolve(run_id, approval_id, parsed)
+
+    async def steer(self, run_id: str, content: str) -> None:
+        """Queue a user message for the next model turn of an active Plan or Agent run."""
+        run = self.journal.get_run(run_id)
+        if run is None:
+            raise GatewayServiceError("run.not_found", "Run not found.", status=404)
+        text = content.strip()
+        if not text:
+            raise GatewayServiceError("steering.empty", "Steering text is empty.", status=422)
+        if len(text) > MAX_STEERING_CHARS:
+            raise GatewayServiceError(
+                "steering.too_large",
+                f"Steering text exceeds {MAX_STEERING_CHARS} characters.",
+                status=422,
+            )
+        runtime = self.agent_runtime
+        if (
+            run.get("mode") not in {"plan", "agent"}
+            or self.journal.is_terminal(run_id)
+            or runtime is None
+            or not runtime.is_active(run_id)
+        ):
+            raise GatewayServiceError(
+                "run.not_active", "Steering needs an active Plan or Agent run.", status=409
+            )
+        if not runtime.steer(run_id, text):
+            raise GatewayServiceError(
+                "steering.queue_full", "Too many steering messages are waiting.", status=429
+            )
+        await self._append(run_id, "input.steered", {"text": text, "chars": len(text)})
 
     async def cancel(self, run_id: str) -> bool:
         if self.journal.get_run(run_id) is None:

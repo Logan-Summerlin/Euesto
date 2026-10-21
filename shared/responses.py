@@ -22,6 +22,7 @@ class GatewayStatus:
     openrouter_key_configured: bool = False
     capabilities: tuple[dict[str, Any], ...] = ()
     resumable_runs: tuple[str, ...] = ()
+    notices: tuple[dict[str, Any], ...] = ()
 
     def serves_workspace(self, identity: str | None) -> bool:
         """Whether the gateway and its executor are ready to run Plan and Agent on ``identity``."""
@@ -41,6 +42,7 @@ class GatewayStatus:
         data["supported_modes"] = list(self.supported_modes)
         data["capabilities"] = [dict(item) for item in self.capabilities]
         data["resumable_runs"] = list(self.resumable_runs)
+        data["notices"] = [dict(item) for item in self.notices]
         return data
 
     @classmethod
@@ -63,6 +65,9 @@ class GatewayStatus:
                 dict(item) for item in data.get("capabilities") or () if isinstance(item, dict)
             ),
             resumable_runs=tuple(str(item) for item in data.get("resumable_runs") or ()),
+            notices=tuple(
+                dict(item) for item in data.get("notices") or () if isinstance(item, dict)
+            ),
         )
 
 

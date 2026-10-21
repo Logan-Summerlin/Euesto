@@ -16,6 +16,7 @@ from server.agent.budgets import (
     BudgetExceededError,
     RunBudget,
     requires_budget_approval,
+    resolve_budget_profile,
 )
 from server.agent.runtime import AgentRuntime
 from shared.requests import AgentRunRequest
@@ -105,7 +106,6 @@ class _FakeApprovals:
 async def _assert_bash_timeout_clamp() -> None:
     executor = _FakeExecutor()
     runtime = AgentRuntime(executor, _FakeApprovals(), lambda *_args: asyncio.sleep(0))
-    runtime._tool_result_bytes["run"] = 0
     request = AgentRunRequest(
         model="test-model",
         messages=({"role": "user", "content": "run bash"},),
@@ -127,6 +127,7 @@ async def _assert_bash_timeout_clamp() -> None:
         },
         [],
         budget,
+        resolve_budget_profile("coding"),
     )
     assert executor.request is not None
     assert 1 <= executor.request.arguments["timeout_seconds"] <= 17
