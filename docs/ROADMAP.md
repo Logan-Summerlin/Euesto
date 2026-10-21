@@ -29,6 +29,7 @@ This document is a status-oriented roadmap. It is not the authoritative architec
 - Improve observability and recovery UX without expanding executor authority.
 - Add narrowly scoped usability improvements that preserve the current security and publication model.
 - Keep resource defaults evidence-based as real workloads reveal bottlenecks.
+- Turn the harness into a capable, long-running software-engineering agent without weakening the boundary: see [AGENTIC_HARNESS_PLAN.md](AGENTIC_HARNESS_PLAN.md) (proposed; it states which open items below it covers).
 
 ### Open items carried from archived plans
 
@@ -42,7 +43,7 @@ From [the harness fix plan](../archived-doc/harness-fix-plan.md):
   - lightweight symbol and reference navigation (for example `symbols(path)` and `references(symbol)` from an index built at staging time), not full LSP integration;
   - a graceful budget wind-down that summarizes staged progress and offers to continue in a fresh run instead of failing with `run.failed`;
   - structured reduction of large tool output for the highest-value formats (test runners, compilers, linters) before head+tail truncation;
-  - a small agent-efficacy benchmark suite tracked over time (success rate, tool calls, rollback frequency).
+  - ~~a small agent-efficacy benchmark suite~~: declined; loop and prompt changes are validated by the credential-free test suite, including scripted-provider scenario tests (see [AGENTIC_HARNESS_PLAN.md](AGENTIC_HARNESS_PLAN.md)).
 
 From [the code-simplification plan](../archived-doc/simplification-plan.md), findings that need a product or security decision:
 
