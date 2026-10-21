@@ -303,6 +303,28 @@ class BashRunner:
         finally:
             writer.close()
 
+    async def probe(self, names: list[str]) -> list[str] | None:
+        """Which of ``names`` the runner's image provides; None when the runner is unreachable."""
+        if self.runner_socket is None:
+            return None
+        try:
+            reader, writer = await self._connect()
+        except RunnerUnavailable:
+            return None
+        try:
+            request = {"op": "probe", "request_id": "probe", "names": names}
+            writer.write(json.dumps(request).encode("utf-8") + b"\n")
+            await writer.drain()
+            reply = json.loads(await asyncio.wait_for(reader.readline(), timeout=5))
+        except (OSError, TimeoutError, ValueError):
+            return None
+        finally:
+            writer.close()
+        found = reply.get("executables") if isinstance(reply, dict) else None
+        if not isinstance(found, list):
+            return None
+        return [name for name in names if name in found]
+
     async def _connect(self) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         assert self.runner_socket is not None
         try:
@@ -487,3 +509,4 @@ _runner = BashRunner()
 bash = _runner.run
 cancel = _runner.cancel
 configure_runner = _runner.configure
+probe_runner = _runner.probe

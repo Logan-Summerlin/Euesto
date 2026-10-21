@@ -153,3 +153,39 @@ def test_working_directories_outside_the_work_root_are_refused(tmp_path: Path) -
 
     [refused] = _serve(tmp_path, scenario)
     assert refused["event"] == "error" and refused["code"] == "runner.invalid"
+
+
+def test_probe_reports_only_requested_executables_on_the_fixed_path() -> None:
+    from runner.server import probe
+
+    assert parse_request(b'{"op":"probe","request_id":"p","names":["sh","x"]}')["names"] == [
+        "sh",
+        "x",
+    ]
+    for names in ('"sh"', '["../bin/sh"]', '["a b"]', "[" + ",".join(['"a"'] * 65) + "]"):
+        with pytest.raises(RequestError):
+            parse_request(f'{{"op":"probe","request_id":"p","names":{names}}}'.encode())
+    assert probe(["sh", "definitely-not-installed-euesto"]) == ["sh"]
+
+
+def test_commands_get_cache_locations_unless_the_request_sets_them(tmp_path: Path) -> None:
+    async def main():
+        socket_path = tmp_path / "runner.sock"
+        work = tmp_path / "work"
+        work.mkdir()
+        state = RunnerServer(work, cache_dir=tmp_path / "cache")
+        server = await asyncio.start_unix_server(state.handle, path=str(socket_path))
+        try:
+            return await _exchange(
+                socket_path,
+                request(
+                    command='echo "$PIP_CACHE_DIR|$GOCACHE"',
+                    env={"PATH": "/usr/bin:/bin", "GOCACHE": "/work/.go"},
+                ),
+            )
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    _started, result = asyncio.run(main())
+    assert result["stdout"].strip() == f"{tmp_path / 'cache'}/pip|/work/.go"

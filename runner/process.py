@@ -84,6 +84,7 @@ class OutputLog:
         self.relative = f"{OUTPUT_DIRECTORY}/{request_id}.log"
         self.bytes_written = 0
         self.truncated = False
+        self.opened = False
         self._fd: int | None = None
         try:
             directory = _open_output_directory(work_root)
@@ -100,6 +101,7 @@ class OutputLog:
             self._fd = None
         finally:
             os.close(directory)
+        self.opened = self._fd is not None
 
     @property
     def available(self) -> bool:
@@ -242,7 +244,7 @@ async def run_process(
         "timed_out": timed_out,
         "stdout": stdout,
         "stderr": stderr,
-        "log_path": log.relative if log.available or log.bytes_written else None,
+        "log_path": log.relative if log.opened else None,
         "log_bytes": log.bytes_written,
         "log_truncated": log.truncated,
     }

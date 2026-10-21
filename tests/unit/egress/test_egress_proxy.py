@@ -180,19 +180,27 @@ def _block(text: str, header: str) -> str:
 def test_default_compose_profile_is_unchanged_and_the_overlay_is_isolated() -> None:
     base = (ROOT / "docker" / "compose.yaml").read_text(encoding="utf-8")
     executor = _block(base, "  executor:")
-    assert "network_mode: none" in executor
-    assert "networks:" not in executor and "egress" not in base.casefold()
+    runner = _block(base, "  runner:")
+    for service in (executor, runner):
+        assert "network_mode: none" in service
+        assert "networks:" not in service
+    assert "egress" not in base.casefold()
 
     overlay = (ROOT / "docker" / "compose.egress.yaml").read_text(encoding="utf-8")
     overlay_executor = _block(overlay, "  executor:")
+    overlay_runner = _block(overlay, "  runner:")
     proxy = _block(overlay, "  egress-proxy:")
     internal = _block(overlay, "  egress-internal:")
     assert "internal: true" in internal
-    assert "network_mode: !reset null" in overlay_executor
-    assert "egress-internal:" in overlay_executor and "egress-external" not in overlay_executor
-    assert "dns:\n      - 127.0.0.1" in overlay_executor
-    assert "tmpfs: !override" in overlay_executor and "nosuid,nodev,exec" in overlay_executor
-    assert ",exec" not in base and "noexec" in _block(base, "  executor:")
+    # Commands run in the runner, so only the runner joins the internal network; the
+    # executor keeps `network_mode: none` and only learns the proxy address.
+    assert "network_mode" not in overlay_executor and "networks:" not in overlay_executor
+    assert "network_mode: !reset null" in overlay_runner
+    assert "egress-internal:" in overlay_runner and "egress-external" not in overlay_runner
+    assert "dns:\n      - 127.0.0.1" in overlay_runner
+    # /work is exec in every profile (plan 2.3), so the overlay no longer overrides mounts.
+    assert "tmpfs" not in overlay_runner and "tmpfs" not in overlay_executor
+    assert "noexec" in _block(base, "  executor:")
     assert 'profiles: ["agent"]' in proxy and "ports:" not in proxy
     assert (
         "read_only: true" in proxy

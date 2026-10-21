@@ -4,6 +4,8 @@ umask 007
 test -d /source
 test -r /source
 test -w /work
+test -w /state
+test -d /run/runner
 executor_token_file=${LOCAL_CHAT_EXECUTOR_TOKEN_FILE:-/run/secrets/executor_token}
 test -r "$executor_token_file"
 test "${LOCAL_CHAT_WORKSPACE_ID:-UNSELECTED}" != "UNSELECTED"

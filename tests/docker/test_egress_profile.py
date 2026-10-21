@@ -19,6 +19,11 @@ pytestmark = pytest.mark.docker
 ROOT = Path(__file__).resolve().parents[2]
 COMPOSE = ["docker", "compose", "--file", str(ROOT / "docker" / "compose.yaml")]
 EGRESS = [*COMPOSE, "--file", str(ROOT / "docker" / "compose.egress.yaml")]
+# What the executor passes into each command's environment in this profile.
+PROXY_ENV = {
+    "HTTPS_PROXY": "http://172.31.250.2:3128",
+    "HTTP_PROXY": "http://172.31.250.2:3128",
+}
 
 
 def _available() -> bool:
@@ -55,6 +60,7 @@ def test_default_profile_renders_without_any_network() -> None:
     )
     executor = rendered["services"]["executor"]
     assert executor.get("network_mode") == "none"
+    assert rendered["services"]["runner"].get("network_mode") == "none"
     assert "egress-proxy" not in rendered["services"]
 
 
@@ -64,7 +70,9 @@ def test_allowlisted_pip_install_succeeds_and_other_hosts_are_refused_and_logged
     rendered = json.loads(
         _run([*EGRESS, "--profile", "agent", "config", "--format", "json"]).stdout
     )
-    assert "network_mode" not in rendered["services"]["executor"]
+    # Commands run in the runner, so only the runner joins the internal network.
+    assert "network_mode" not in rendered["services"]["runner"]
+    assert rendered["services"]["executor"]["network_mode"] == "none"
     assert rendered["networks"]["egress-internal"]["internal"] is True
     try:
         _run(
@@ -72,20 +80,18 @@ def test_allowlisted_pip_install_succeeds_and_other_hosts_are_refused_and_logged
         )
         install = (
             "import os, subprocess, sys\n"
-            "from executor.egress import proxy_environment\n"
-            "env = {**os.environ, **proxy_environment(), 'HOME': '/tmp'}\n"
+            f"env = {{**os.environ, **{PROXY_ENV!r}, 'HOME': '/tmp'}}\n"
             "subprocess.run([sys.executable, '-m', 'venv', '/work/.egress-venv'], check=True)\n"
             "sys.exit(subprocess.call(['/work/.egress-venv/bin/pip', 'install', '--no-cache-dir', 'six'], env=env))\n"
         )
         result = _run(
-            [*EGRESS, "--profile", "agent", "exec", "-T", "executor", "python", "-c", install],
+            [*EGRESS, "--profile", "agent", "exec", "-T", "runner", "python3", "-c", install],
             check=False,
         )
         assert result.returncode == 0, result.stdout + result.stderr
         refused = (
             "import os, urllib.request\n"
-            "from executor.egress import proxy_environment\n"
-            "os.environ.update(proxy_environment())\n"
+            f"os.environ.update({PROXY_ENV!r})\n"
             "try:\n"
             "    urllib.request.urlopen('https://example.com/', timeout=15)\n"
             "except Exception as exc:\n"
@@ -94,7 +100,7 @@ def test_allowlisted_pip_install_succeeds_and_other_hosts_are_refused_and_logged
             "    raise SystemExit('non-allowlisted host was reachable')\n"
         )
         result = _run(
-            [*EGRESS, "--profile", "agent", "exec", "-T", "executor", "python", "-c", refused],
+            [*EGRESS, "--profile", "agent", "exec", "-T", "runner", "python3", "-c", refused],
             check=False,
         )
         assert result.returncode == 0 and "refused" in result.stdout, (
@@ -109,8 +115,8 @@ def test_allowlisted_pip_install_succeeds_and_other_hosts_are_refused_and_logged
                     "agent",
                     "exec",
                     "-T",
-                    "executor",
-                    "python",
+                    "runner",
+                    "python3",
                     "-c",
                     direct,
                 ],

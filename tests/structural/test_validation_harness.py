@@ -5,6 +5,8 @@ from pathlib import Path
 
 import scripts.validate as validate
 
+ROOT = Path(__file__).resolve().parents[2]
+
 
 def test_validation_commands_use_explicit_tiers_and_active_python() -> None:
     commands = validate.commands("all")
@@ -98,3 +100,19 @@ def test_validate_script_runs_as_a_command() -> None:
         timeout=60,
     )
     assert " python: " in result.stdout
+
+
+def test_dev_lock_matches_the_gateway_image_web_stack() -> None:
+    """Tests run against the same Starlette, uvicorn, and httpx the images ship (plan 0.5)."""
+    import re
+
+    def pins(name: str) -> dict[str, str]:
+        text = (ROOT / name).read_text(encoding="utf-8")
+        return {
+            match[0].casefold(): match[1]
+            for match in re.findall(r"^([A-Za-z0-9_.-]+)==([^\s\\]+)", text, re.MULTILINE)
+        }
+
+    lock, gateway = pins("requirements-dev.lock"), pins("requirements-gateway.txt")
+    for package in ("starlette", "uvicorn", "httpx"):
+        assert lock[package] == gateway[package], package

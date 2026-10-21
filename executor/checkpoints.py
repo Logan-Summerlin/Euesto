@@ -73,19 +73,21 @@ def create_checkpoint(
         raise ExecutorToolError(
             LIMIT_EXCEEDED, "Staging is too large for a bounded recovery checkpoint."
         )
-    actual_capacity = shutil.disk_usage(work_root).total
-    required_capacity = total + max_total_bytes + ExecutorConfig.REQUIRED_TEMP_HEADROOM_BYTES
-    if actual_capacity <= required_capacity:
-        raise ExecutorToolError(
-            LIMIT_EXCEEDED,
-            "Checkpoint would exceed the combined /work resource budget: "
-            f"staging={total}, checkpoint={max_total_bytes}, "
-            f"temporary={ExecutorConfig.REQUIRED_TEMP_HEADROOM_BYTES}, capacity={actual_capacity}.",
-        )
-
     root = store_root(work_root)
     objects = root / "objects"
     objects.mkdir(parents=True, exist_ok=True)
+    # Staging and checkpoints live on persistent volumes, so the bound is the free space
+    # left on the checkpoint store: a new checkpoint adds at most ``total`` bytes.
+    free = shutil.disk_usage(root).free
+    required = total + ExecutorConfig.REQUIRED_TEMP_HEADROOM_BYTES
+    if free <= required:
+        raise ExecutorToolError(
+            LIMIT_EXCEEDED,
+            "Checkpoint would exceed the free space on the state volume: "
+            f"staging={total}, temporary={ExecutorConfig.REQUIRED_TEMP_HEADROOM_BYTES}, "
+            f"free={free}.",
+        )
+
     checkpoint_id = str(uuid.uuid4())
     directory = root / checkpoint_id
     directory.mkdir()

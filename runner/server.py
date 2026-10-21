@@ -7,6 +7,11 @@ Protocol (one request per connection, newline-delimited JSON):
   ``{"event": "result", ...}`` when it ends. Only one run is active at a time; a second
   request while one runs is refused with ``{"event": "error", "code": "runner.busy"}``.
 * ``{"op": "cancel", "request_id"}`` answers ``{"cancelled": bool}``.
+* ``{"op": "probe", "request_id", "names"}`` answers ``{"executables": [...]}``: which of
+  ``names`` the toolchain image provides on the fixed command ``PATH``.
+
+With ``--cache-dir``, commands get package-manager cache locations on that volume unless the
+request already sets them, so downloads and builds survive between commands and sessions.
 
 Commands may reach this socket themselves (it lives in their container), which grants nothing
 they could not already do: they run as the same user, the server refuses concurrent runs, and
@@ -19,6 +24,8 @@ import argparse
 import asyncio
 import json
 import os
+import re
+import shutil
 import signal
 from pathlib import Path
 
@@ -32,9 +39,29 @@ from .process import (
 MAX_REQUEST_BYTES = 4_000_000
 MAX_TIMEOUT_SECONDS = 900
 MAX_ENV_VARS = 128
+MAX_PROBE_NAMES = 64
+COMMAND_PATH = "/usr/local/bin:/usr/bin:/bin"
 REQUEST_FIELDS = frozenset(
-    {"op", "request_id", "command", "cwd", "env", "stdin", "timeout", "max_output"}
+    {"op", "request_id", "command", "cwd", "env", "stdin", "timeout", "max_output", "names"}
 )
+_EXECUTABLE_NAME = re.compile(r"^[A-Za-z0-9._+-]{1,64}$")
+
+
+def cache_environment(cache_dir: Path) -> dict[str, str]:
+    """Package-manager cache locations beneath the runner's cache volume."""
+    root = os.fspath(cache_dir)
+    return {
+        "XDG_CACHE_HOME": root,
+        "PIP_CACHE_DIR": f"{root}/pip",
+        "UV_CACHE_DIR": f"{root}/uv",
+        "npm_config_cache": f"{root}/npm",
+        "YARN_CACHE_FOLDER": f"{root}/yarn",
+        "COREPACK_HOME": f"{root}/corepack",
+        "GOPATH": f"{root}/go",
+        "GOCACHE": f"{root}/go-build",
+        "CARGO_HOME": f"{root}/cargo",
+        "GRADLE_USER_HOME": f"{root}/gradle",
+    }
 
 
 class RequestError(ValueError):
@@ -42,9 +69,12 @@ class RequestError(ValueError):
 
 
 class RunnerServer:
-    def __init__(self, work_root: Path, *, sweep: bool = False) -> None:
+    def __init__(
+        self, work_root: Path, *, sweep: bool = False, cache_dir: Path | None = None
+    ) -> None:
         self.work_root = work_root.resolve(strict=True)
         self.sweep = sweep
+        self.defaults = cache_environment(cache_dir) if cache_dir is not None else {}
         self._active: str | None = None
         self._pid: int | None = None
         self._task: asyncio.Task[dict[str, object]] | None = None
@@ -62,6 +92,9 @@ class RunnerServer:
                 return
             if request["op"] == "cancel":
                 await _send(writer, {"cancelled": await self.cancel(request["request_id"])})
+                return
+            if request["op"] == "probe":
+                await _send(writer, {"executables": probe(request["names"])})
                 return
             await self._run(request, writer)
         except (ConnectionError, asyncio.IncompleteReadError):
@@ -87,7 +120,7 @@ class RunnerServer:
                     request_id,
                     request["command"],
                     cwd,
-                    request["env"],
+                    {**self.defaults, **request["env"]},
                     request["stdin"],
                     request["max_output"],
                     request["timeout"],
@@ -182,8 +215,19 @@ def parse_request(line: bytes) -> dict:
         raise RequestError("request_id is required")
     if request.get("op") == "cancel":
         return {"op": "cancel", "request_id": request_id}
+    if request.get("op") == "probe":
+        names = request.get("names")
+        if (
+            not isinstance(names, list)
+            or len(names) > MAX_PROBE_NAMES
+            or not all(
+                isinstance(name, str) and _EXECUTABLE_NAME.fullmatch(name) for name in names
+            )
+        ):
+            raise RequestError("names must be a bounded list of executable names")
+        return {"op": "probe", "request_id": request_id, "names": names}
     if request.get("op") != "run":
-        raise RequestError("op must be run or cancel")
+        raise RequestError("op must be run, cancel, or probe")
     command = request.get("command")
     if not isinstance(command, str) or not command.strip() or "\x00" in command:
         raise RequestError("command must be non-empty text")
@@ -223,13 +267,20 @@ def parse_request(line: bytes) -> dict:
     }
 
 
+def probe(names: list[str]) -> list[str]:
+    """The requested executables present on the fixed command ``PATH``, in request order."""
+    return [name for name in names if shutil.which(name, path=COMMAND_PATH) is not None]
+
+
 async def _send(writer: asyncio.StreamWriter, message: dict) -> None:
     writer.write(json.dumps(message, separators=(",", ":")).encode("utf-8") + b"\n")
     await writer.drain()
 
 
-async def serve(socket_path: Path, work_root: Path, *, sweep: bool) -> None:
-    server_state = RunnerServer(work_root, sweep=sweep)
+async def serve(
+    socket_path: Path, work_root: Path, *, sweep: bool, cache_dir: Path | None = None
+) -> None:
+    server_state = RunnerServer(work_root, sweep=sweep, cache_dir=cache_dir)
     socket_path.unlink(missing_ok=True)
     server = await asyncio.start_unix_server(
         server_state.handle, path=os.fspath(socket_path), limit=MAX_REQUEST_BYTES + 1
@@ -248,9 +299,19 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="kill every other process in the container after each command",
     )
+    parser.add_argument(
+        "--cache-dir", type=Path, default=None, help="package-manager cache volume"
+    )
     arguments = parser.parse_args(argv)
     os.umask(0o007)
-    asyncio.run(serve(arguments.socket, arguments.work_root, sweep=arguments.sweep))
+    asyncio.run(
+        serve(
+            arguments.socket,
+            arguments.work_root,
+            sweep=arguments.sweep,
+            cache_dir=arguments.cache_dir,
+        )
+    )
 
 
 if __name__ == "__main__":

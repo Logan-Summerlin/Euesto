@@ -201,3 +201,10 @@ def test_agents_md_is_bounded_and_never_followed_through_a_link(tmp_path: Path) 
     if os.name == "posix":
         (linked / "AGENTS.md").symlink_to(tmp_path / "AGENTS.md")
         assert agents_md(linked) == ("", False)
+
+
+@pytest.mark.posix
+def test_a_silent_command_still_names_its_empty_log(service: ExecutorService) -> None:
+    result = run(service, "bash", {"command": "exit 3"}, "req-silent")
+    assert result.data["log_path"] == f"{OUTPUT_DIRECTORY}/req-silent.log"
+    assert result.data["log_bytes"] == 0

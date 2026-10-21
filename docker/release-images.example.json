@@ -1,5 +1,11 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "gateway": "ghcr.io/logan-summerlin/local-openrouter-chat-gateway:v1.1.0@sha256:replace-with-release-digest",
-  "executor": "ghcr.io/logan-summerlin/local-openrouter-chat-executor:v1.1.0@sha256:replace-with-release-digest"
+  "executor": "ghcr.io/logan-summerlin/local-openrouter-chat-executor:v1.1.0@sha256:replace-with-release-digest",
+  "runners": {
+    "base": "ghcr.io/logan-summerlin/euesto-runner-base:v1.1.0@sha256:replace-with-release-digest",
+    "python": "ghcr.io/logan-summerlin/euesto-runner-python:v1.1.0@sha256:replace-with-release-digest",
+    "node": "ghcr.io/logan-summerlin/euesto-runner-node:v1.1.0@sha256:replace-with-release-digest",
+    "polyglot": "ghcr.io/logan-summerlin/euesto-runner-polyglot:v1.1.0@sha256:replace-with-release-digest"
+  }
 }

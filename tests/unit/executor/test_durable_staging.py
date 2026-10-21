@@ -124,6 +124,19 @@ def test_a_removed_work_volume_with_surviving_state_reseeds(tmp_path: Path) -> N
     assert restarted.manifest("run", "approval").operations == ()
 
 
+def test_staging_without_a_baseline_is_cleared_and_reseeded(tmp_path: Path) -> None:
+    import shutil
+
+    service = make(tmp_path, **{"a.txt": "a"})
+    assert run(service, "write", {"path": "orphan.txt", "content": "x"}).ok
+    shutil.rmtree(service.config.state_directory)
+
+    restarted = ExecutorService(service.config)
+    assert not restarted.resumed
+    assert not (restarted.config.work_root / "orphan.txt").exists()
+    assert restarted.manifest("run", "approval").operations == ()
+
+
 def test_checkpoints_live_on_the_state_volume_not_in_staging(tmp_path: Path) -> None:
     service = make(tmp_path, **{"a.txt": "a"})
     assert run(service, "write", {"path": "a.txt", "content": "changed"}).ok

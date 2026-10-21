@@ -46,7 +46,8 @@ jobs:
 
   containers:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Builds every runner image target (tests/docker/test_runner_split.py).
+    timeout-minutes: 75
     needs: validation
     steps:
       - uses: actions/checkout@v4
@@ -77,6 +78,7 @@ jobs:
         shell: bash
         run: |
           trap 'docker compose --file docker/compose.yaml --file docker/compose.egress.yaml --profile agent down --volumes --remove-orphans || true' EXIT
+          export LOCAL_CHAT_WORKSPACE_KEY=c1c1c1c1c1c1
           python scripts/validate.py docker
       - name: Compose policy rendering
         shell: bash
@@ -93,7 +95,13 @@ jobs:
           compose = json.loads(Path("compose.json").read_text(encoding="utf-8"))
           services = compose.get("services", {})
           executor = services.get("executor", {})
+          runner = services.get("runner", {})
           assert executor.get("network_mode") == "none", executor
+          assert runner.get("network_mode") == "none", runner
+          assert "secrets" not in runner, runner
+          assert {volume["target"] for volume in runner.get("volumes", [])} == {
+              "/work", "/cache", "/run/runner"
+          }, runner
           assert services, compose
           assert all(service.get("read_only") is True for service in services.values()), services
           assert all(

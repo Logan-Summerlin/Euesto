@@ -50,15 +50,21 @@ from .state import Baseline, Conflict, StateStore
 from .tools import apply_patch, bash, edit, find, grep, ls, read, status, write
 from .tools.apply_patch import apply_patch_paths
 from .tools.bash import cancel as cancel_bash
-from .tools.bash import configure_runner
+from .tools.bash import configure_runner, probe_runner
 
 DEVELOPER_EXECUTABLE_CANDIDATES = (
     "python",
     "python3",
+    "python3.12",
+    "python3.13",
+    "pip",
+    "uv",
     "pytest",
     "ruff",
     "node",
     "npm",
+    "npx",
+    "corepack",
     "pnpm",
     "yarn",
     "make",
@@ -70,6 +76,12 @@ DEVELOPER_EXECUTABLE_CANDIDATES = (
     "rustc",
     "java",
     "javac",
+    "git",
+    "rg",
+    "fd",
+    "jq",
+    "ctags",
+    "sqlite3",
 )
 
 
@@ -91,6 +103,8 @@ class ExecutorService:
         configure_runner(config.runner_socket)
         self.conflicts: dict[str, Conflict] = {}
         self.last_rebase: dict[str, object] = {}
+        # What the runner's toolchain image provides; probed once the runner answers.
+        self.runner_executables: list[str] | None = None
         claimed = self.state.claim()
         baseline = self.state.load() if claimed else None
         if baseline is not None and not config.work_root.is_dir():
@@ -103,9 +117,9 @@ class ExecutorService:
             self.git = sandbox_git.repository_status(self.state.root, config.git_history_depth)
             self.rebase()
         else:
-            if claimed:
-                # Identity without a baseline: an earlier seed was interrupted; start over.
-                clear_staging(config.work_root)
+            # No baseline means whatever the work volume holds is unaccounted for (an
+            # interrupted seed, or a state volume that was removed): start over from the host.
+            clear_staging(config.work_root)
             self._seed()
         self._tools = self._dispatch_table()
 
@@ -483,6 +497,10 @@ def create_app(
         return endpoint
 
     async def status(request: Request) -> JSONResponse:
+        if resolved.runner_socket is not None and executor.runner_executables is None:
+            executor.runner_executables = await probe_runner(
+                list(DEVELOPER_EXECUTABLE_CANDIDATES)
+            )
         return JSONResponse(
             {
                 "ready": True,
@@ -608,11 +626,15 @@ def _environment_context(
     config: ExecutorConfig, executor: ExecutorService
 ) -> dict[str, object]:
     snapshot = executor.snapshot
-    available = [
-        name
-        for name in DEVELOPER_EXECUTABLE_CANDIDATES
-        if shutil.which(name, path="/usr/local/bin:/usr/bin:/bin") is not None
-    ]
+    if config.runner_socket is not None:
+        # Commands run in the runner container, so its image decides what is installed.
+        available = executor.runner_executables or []
+    else:
+        available = [
+            name
+            for name in DEVELOPER_EXECUTABLE_CANDIDATES
+            if shutil.which(name, path="/usr/local/bin:/usr/bin:/bin") is not None
+        ]
     try:
         unpublished_changes = bool(workspace_changes(snapshot, config.work_root))
     except (OSError, ValueError):
@@ -646,6 +668,8 @@ def _environment_context(
         "git_history": executor.git,
         "runner_image": config.runner_image or None,
         "command_runner": "runner_container" if config.runner_socket else "in_process",
+        "command_runner_reachable": config.runner_socket is None
+        or executor.runner_executables is not None,
         "unpublished_changes": unpublished_changes,
         "publication_status": "host_publication_pending_review"
         if unpublished_changes

@@ -51,6 +51,8 @@ services:
         max-file: "3"
 
   executor:
+    # The control plane: file tools, status, checkpoints, baselines, and manifests. It owns the
+    # gateway-facing socket and credential and never runs commands (the runner does).
     profiles: ["agent"]
     build:
       context: ..
@@ -70,6 +72,10 @@ services:
       LOCAL_CHAT_EXECUTOR_PROFILE: ${LOCAL_CHAT_EXECUTOR_PROFILE:-coding}
       LOCAL_CHAT_WORK_CAPACITY_BYTES: ${LOCAL_CHAT_WORK_CAPACITY_BYTES:-8000000000}
       LOCAL_CHAT_WORKSPACE_ID: ${LOCAL_CHAT_WORKSPACE_ID:-UNSELECTED}
+      LOCAL_CHAT_STATE_ROOT: /state
+      LOCAL_CHAT_RUNNER_SOCKET: /run/runner/runner.sock
+      LOCAL_CHAT_RUNNER_IMAGE: ${LOCAL_CHAT_RUNNER_IMAGE:-local-openrouter-chat-runner-python:1.1.0}
+      LOCAL_CHAT_GIT_HISTORY_DEPTH: ${LOCAL_CHAT_GIT_HISTORY_DEPTH:-200}
     secrets:
       - executor_token
     volumes:
@@ -78,12 +84,18 @@ services:
         target: /source
         read_only: true
       - executor-ipc:/run/ipc
+      - runner-ipc:/run/runner
+      # Persistent, disposable staging: kept by `compose down`, removed only by Discard.
+      - work:/work
+      - state:/state
     tmpfs:
-      - /work:size=${LOCAL_CHAT_WORK_TMPFS_SIZE:-8g},mode=0700,uid=10002,gid=10001,nosuid,nodev
       - /tmp:size=64m,mode=1777,noexec,nosuid,nodev
+    depends_on:
+      runner:
+        condition: service_started
     pids_limit: 128
-    mem_limit: 3g
-    cpus: 2.0
+    mem_limit: 1g
+    cpus: 1.0
     stop_grace_period: 5s
     healthcheck:
       test:
@@ -91,6 +103,52 @@ services:
         - python
         - -c
         - "import socket; s=socket.socket(socket.AF_UNIX); s.settimeout(1); s.connect('/run/ipc/executor.sock'); s.close()"
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: 2m
+        max-file: "2"
+
+  runner:
+    # The workbench: Bash commands run here, in a toolchain image (docker/Dockerfile.runner).
+    # It mounts only staging, its cache, and its own socket: no /source, no secrets, no state,
+    # no executor socket, and no network.
+    profiles: ["agent"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.runner
+      target: ${LOCAL_CHAT_RUNNER_TARGET:-runner-python}
+    image: ${LOCAL_CHAT_RUNNER_IMAGE:-local-openrouter-chat-runner-python:1.1.0}
+    init: true
+    restart: "no"
+    network_mode: none
+    read_only: true
+    user: "10002:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - work:/work
+      - cache:/cache
+      - runner-ipc:/run/runner
+    tmpfs:
+      # Compilers and test runners build and run binaries in TMPDIR, so /tmp allows exec.
+      - /tmp:size=${LOCAL_CHAT_RUNNER_TMP_SIZE:-1g},mode=1777,nosuid,nodev,exec
+    pids_limit: ${LOCAL_CHAT_RUNNER_PIDS:-1024}
+    mem_limit: ${LOCAL_CHAT_RUNNER_MEMORY:-4g}
+    cpus: ${LOCAL_CHAT_RUNNER_CPUS:-2}
+    stop_grace_period: 5s
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import socket; s=socket.socket(socket.AF_UNIX); s.settimeout(1); s.connect('/run/runner/runner.sock'); s.close()"
       interval: 5s
       timeout: 3s
       retries: 12
@@ -110,3 +168,21 @@ secrets:
 volumes:
   gateway-data:
   executor-ipc:
+  runner-ipc:
+  # Per-workspace volumes, named by the first 12 hex digits of the workspace identity so they
+  # survive `compose down` and are found again when the same workspace is reopened.
+  work:
+    name: euesto-work-${LOCAL_CHAT_WORKSPACE_KEY:-unselected}
+    labels:
+      io.euesto.kind: work
+      io.euesto.workspace: ${LOCAL_CHAT_WORKSPACE_KEY:-unselected}
+  state:
+    name: euesto-state-${LOCAL_CHAT_WORKSPACE_KEY:-unselected}
+    labels:
+      io.euesto.kind: state
+      io.euesto.workspace: ${LOCAL_CHAT_WORKSPACE_KEY:-unselected}
+  cache:
+    name: euesto-cache-${LOCAL_CHAT_WORKSPACE_KEY:-unselected}
+    labels:
+      io.euesto.kind: cache
+      io.euesto.workspace: ${LOCAL_CHAT_WORKSPACE_KEY:-unselected}
