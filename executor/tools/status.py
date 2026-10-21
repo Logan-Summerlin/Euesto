@@ -8,9 +8,17 @@ from pathlib import Path
 
 from shared.tools import PUBLISH_BATCH_MAX_BYTES, PUBLISH_BATCH_MAX_OPERATIONS
 
+from ..checkpoints import object_store
 from ..errors import INVALID_ARGUMENTS, PATH_INVALID, PATH_MISSING, ExecutorToolError
 from ..paths import UnsafePath, is_tool_excluded, normalize_relative
-from ..staging import Snapshot, WorkspaceChange, publication_batches, workspace_changes
+from ..staging import (
+    Snapshot,
+    WorkspaceChange,
+    publication_batches,
+    staging_links,
+    workspace_changes,
+)
+from ..state import Conflict
 from .listing import decode_cursor, encode_cursor
 
 STATUS_ARGUMENTS = frozenset({"paths", "include_diffs", "max_results", "cursor"})
@@ -30,6 +38,7 @@ def status(
     arguments: dict,
     *,
     current: dict[str, tuple[str, int, int]] | None = None,
+    conflicts: dict[str, Conflict] | None = None,
 ) -> tuple[str, dict]:
     """Summarize staged changes against the publication baseline, with optional diffs.
 
@@ -69,6 +78,21 @@ def status(
 
     lines = [_summary(counts, len(changes), scopes is not None)]
     lines.extend(_status_line(item) for item in page)
+    links = _in_scope(staging_links(work_root), scopes)
+    open_conflicts = [
+        item.to_dict()
+        for path, item in sorted((conflicts or {}).items())
+        if _in_scope([path], scopes)
+    ]
+    if links:
+        lines.append(f"Unpublishable links (never followed or published): {len(links)}")
+        lines.extend(f"L  {path}" for path in links[:MAX_STATUS_RESULTS])
+    if open_conflicts:
+        lines.append(
+            f"Host conflicts (publication of these files is blocked until resolved): "
+            f"{len(open_conflicts)}"
+        )
+        lines.extend(f"C  {item['path']}" for item in open_conflicts[:MAX_STATUS_RESULTS])
     data: dict[str, object] = {
         "baseline_snapshot_id": snapshot.snapshot_id,
         "staged": bool(changes),
@@ -79,6 +103,8 @@ def status(
         "total_known": len(changes),
         "limit": requested,
         "truncated": has_more,
+        "unpublishable_links": links[:MAX_STATUS_RESULTS],
+        "conflicts": open_conflicts[:MAX_STATUS_RESULTS],
         "publication_batches": _batch_count(all_changes),
         "publication_batch_limits": {
             "max_operations": PUBLISH_BATCH_MAX_OPERATIONS,
@@ -132,6 +158,16 @@ def _scopes(value: object) -> list[str] | None:
             raise ExecutorToolError(PATH_MISSING, f"file not found: {item}")
         scopes.append(normalized)
     return None if "." in scopes else list(dict.fromkeys(scopes))
+
+
+def _in_scope(paths: list[str], scopes: list[str] | None) -> list[str]:
+    if scopes is None:
+        return list(paths)
+    return [
+        path
+        for path in paths
+        if any(path == scope or path.startswith(scope + "/") for scope in scopes)
+    ]
 
 
 def _counts(changes: list[WorkspaceChange]) -> dict[str, int]:
@@ -292,7 +328,7 @@ def _baseline_bytes(
     if not digest or int(change.base_size_bytes or 0) > MAX_STATUS_DIFF_FILE_BYTES:
         return None
     candidates = (
-        work_root / ".local-chat-checkpoints" / "objects" / digest,
+        object_store(work_root) / digest,
         source_root.joinpath(*change.path.split("/")),
     )
     for candidate in candidates:

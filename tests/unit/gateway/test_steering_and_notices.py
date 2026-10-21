@@ -107,6 +107,42 @@ def test_steering_endpoint_accepts_only_a_content_field(tmp_path: Path) -> None:
     assert runtime.queued == [("live", "go on")]
 
 
+def test_rebase_endpoint_forwards_only_well_formed_conflict_resolutions(tmp_path: Path) -> None:
+    service = _service(tmp_path, _Runtime(set()))
+    forwarded: list[tuple[str, dict]] = []
+
+    async def rebase_staging(workspace_id: str, **choices: list[str]) -> dict:
+        forwarded.append((workspace_id, choices))
+        return {"ok": True}
+
+    service.rebase_staging = rebase_staging  # type: ignore[method-assign]
+
+    async def scenario() -> list[int]:
+        transport = httpx.ASGITransport(app=create_app(service.config, service))
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://127.0.0.1",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as client:
+            codes = []
+            for body in (
+                {},
+                {"keep_staged": ["a.txt"], "take_host": ["b.txt"]},
+                {"keep_staged": "a.txt"},
+                {"keep_staged": [1]},
+                {"force": True},
+            ):
+                response = await client.post("/v1/workspaces/w/staging/rebase", json=body)
+                codes.append(response.status_code)
+            return codes
+
+    assert asyncio.run(scenario()) == [200, 200, 422, 422, 422]
+    assert forwarded == [
+        ("w", {"keep_staged": [], "take_host": []}),
+        ("w", {"keep_staged": ["a.txt"], "take_host": ["b.txt"]}),
+    ]
+
+
 def _legacy_database(path: Path) -> None:
     JournalStore(path).close()
     connection = sqlite3.connect(path)

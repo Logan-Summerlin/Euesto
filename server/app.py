@@ -307,7 +307,17 @@ async def _publication_batch(request: Request) -> Response:
 
 async def _rebase_staging(request: Request) -> Response:
     workspace_id = request.path_params["workspace_id"]
-    return JSONResponse(await _service(request).rebase_staging(workspace_id))
+    try:
+        data = await _json(request) if await request.body() else {}
+        resolutions = {name: data.get(name) or [] for name in ("keep_staged", "take_host")}
+        if set(data) - set(resolutions) or not all(
+            isinstance(paths, list) and all(isinstance(path, str) for path in paths)
+            for paths in resolutions.values()
+        ):
+            raise ValueError("keep_staged and take_host must be lists of paths")
+    except ValueError as exc:
+        return _error("request.invalid_rebase", str(exc), status=422)
+    return JSONResponse(await _service(request).rebase_staging(workspace_id, **resolutions))
 
 
 async def _inspect_staging(request: Request) -> Response:

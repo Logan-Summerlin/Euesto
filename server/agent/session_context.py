@@ -147,7 +147,8 @@ def render_executor_facts(
             f"- bash results show up to {bash_chars} characters (stderr first, tail-weighted); "
             "the full output is saved in .euesto-output/ (never published)."
         )
-        if environment.get("git_history"):
+        git = environment.get("git_history")
+        if isinstance(git, dict) and git.get("available"):
             lines.append(
                 "- git works offline: `git log` and `git blame` show history; "
                 "`git diff euesto/base` shows exactly your staged changes."

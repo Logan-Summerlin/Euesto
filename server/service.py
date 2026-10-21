@@ -168,15 +168,24 @@ class GatewayService:
                 status=409,
             ) from exc
 
-    async def rebase_staging(self, workspace_id: str) -> dict[str, Any]:
-        """Bring host changes made since the staging baseline into staging (2.4)."""
+    async def rebase_staging(
+        self,
+        workspace_id: str,
+        *,
+        keep_staged: list[str] | None = None,
+        take_host: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Bring host changes made since the staging baseline into staging, optionally
+        resolving conflicts by keeping the staged or taking the host version (2.4)."""
         executor = self._active_executor(workspace_id)
         if any(not task.done() for task in self._tasks.values()):
             raise GatewayServiceError(
                 "staging.busy", "Wait for the active run to finish before rebasing.", status=409
             )
         try:
-            return await executor.rebase_staging()
+            return await executor.rebase_staging(
+                keep_staged=keep_staged or [], take_host=take_host or []
+            )
         except Exception as exc:
             raise GatewayServiceError(
                 "staging.rebase_failed",

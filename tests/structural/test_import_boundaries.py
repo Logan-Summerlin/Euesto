@@ -35,3 +35,23 @@ def test_egress_proxy_is_standalone_standard_library_code() -> None:
             for name in imports
             for package in internal
         ), path
+
+
+def test_runner_is_standalone_standard_library_code() -> None:
+    """The runner image carries only ``runner/``, so it may import nothing else (plan 2.1)."""
+    import sys
+
+    for path in (ROOT / "runner").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.level:
+                continue  # relative imports stay inside the runner package
+            if isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                modules = [node.module]
+            else:
+                continue
+            for module in modules:
+                top = module.split(".", 1)[0]
+                assert top in sys.stdlib_module_names or top == "__future__", (path, module)

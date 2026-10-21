@@ -34,6 +34,9 @@ class Snapshot:
     total_bytes: int = 0
     sizes: dict[str, int] = field(default_factory=dict)
     modes: dict[str, int] = field(default_factory=dict)
+    # Host (size, mtime_ns) per baseline file when it was last compared, so a later rebase
+    # re-hashes only host files whose signature changed (incremental seeding, plan 2.5).
+    source_signatures: dict[str, tuple[int, int]] = field(default_factory=dict)
 
     @property
     def file_count(self) -> int:
@@ -93,6 +96,10 @@ RACY_WINDOW_NS = 250_000_000
 _Signature = tuple[int, int, int, int, int]
 _HashCache = dict[str, tuple[_Signature, str, int]]
 _hash_caches: dict[str, _HashCache] = {}
+# Symbolic links found by the last walk of each staging root. A link (for example a virtualenv's
+# ``bin/python``) is an unpublishable entry: it is never followed, hashed, or published, and
+# the file tools still refuse to traverse it.
+_link_caches: dict[str, tuple[str, ...]] = {}
 _hash_cache_lock = threading.Lock()
 
 
@@ -114,13 +121,31 @@ def _store_hash_cache(root: Path, cache: _HashCache) -> None:
         _hash_caches[_cache_key(root)] = cache
 
 
+def _store_links(root: Path, links: list[str] | tuple[str, ...]) -> None:
+    with _hash_cache_lock:
+        _link_caches[_cache_key(root)] = tuple(sorted(set(links), key=str.casefold))
+
+
+def staging_links(root: Path) -> list[str]:
+    """Unpublishable symbolic links in staging, as of the last walk (walking once if needed)."""
+    with _hash_cache_lock:
+        cached = _link_caches.get(_cache_key(root))
+    if cached is None:
+        visible_files(root)
+        with _hash_cache_lock:
+            cached = _link_caches.get(_cache_key(root), ())
+    return list(cached)
+
+
 def clear_hash_cache(root: Path | None = None) -> None:
     """Forget cached digests for one staging root, or for every root."""
     with _hash_cache_lock:
         if root is None:
             _hash_caches.clear()
+            _link_caches.clear()
         else:
             _hash_caches.pop(_cache_key(root), None)
+            _link_caches.pop(_cache_key(root), None)
 
 
 def _trusted(entry: tuple[_Signature, str, int] | None, signature: _Signature) -> str | None:
@@ -148,6 +173,7 @@ def seed_staging(config: ExecutorConfig) -> Snapshot:
     hashes: dict[str, str] = {}
     sizes: dict[str, int] = {}
     modes: dict[str, int] = {}
+    signatures: dict[str, tuple[int, int]] = {}
     total = 0
     files = 0
     relative_paths: list[str] = []
@@ -178,7 +204,8 @@ def seed_staging(config: ExecutorConfig) -> Snapshot:
                 raise UnsafePath(f"Source link is forbidden: {relative}")
             if not stat.S_ISREG(mode) or path.stat().st_nlink > 1:
                 raise UnsafePath(f"Unsupported source file: {relative}")
-            size = path.stat().st_size
+            info = path.stat()
+            size = info.st_size
             total += size
             files += 1
             if files > config.max_staged_files or total > config.max_staging_bytes:
@@ -195,22 +222,28 @@ def seed_staging(config: ExecutorConfig) -> Snapshot:
             hashes[relative] = digest
             sizes[relative] = size
             modes[relative] = stat.S_IMODE(mode)
+            signatures[relative] = (info.st_size, info.st_mtime_ns)
             cache[relative] = (_signature(destination.lstat()), digest, observed)
     assert_unique_paths(relative_paths)
-    snapshot = Snapshot(str(uuid.uuid4()), hashes, total, sizes, modes)
+    snapshot = Snapshot(str(uuid.uuid4()), hashes, total, sizes, modes, signatures)
     _store_hash_cache(work, cache)
     return snapshot
 
 
-def discard_staging(config: ExecutorConfig) -> Snapshot:
-    """Empty the staging area and reseed it from the read-only source."""
-    work_root = config.work_root
+def clear_staging(work_root: Path) -> None:
+    """Remove everything in the staging area, including hidden metadata and logs."""
     work_root.mkdir(parents=True, exist_ok=True)
     for child in tuple(work_root.iterdir()):
         if child.is_dir() and not child.is_symlink():
             shutil.rmtree(child)
         else:
             child.unlink()
+    clear_hash_cache(work_root)
+
+
+def discard_staging(config: ExecutorConfig) -> Snapshot:
+    """Empty the staging area and reseed it from the read-only source."""
+    clear_staging(config.work_root)
     return seed_staging(config)
 
 
@@ -252,7 +285,14 @@ def advance_published_staging(
                 f"Published staging no longer matches the manifest: {operation.path}"
             )
         hashes[operation.path], sizes[operation.path], modes[operation.path] = value
-    return Snapshot(str(uuid.uuid4()), hashes, sum(sizes.values()), sizes, modes)
+    return Snapshot(
+        str(uuid.uuid4()),
+        hashes,
+        sum(sizes.values()),
+        sizes,
+        modes,
+        dict(snapshot.source_signatures),
+    )
 
 
 def visible_files(root: Path) -> dict[str, tuple[str, int, int]]:
@@ -263,6 +303,7 @@ def visible_files(root: Path) -> dict[str, tuple[str, int, int]]:
     an unchanged tree costs one ``lstat`` per entry rather than a full content hash.
     """
     result: dict[str, tuple[str, int, int]] = {}
+    links: list[str] = []
     previous = _load_hash_cache(root)
     cache: _HashCache = {}
     # Ancestors are filtered before descent, so each entry only needs its own name checked.
@@ -277,11 +318,10 @@ def visible_files(root: Path) -> dict[str, tuple[str, int, int]]:
             info = entry.stat(follow_symlinks=False)
             mode = info.st_mode
             hidden = is_hidden_part(entry.name)
-            if stat.S_ISLNK(mode):
-                if hidden and not entry.is_dir():
-                    continue
-                raise UnsafePath(f"Staging link is forbidden: {relative}")
             if hidden:
+                continue
+            if stat.S_ISLNK(mode):
+                links.append(relative)
                 continue
             if stat.S_ISDIR(mode):
                 subdirectories.append((relative + "/", entry.path))
@@ -299,6 +339,7 @@ def visible_files(root: Path) -> dict[str, tuple[str, int, int]]:
             result[relative] = (digest, info.st_size, stat.S_IMODE(mode))
         pending.extend(reversed(subdirectories))
     _store_hash_cache(root, cache)
+    _store_links(root, links)
     return result
 
 
@@ -314,7 +355,9 @@ def refresh_visible_files(
     a second whole-tree walk just to report post-mutation status.
     """
     current = dict(base)
+    links = set(staging_links(root))
     for relative in paths:
+        links.discard(relative)
         if any(is_hidden_part(part) for part in relative.split("/")):
             current.pop(relative, None)
             continue
@@ -325,11 +368,14 @@ def refresh_visible_files(
             current.pop(relative, None)
             continue
         if stat.S_ISLNK(info.st_mode):
-            raise UnsafePath(f"Staging link is forbidden: {relative}")
+            current.pop(relative, None)
+            links.add(relative)
+            continue
         if not stat.S_ISREG(info.st_mode):
             current.pop(relative, None)
             continue
         current[relative] = (sha256_file(path), info.st_size, stat.S_IMODE(info.st_mode))
+    _store_links(root, tuple(links))
     return current
 
 

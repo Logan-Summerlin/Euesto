@@ -1,6 +1,10 @@
 import asyncio
 import importlib
 import os
+import subprocess
+import sys
+import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -20,6 +24,44 @@ from executor.tools.bash import (
 bash_tool = importlib.import_module("executor.tools.bash")
 
 CHECKPOINTS = ".local-chat-checkpoints"
+ROOT = Path(__file__).resolve().parents[3]
+
+
+@pytest.fixture(autouse=True, params=["in-process", "runner"])
+def backend(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[str]:
+    """Every Bash test runs in-process and through a real runner command server."""
+    if request.param == "in-process" or os.name != "posix":
+        if request.param != "in-process":
+            pytest.skip("the runner command server needs Unix sockets")
+        yield request.param
+        return
+    socket_path = tmp_path.parent / f"{tmp_path.name}.runner.sock"
+    server = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "runner",
+            "--socket",
+            str(socket_path),
+            "--work-root",
+            str(tmp_path),
+        ],
+        cwd=ROOT,
+        stdin=subprocess.DEVNULL,
+    )
+    deadline = time.monotonic() + 10
+    while not socket_path.exists():
+        assert server.poll() is None, "runner exited during startup"
+        assert time.monotonic() < deadline, "runner did not start"
+        time.sleep(0.02)
+    bash_tool.configure_runner(socket_path)
+    try:
+        yield request.param
+    finally:
+        bash_tool.configure_runner(None)
+        server.terminate()
+        server.wait(timeout=10)
+        socket_path.unlink(missing_ok=True)
 
 
 async def run_bash(
@@ -50,19 +92,12 @@ def run_and_cancel_after_start(
 ) -> dict:
     """Start a command, cancel it once its process exists, and return the result data.
 
-    Synchronizes on the process-creation hook rather than sleeping (docs/TESTING.md).
+    Synchronizes on the process-started hook rather than sleeping (docs/TESTING.md).
     """
 
     async def scenario() -> dict:
         started = asyncio.Event()
-        create_process = asyncio.create_subprocess_exec
-
-        async def create_and_signal(*args, **kwargs):
-            process = await create_process(*args, **kwargs)
-            started.set()
-            return process
-
-        monkeypatch.setattr(bash_tool.asyncio, "create_subprocess_exec", create_and_signal)
+        monkeypatch.setattr(bash_tool._runner, "on_started", lambda _request_id: started.set())
         task = asyncio.create_task(run_bash(root, arguments, request_id=request_id))
         await started.wait()
         assert await cancel(request_id) is True

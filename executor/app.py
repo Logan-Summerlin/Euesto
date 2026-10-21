@@ -27,24 +27,30 @@ from shared.tools import (
     ToolResult,
 )
 
-from .checkpoints import checkpoint_files
+from . import sandbox_git
+from .checkpoints import checkpoint_files, configure_store
 from .config import ExecutorConfig
+from .drift import rebase
 from .egress import egress_status
 from .errors import INVALID_ARGUMENTS, STAGING_CONFLICT, ExecutorToolError, classify_error
 from .permissions import enforce_capability
+from .snapshot import agents_md, workspace_snapshot
 from .staging import (
     Snapshot,
     WorkspaceChange,
     advance_published_staging,
-    discard_staging,
+    clear_staging,
     publication_batches,
     refresh_visible_files,
     seed_staging,
+    staging_links,
     workspace_changes,
 )
+from .state import Baseline, Conflict, StateStore
 from .tools import apply_patch, bash, edit, find, grep, ls, read, status, write
 from .tools.apply_patch import apply_patch_paths
 from .tools.bash import cancel as cancel_bash
+from .tools.bash import configure_runner
 
 DEVELOPER_EXECUTABLE_CANDIDATES = (
     "python",
@@ -71,10 +77,85 @@ ToolRunner = Callable[[ToolRequest, Path], Awaitable[tuple[str, dict]]]
 
 
 class ExecutorService:
+    """The control plane: file tools, status, checkpoints, baselines, and manifests.
+
+    Staging persists on the work volume and the baseline on the state volume, so a restart
+    resumes where it left off; host changes made meanwhile are absorbed by a rebase, and
+    files changed on both sides are held back as conflicts.
+    """
+
     def __init__(self, config: ExecutorConfig):
         self.config = config
-        self.snapshot = seed_staging(config)
+        self.state = StateStore(config.state_directory, config.workspace_id)
+        configure_store(config.work_root, self.state.checkpoints)
+        configure_runner(config.runner_socket)
+        self.conflicts: dict[str, Conflict] = {}
+        self.last_rebase: dict[str, object] = {}
+        claimed = self.state.claim()
+        baseline = self.state.load() if claimed else None
+        if baseline is not None and not config.work_root.is_dir():
+            # The work volume was removed while the state volume survived: reseed.
+            self.state.forget_baseline()
+            baseline = None
+        self.resumed = baseline is not None
+        if baseline is not None:
+            self.snapshot, self.conflicts = baseline.snapshot, baseline.conflicts
+            self.git = sandbox_git.repository_status(self.state.root, config.git_history_depth)
+            self.rebase()
+        else:
+            if claimed:
+                # Identity without a baseline: an earlier seed was interrupted; start over.
+                clear_staging(config.work_root)
+            self._seed()
         self._tools = self._dispatch_table()
+
+    def _seed(self) -> None:
+        self.snapshot = seed_staging(self.config)
+        self.conflicts = {}
+        self._save()
+        self.git = sandbox_git.seed_repository(
+            self.config.source_root,
+            self.config.work_root,
+            self.state.root,
+            self.snapshot,
+            self.config.git_history_depth,
+        )
+
+    def _save(self) -> None:
+        self.state.save(Baseline(self.snapshot, self.conflicts))
+
+    def _baseline_changed(self) -> None:
+        self._save()
+        if self.git.get("available"):
+            self.git = sandbox_git.update_base(
+                self.config.work_root, self.state.root, self.snapshot
+            )
+
+    def rebase(
+        self,
+        keep_staged: list[str] | tuple[str, ...] = (),
+        take_host: list[str] | tuple[str, ...] = (),
+    ) -> dict[str, object]:
+        """Absorb host changes made since the baseline; optionally resolve conflicts."""
+        baseline, report = rebase(
+            self.config,
+            Baseline(self.snapshot, self.conflicts),
+            keep_staged=keep_staged,
+            take_host=take_host,
+        )
+        changed = baseline.snapshot.snapshot_id != self.snapshot.snapshot_id
+        conflicts_changed = baseline.conflicts != self.conflicts
+        self.snapshot, self.conflicts = baseline.snapshot, baseline.conflicts
+        if changed:
+            self._baseline_changed()
+        elif conflicts_changed:
+            self._save()
+        self.last_rebase = report.to_dict()
+        return {
+            **self.last_rebase,
+            "snapshot_id": self.snapshot.snapshot_id,
+            "open_conflicts": [item.to_dict() for item in self.conflicts.values()],
+        }
 
     async def execute(self, request: ToolRequest) -> ToolResult:
         started = time.perf_counter()
@@ -175,7 +256,12 @@ class ExecutorService:
 
         def run_status(request: ToolRequest, root: Path) -> Awaitable[tuple[str, dict]]:
             return asyncio.to_thread(
-                status, config.work_root, config.source_root, self.snapshot, request.arguments
+                status,
+                config.work_root,
+                config.source_root,
+                self.snapshot,
+                request.arguments,
+                conflicts=self.conflicts,
             )
 
         def run_grep(request: ToolRequest, root: Path) -> Awaitable[tuple[str, dict]]:
@@ -243,6 +329,8 @@ class ExecutorService:
             "permission_changes": [
                 change.path for change in changes if change.permission_changed
             ],
+            "unpublishable_links": staging_links(self.config.work_root),
+            "conflicts": sorted(self.conflicts),
             "staged": bool(changes),
             "publication": "pending_review" if changes else "no_changes",
             "summary": (
@@ -268,7 +356,13 @@ class ExecutorService:
         """
         if isinstance(batch_index, bool) or not isinstance(batch_index, int) or batch_index < 1:
             raise ExecutorToolError(INVALID_ARGUMENTS, "batch_index must be a positive integer")
-        batches = publication_batches(workspace_changes(self.snapshot, self.config.work_root))
+        # A conflicting file is withheld until the user resolves it; the rest still publish.
+        pending = [
+            change
+            for change in workspace_changes(self.snapshot, self.config.work_root)
+            if change.path not in self.conflicts
+        ]
+        batches = publication_batches(pending)
         selected = batches[0] if batches else []
         operations = tuple(self._publish_operation(change) for change in selected)
         manifest_id = str(uuid.uuid4())
@@ -309,7 +403,12 @@ class ExecutorService:
         return PublishOperation(**staged, content=text)
 
     def discard(self) -> Snapshot:
-        self.snapshot = discard_staging(self.config)
+        """Drop every staged change, log, checkpoint, and the sandbox repository; reseed."""
+        clear_staging(self.config.work_root)
+        shutil.rmtree(self.state.checkpoints, ignore_errors=True)
+        configure_store(self.config.work_root, self.state.checkpoints)
+        self.state.forget_baseline()
+        self._seed()
         return self.snapshot
 
     def mark_published(self, manifest: PublishManifest | PublicationReceipt) -> Snapshot:
@@ -325,6 +424,7 @@ class ExecutorService:
         self.snapshot = advance_published_staging(
             self.config.work_root, self.snapshot, manifest.operations
         )
+        self._baseline_changed()
         return self.snapshot
 
 
@@ -389,7 +489,7 @@ def create_app(
                 "workspace_id": resolved.workspace_id,
                 "snapshot_id": executor.snapshot.snapshot_id,
                 "tools": sorted(EXECUTOR_TOOLS),
-                "environment": _environment_context(resolved, executor.snapshot),
+                "environment": _environment_context(resolved, executor),
                 "workspace_status": executor.workspace_status(),
             }
         )
@@ -423,6 +523,37 @@ def create_app(
             return _error("staging.mark_published_failed", str(exc), 409)
         return _snapshot_response(snapshot)
 
+    async def snapshot(request: Request) -> JSONResponse:
+        text, truncated = await asyncio.to_thread(agents_md, resolved.source_root)
+        try:
+            data = await asyncio.to_thread(workspace_snapshot, resolved.source_root)
+        except OSError:
+            data = {}
+        return JSONResponse(
+            {"snapshot": data, "agents_md": text, "agents_md_truncated": truncated}
+        )
+
+    async def rebase_staging(request: Request) -> JSONResponse:
+        try:
+            body = await _json(request) if await request.body() else {}
+            fields = {"keep_staged", "take_host"}
+            choices = {name: body.get(name) or [] for name in fields}
+            if set(body) - fields or not all(
+                isinstance(value, list) and all(isinstance(item, str) for item in value)
+                for value in choices.values()
+            ):
+                raise ExecutorToolError(
+                    INVALID_ARGUMENTS, "keep_staged and take_host must be lists of paths"
+                )
+            result = await asyncio.to_thread(
+                executor.rebase, choices["keep_staged"], choices["take_host"]
+            )
+        except ExecutorToolError as exc:
+            return _error(exc.code, exc.message, 422)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return _error("staging.rebase_failed", str(exc), 409)
+        return JSONResponse(result)
+
     async def discard(request: Request) -> JSONResponse:
         try:
             snapshot = executor.discard()
@@ -439,6 +570,8 @@ def create_app(
         ("/v1/manifest", manifest, "POST"),
         ("/v1/staging/mark-published", mark_published, "POST"),
         ("/v1/staging/discard", discard, "POST"),
+        ("/v1/staging/rebase", rebase_staging, "POST"),
+        ("/v1/workspace-snapshot", snapshot, "GET"),
         ("/v1/tools/{request_id:str}/cancel", cancel, "POST"),
     )
     app = Starlette(
@@ -471,7 +604,10 @@ def _snapshot_response(snapshot: Snapshot) -> JSONResponse:
     )
 
 
-def _environment_context(config: ExecutorConfig, snapshot: Snapshot) -> dict[str, object]:
+def _environment_context(
+    config: ExecutorConfig, executor: ExecutorService
+) -> dict[str, object]:
+    snapshot = executor.snapshot
     available = [
         name
         for name in DEVELOPER_EXECUTABLE_CANDIDATES
@@ -487,7 +623,7 @@ def _environment_context(config: ExecutorConfig, snapshot: Snapshot) -> dict[str
         headroom = None
     return {
         "capability_schema_version": 2,
-        "mode": "plan_reads_source_agent_uses_ephemeral_staging",
+        "mode": "plan_reads_source_agent_uses_persistent_staging",
         "workspace_root": ".",
         "platform": platform.system().casefold(),
         "python_version": platform.python_version(),
@@ -503,7 +639,13 @@ def _environment_context(config: ExecutorConfig, snapshot: Snapshot) -> dict[str
         },
         "workspace_empty": snapshot.empty,
         "source_snapshot_id": snapshot.snapshot_id,
-        "staging_lifetime": "same_executor_instance",
+        "staging_lifetime": "persistent_until_discarded",
+        "staging_resumed": executor.resumed,
+        "conflicts": [item.to_dict() for item in executor.conflicts.values()],
+        "last_rebase": executor.last_rebase,
+        "git_history": executor.git,
+        "runner_image": config.runner_image or None,
+        "command_runner": "runner_container" if config.runner_socket else "in_process",
         "unpublished_changes": unpublished_changes,
         "publication_status": "host_publication_pending_review"
         if unpublished_changes

@@ -92,6 +92,9 @@ class ExecutorClient:
         """The deterministic workspace snapshot and published ``AGENTS.md`` for a session."""
         return await self._json("GET", "/v1/workspace-snapshot", timeout=30)
 
-    async def rebase_staging(self) -> dict:
+    async def rebase_staging(
+        self, *, keep_staged: list[str] | None = None, take_host: list[str] | None = None
+    ) -> dict:
         """Absorb host changes made since the staging baseline (see docs/PUBLICATION.md)."""
-        return await self._json("POST", "/v1/staging/rebase", timeout=120)
+        body = {"keep_staged": keep_staged or [], "take_host": take_host or []}
+        return await self._json("POST", "/v1/staging/rebase", timeout=120, json=body)

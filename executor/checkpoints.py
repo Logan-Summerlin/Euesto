@@ -19,8 +19,8 @@ from .errors import (
     PATH_UNSAFE,
     ExecutorToolError,
 )
-from .paths import safe_path
-from .staging import copy_with_sha256, sha256_file, visible_files
+from .paths import normalize_relative, safe_path
+from .staging import copy_with_sha256, sha256_file, staging_links, visible_files
 
 DEFAULT_MAX_CHECKPOINTS = 8
 DEFAULT_MAX_CHECKPOINT_FILES = 300_000
@@ -28,6 +28,31 @@ DEFAULT_MAX_CHECKPOINT_BYTES = 2_500_000_000
 _CHECKPOINT_ID = re.compile(r"^[0-9a-f-]{20,64}$")
 # chmod without following links where the platform supports it (Windows Python 3.12 does not).
 _NO_FOLLOW = {"follow_symlinks": False} if os.chmod in os.supports_follow_symlinks else {}
+MAX_LINK_TARGET_BYTES = 4_096
+
+# Where each staging root keeps its checkpoints. The executor points this at its state volume,
+# which the runner never mounts, so commands cannot read or tamper with recovery data. Without
+# a configured store (unit tests), checkpoints live in a hidden directory inside staging.
+_stores: dict[str, Path] = {}
+_store_lock = threading.Lock()
+
+
+def configure_store(work_root: Path, store_root: Path) -> None:
+    """Keep checkpoints for ``work_root`` under ``store_root`` (created if missing)."""
+    store_root.mkdir(parents=True, exist_ok=True)
+    with _store_lock:
+        _stores[os.path.normcase(str(work_root.resolve()))] = store_root
+
+
+def store_root(work_root: Path) -> Path:
+    with _store_lock:
+        configured = _stores.get(os.path.normcase(str(work_root.resolve())))
+    return configured if configured is not None else work_root / ".local-chat-checkpoints"
+
+
+def object_store(work_root: Path) -> Path:
+    """Content-addressed checkpoint objects, also used to show baseline diffs."""
+    return store_root(work_root) / "objects"
 
 
 def create_checkpoint(
@@ -42,8 +67,9 @@ def create_checkpoint(
     ``max_total_bytes`` bounds both this checkpoint and the retained checkpoint store.
     """
     files = visible_files(work_root)
+    links = _link_targets(work_root, staging_links(work_root))
     total = sum(size for _digest, size, _mode in files.values())
-    if len(files) > max_files or total > max_total_bytes:
+    if len(files) + len(links) > max_files or total > max_total_bytes:
         raise ExecutorToolError(
             LIMIT_EXCEEDED, "Staging is too large for a bounded recovery checkpoint."
         )
@@ -57,7 +83,7 @@ def create_checkpoint(
             f"temporary={ExecutorConfig.REQUIRED_TEMP_HEADROOM_BYTES}, capacity={actual_capacity}.",
         )
 
-    root = work_root / ".local-chat-checkpoints"
+    root = store_root(work_root)
     objects = root / "objects"
     objects.mkdir(parents=True, exist_ok=True)
     checkpoint_id = str(uuid.uuid4())
@@ -81,6 +107,7 @@ def create_checkpoint(
                 relative: {"sha256": digest, "size_bytes": size, "mode": mode}
                 for relative, (digest, size, mode) in sorted(files.items())
             },
+            "links": links,
             "file_count": len(files),
             "total_bytes": total,
         }
@@ -170,12 +197,20 @@ def restore_checkpoint(
         digest = str(value.get("sha256") or "")
         size = max(0, int(value.get("size_bytes") or 0))
         mode = int(value["mode"]) if value.get("mode") is not None else None
-        safe_path(work_root, relative, must_exist=False)
+        # Only the name is checked here: links created since the checkpoint are removed below,
+        # and each restored path is contained (refusing links) when it is written.
+        normalize_relative(relative)
         expected[relative] = (digest, size, mode)
     total = sum(size for _digest, size, _mode in expected.values())
     if total > max_total_bytes:
         raise ExecutorToolError(LIMIT_EXCEEDED, "Checkpoint size exceeds the executor limit.")
+    expected_links = _manifest_links(manifest)
     current = visible_files(work_root)
+    # Links first: a link created since the checkpoint may now stand where a restored file's
+    # directory was, and restoring through it would be refused (the file tools never follow).
+    removed_links = _remove_new_links(work_root, expected_links)
+    if removed_links:
+        current = visible_files(work_root)
     absent = (None, None, None)
     changed = [
         relative
@@ -184,7 +219,7 @@ def restore_checkpoint(
         != _content_and_mode(expected.get(relative, absent))
     ]
     prepared: dict[str, tuple[bytes, int | None]] = {}
-    objects = work_root / ".local-chat-checkpoints" / "objects"
+    objects = object_store(work_root)
     for relative in changed:
         if relative not in expected:
             continue
@@ -208,11 +243,78 @@ def restore_checkpoint(
         mode = prepared[relative][1]
         if mode is not None:
             os.chmod(target, mode, **_NO_FOLLOW)
+    restored_links = _recreate_links(work_root, expected_links)
+    paths = sorted(set(changed) | set(removed_links) | set(restored_links), key=str.casefold)
     return {
         "checkpoint_id": checkpoint_id,
-        "restored_paths": changed,
-        "count": len(changed),
+        "restored_paths": paths,
+        "count": len(paths),
     }
+
+
+def _link_targets(work_root: Path, links: list[str]) -> dict[str, str]:
+    targets: dict[str, str] = {}
+    for relative in links:
+        try:
+            target = os.readlink(work_root.joinpath(*relative.split("/")))
+        except OSError:
+            continue
+        if len(os.fsencode(target)) <= MAX_LINK_TARGET_BYTES:
+            targets[relative] = target
+    return dict(sorted(targets.items()))
+
+
+def _manifest_links(manifest: dict[str, object]) -> dict[str, str]:
+    raw = manifest.get("links") or {}
+    if not isinstance(raw, dict):
+        raise ExecutorToolError(CHECKPOINT_CORRUPT, "Checkpoint manifest is invalid.")
+    links: dict[str, str] = {}
+    for relative, target in raw.items():
+        if not isinstance(relative, str) or not isinstance(target, str) or "\x00" in target:
+            raise ExecutorToolError(CHECKPOINT_CORRUPT, "Checkpoint manifest is invalid.")
+        normalize_relative(relative)
+        links[relative] = target
+    return links
+
+
+def _remove_new_links(work_root: Path, expected: dict[str, str]) -> list[str]:
+    """Remove links that were not in the checkpoint, or now point somewhere else."""
+    removed: list[str] = []
+    for relative in staging_links(work_root):
+        path = work_root.joinpath(*relative.split("/"))
+        try:
+            if expected.get(relative) == os.readlink(path):
+                continue
+            safe_path(work_root, relative, must_exist=False)
+            if os.path.islink(path):
+                os.unlink(path)
+                removed.append(relative)
+        except OSError:
+            continue
+    return removed
+
+
+def _recreate_links(work_root: Path, expected: dict[str, str]) -> list[str]:
+    """Put back links the checkpoint recorded; a link is never followed, so its target is
+    only text."""
+    restored: list[str] = []
+    for relative, target in expected.items():
+        path = safe_path(work_root, relative, must_exist=False)
+        try:
+            if os.readlink(path) == target:
+                continue
+        except OSError:
+            pass
+        if os.path.lexists(path):
+            if path.is_dir() and not path.is_symlink():
+                continue  # a real directory took its place; leave the user's content alone
+            path.unlink()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(target, path)
+        restored.append(relative)
+    if restored:
+        visible_files(work_root)
+    return restored
 
 
 def _content_and_mode(entry: tuple[object, object, object]) -> tuple[object, object]:
@@ -223,7 +325,7 @@ def _content_and_mode(entry: tuple[object, object, object]) -> tuple[object, obj
 def _load_manifest(work_root: Path, checkpoint_id: str) -> dict[str, object]:
     if not isinstance(checkpoint_id, str) or not _CHECKPOINT_ID.fullmatch(checkpoint_id):
         raise ExecutorToolError(INVALID_ARGUMENTS, "Invalid checkpoint identity.")
-    path = work_root / ".local-chat-checkpoints" / checkpoint_id / "manifest.json"
+    path = store_root(work_root) / checkpoint_id / "manifest.json"
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:

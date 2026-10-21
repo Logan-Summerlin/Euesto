@@ -109,7 +109,7 @@ def test_public_vocabulary_is_exactly_the_ten_tools() -> None:
 def test_executor_exports_exactly_the_canonical_tools() -> None:
     from executor import tools
 
-    assert set(tools.__all__) == set(CANONICAL_TOOLS) | {"MAX_READ_BYTES"}
+    assert set(tools.__all__) == set(CANONICAL_TOOLS)
     assert all(callable(getattr(tools, name)) for name in CANONICAL_TOOLS)
     assert not LEGACY_TOOL_NAMES & set(vars(tools))
 

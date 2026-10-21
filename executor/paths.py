@@ -32,6 +32,7 @@ SECRET_PARTS = frozenset(
         "id_ed25519",
     }
 )
+OUTPUT_DIRECTORY = ".euesto-output"
 # Matched against every path segment, so only names that are unambiguously metadata,
 # dependency, or cache directories belong here. A bare "env" is deliberately absent:
 # real source trees use env/ for configuration and loaders, and silently dropping it
@@ -51,6 +52,9 @@ STAGING_EXCLUDED_PARTS = frozenset(
         ".mypy_cache",
         ".ruff_cache",
         ".hypothesis",
+        # Full Bash output logs (``.euesto-output/<request_id>.log``): readable through Bash,
+        # never shown to the file tools, checkpointed, or published.
+        OUTPUT_DIRECTORY,
     }
 )
 

@@ -43,3 +43,19 @@ def test_agent_prompt_covers_the_required_rules() -> None:
         "`investigate_repository`",
     ):
         assert phrase in prompt
+
+
+def test_executor_facts_describe_git_and_the_toolchain_only_when_available() -> None:
+    from server.agent.session_context import render_executor_facts
+
+    def facts(**environment: object) -> str:
+        return render_executor_facts(
+            {"environment": environment}, "agent", read_bytes=32_000, bash_chars=8_000
+        )
+
+    plain = facts(git_history={"available": False, "reason": "not a git repository"})
+    assert "git" not in plain and "Toolchain image" not in plain
+    rich = facts(git_history={"available": True}, runner_image="euesto-runner-python:1.0")
+    assert "git diff euesto/base" in rich
+    assert "Toolchain image: euesto-runner-python:1.0." in rich
+    assert facts(git_history={"available": True}) == facts(git_history={"available": True})
