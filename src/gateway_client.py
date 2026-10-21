@@ -159,6 +159,40 @@ class GatewayClient:
         )
         return _staging_object(response, "Gateway returned invalid staging discard data.")
 
+    def rebase_staging(
+        self,
+        workspace_id: str,
+        *,
+        keep_staged: Sequence[str] = (),
+        take_host: Sequence[str] = (),
+    ) -> dict[str, Any]:
+        """Absorb host changes into staging, resolving the named conflicts (plan 2.4)."""
+        response = self._send(
+            "POST",
+            f"/v1/workspaces/{workspace_id}/staging/rebase",
+            timeout=120.0,
+            json={"keep_staged": list(keep_staged), "take_host": list(take_host)},
+        )
+        return _staging_object(response, "Gateway returned invalid staging rebase data.")
+
+    def staged_publication(self, workspace_id: str) -> PublishManifest:
+        """The first batch publishing staged work kept from an earlier session."""
+        response = self._send(
+            "POST", f"/v1/workspaces/{workspace_id}/staging/publication", timeout=60.0, json={}
+        )
+        data = _staging_object(response, "Gateway returned an invalid publication.")
+        try:
+            return PublishManifest.from_dict(data)
+        except (TypeError, ValueError) as exc:
+            raise _invalid_staging(f"Gateway returned an invalid publication: {exc}") from exc
+
+    def acknowledge_notice(self, notice_id: str) -> None:
+        self._send("POST", f"/v1/notices/{notice_id}/acknowledge", timeout=5.0, json={})
+
+    def steer(self, run_id: str, text: str) -> None:
+        """Queue guidance for the active run; it arrives before the next model turn (0.8)."""
+        self._send("POST", f"/v1/runs/{run_id}/messages", timeout=5.0, json={"content": text})
+
     def stream_chat(
         self,
         *,

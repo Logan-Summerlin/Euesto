@@ -267,6 +267,7 @@ class GenerationController:
             optional_float(usage.get("cost")),
             optional_int(usage.get("cached_tokens")),
             optional_int(usage.get("reasoning_tokens")),
+            optional_int(usage.get("prompt_tokens")),
         )
         return " · ".join(["Stopped" if cancelled else "Done", *labels])
 

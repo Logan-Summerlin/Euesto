@@ -37,6 +37,7 @@ RUNNER_MEMORY_GB_RANGE = (2, 16)
 RUNNER_PIDS_RANGE = (256, 4_096)
 DEFAULT_RUNNER_PIDS = 1_024
 MAX_GIT_HISTORY_DEPTH = 100_000
+DEFAULT_GIT_HISTORY_DEPTH = 200
 WORKSPACE_KEY_LENGTH = 12
 STAGED_SESSIONS_FILE = "staged-sessions.json"
 DEFAULT_RETENTION_DAYS = 30
@@ -118,7 +119,7 @@ class RuntimeSettings:
     cpus: float | None = None
     memory_gb: int | None = None
     pids: int = DEFAULT_RUNNER_PIDS
-    git_history_depth: int = 200
+    git_history_depth: int = DEFAULT_GIT_HISTORY_DEPTH
 
     def validated(self) -> RuntimeSettings:
         """Return these settings, or fail closed on any value outside its ceiling."""

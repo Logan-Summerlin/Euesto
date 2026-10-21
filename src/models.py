@@ -156,12 +156,37 @@ class PromptPreset:
     updated_at: str
 
 
+# Offline defaults until the catalog loads (plan 0.9): low-cost models that call tools and
+# support prompt caching. The catalog supplies current prices; these carry none.
+_AGENT_PARAMETERS = frozenset({"tools", "tool_choice", "reasoning", "max_tokens"})
 DEFAULT_MODELS: tuple[ModelOption, ...] = (
-    ModelOption("openrouter/auto", "OpenRouter Auto", 200_000),
-    ModelOption("openai/gpt-4o-mini", "GPT-4o mini", 128_000),
-    ModelOption("google/gemini-2.5-flash", "Gemini 2.5 Flash", 1_000_000),
-    ModelOption("anthropic/claude-3.5-haiku", "Claude 3.5 Haiku", 200_000),
-    ModelOption("deepseek/deepseek-chat-v3-0324", "DeepSeek V3", 64_000),
+    ModelOption(
+        "google/gemini-2.5-flash",
+        "Gemini 2.5 Flash",
+        1_048_576,
+        "",
+        supported_parameters=_AGENT_PARAMETERS,
+    ),
+    ModelOption(
+        "openai/gpt-5-mini", "GPT-5 mini", 400_000, "", supported_parameters=_AGENT_PARAMETERS
+    ),
+    ModelOption(
+        "anthropic/claude-haiku-4.5",
+        "Claude Haiku 4.5",
+        200_000,
+        "",
+        supported_parameters=_AGENT_PARAMETERS,
+    ),
+    ModelOption(
+        "deepseek/deepseek-chat-v3.1",
+        "DeepSeek V3.1",
+        163_840,
+        "",
+        supported_parameters=_AGENT_PARAMETERS,
+    ),
+    ModelOption(
+        "xiaomi/mimo-v2.5", "MiMo-V2.5", 1_000_000, "", supported_parameters=_AGENT_PARAMETERS
+    ),
 )
 
 DEFAULT_SYSTEM_PROMPT = "You are a helpful, concise assistant."
@@ -180,10 +205,21 @@ def usage_labels(
     cost: float | None,
     cached: int | None = None,
     reasoning: int | None = None,
+    prompt: int | None = None,
 ) -> list[str]:
-    """Token and cost labels, worded the same in the status bar, transcript, and usage dialog."""
+    """Token and cost labels, worded the same in the status bar, transcript, and usage dialog.
+
+    With ``prompt`` (input tokens), the cached count carries the cache hit rate (plan 1.1).
+    """
     labels = [f"{tokens:,} tokens"] if tokens else []
-    labels += [f"{cached:,} cached"] if cached else []
+    if cached:
+        rate = min(cached, prompt) / prompt if prompt else None
+        share = (
+            ""
+            if rate is None
+            else (" (<1% of input)" if rate < 0.01 else f" ({rate:.0%} of input)")
+        )
+        labels.append(f"{cached:,} cached{share}")
     labels += [f"{reasoning:,} reasoning"] if reasoning else []
     if cost is not None:
         labels.append(f"${cost:.6f}")

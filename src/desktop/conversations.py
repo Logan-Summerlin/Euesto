@@ -354,5 +354,6 @@ def usage_text(usage: dict[str, Any]) -> str:
         float(usage.get("cost") or 0),
         int(usage.get("cached_tokens") or 0),
         int(usage.get("reasoning_tokens") or 0),
+        int(usage.get("input_tokens") or 0),
     )
     return " · ".join(labels)

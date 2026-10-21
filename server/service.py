@@ -246,6 +246,35 @@ class GatewayService:
                 status=409,
             ) from exc
 
+    async def staged_publication(self, workspace_id: str) -> PublishManifest:
+        """The first batch of a publication of staged work kept from earlier sessions.
+
+        Staging persists (plan 2.4), so changes can outlive the run that made them. The
+        manifest is built exactly as at the end of a run, and the desktop still asks the
+        user to approve it and validates every hash before writing.
+        """
+        executor = self._active_executor(workspace_id)
+        if any(not task.done() for task in self._tasks.values()):
+            raise GatewayServiceError(
+                "staging.busy",
+                "Wait for the active run to finish before publishing.",
+                status=409,
+            )
+        try:
+            return await executor.manifest(
+                f"staged-{uuid.uuid4()}",
+                str(uuid.uuid4()),
+                publication_id=str(uuid.uuid4()),
+                batch_index=1,
+            )
+        except Exception as exc:
+            raise GatewayServiceError(
+                "staging.manifest_failed",
+                f"The executor could not build a publication of the staged changes: {exc}",
+                retryable=True,
+                status=409,
+            ) from exc
+
     async def inspect_staging(self, workspace_id: str) -> dict[str, Any]:
         environment = await self._staging_environment(self._active_executor(workspace_id))
         snapshot = environment.get("agent_snapshot")
@@ -261,6 +290,12 @@ class GatewayService:
                 "snapshot_id": snapshot.get("snapshot_id"),
                 "file_count": int(snapshot.get("file_count") or 0),
                 "total_bytes": int(snapshot.get("total_bytes") or 0),
+                "staging_resumed": bool(environment.get("staging_resumed")),
+                "conflicts": [
+                    item
+                    for item in environment.get("conflicts") or ()
+                    if isinstance(item, dict)
+                ],
             },
         }
 

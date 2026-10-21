@@ -13,8 +13,16 @@ from shared.requests import DEFAULT_INVESTIGATION_MODEL, WORKSPACE_CONFIG_KEYS
 
 from ..extensions import available_skills
 from ..gateway_client import DEFAULT_GATEWAY_URL, GatewayClient, GatewayError
-from ..model_catalog import ModelCatalog
+from ..model_catalog import ModelCatalog, agent_capable, model_warnings, price_text
 from ..models import RequestOptions
+from ..runtime_manager import (
+    DEFAULT_GIT_HISTORY_DEPTH,
+    DEFAULT_RETENTION_DAYS,
+    DEFAULT_RUNNER_PIDS,
+    RuntimeErrorMessage,
+    RuntimeSettings,
+    detect_runner_target,
+)
 from ..settings import app_data_dir, get_api_key, save_api_key
 from ..storage import Storage
 from ..workers import CatalogWorker
@@ -33,6 +41,9 @@ BUILTIN_COMMANDS = (
     ("stop", "Stop the active run"),
     ("pause", "Pause the agent at a safe boundary"),
 )
+RUNTIME_SETTINGS_KEY = "runtime_settings"
+RETENTION_DAYS_KEY = "staged_session_retention_days"
+RETENTION_DAYS_RANGE = (1, 365)
 LEGACY_INVESTIGATION_DEFAULT = "deepseek/deepseek-chat-v3-0324"
 LEGACY_INVESTIGATION_MIGRATED = "investigation_model_legacy_migrated"
 INVESTIGATION_MODEL_ENTRY = {
@@ -47,6 +58,9 @@ INVESTIGATION_MODEL_ENTRY = {
     "recent": False,
     "reasoning": True,
     "textCompatible": True,
+    "tools": True,
+    "priceText": "Prices load with the catalog",
+    "warnings": [],
 }
 
 
@@ -211,6 +225,9 @@ class SettingsService(QObject):
                 "recent": model.id in recents,
                 "reasoning": "reasoning" in model.supported_parameters,
                 "textCompatible": model.text_compatible,
+                "tools": agent_capable(model.supported_parameters),
+                "priceText": price_text(model),
+                "warnings": model_warnings(model),
             }
             for model in self.catalog.models()
         ]
@@ -403,6 +420,53 @@ class SettingsService(QObject):
         except GatewayError:
             pass
 
+    # -- runner settings and staged-session retention (plan 2.2, 2.4, 2.6, 2.7) ---------
+
+    def runtime_settings(self) -> RuntimeSettings:
+        """The saved runner settings; anything unreadable or out of range falls back to defaults."""
+        try:
+            values = json.loads(self.storage.get_setting(RUNTIME_SETTINGS_KEY) or "{}")
+            return _runtime_settings(values).validated()
+        except (TypeError, ValueError, RuntimeErrorMessage):
+            return RuntimeSettings()
+
+    def runtime_settings_view(self) -> dict[str, Any]:
+        settings = self.runtime_settings()
+        workspace = self.host.runtime.workspace_path
+        return {
+            "runnerTarget": settings.runner_target,
+            "detectedTarget": detect_runner_target(Path(workspace)) if workspace else "",
+            "cpus": settings.cpus or 0,
+            "memoryGb": settings.memory_gb or 0,
+            "pids": settings.pids,
+            "gitHistoryDepth": settings.git_history_depth,
+            "retentionDays": self.retention_days(),
+        }
+
+    def save_runtime_settings(self, values: dict[str, Any]) -> bool:
+        """Validate and save runner settings; they apply when the runtime next starts."""
+        try:
+            settings = _runtime_settings(values).validated()
+            retention = int(values.get("retentionDays") or DEFAULT_RETENTION_DAYS)
+            if not RETENTION_DAYS_RANGE[0] <= retention <= RETENTION_DAYS_RANGE[1]:
+                raise RuntimeErrorMessage(
+                    "Keep staged sessions for 1 to 365 days before offering removal."
+                )
+        except (TypeError, ValueError, RuntimeErrorMessage) as exc:
+            self.host.errorRequested.emit("Invalid runner settings", str(exc))
+            return False
+        self.storage.set_setting(RUNTIME_SETTINGS_KEY, json.dumps(asdict(settings)))
+        self.storage.set_setting(RETENTION_DAYS_KEY, str(retention))
+        self.host.settingsChanged.emit()
+        self.host.set_status("Runner settings saved; they apply when the runtime restarts")
+        return True
+
+    def retention_days(self) -> int:
+        value = optional_int(self.storage.get_setting(RETENTION_DAYS_KEY))
+        if value is None or not RETENTION_DAYS_RANGE[0] <= value <= RETENTION_DAYS_RANGE[1]:
+            return DEFAULT_RETENTION_DAYS
+        return value
+
     # -- saved permission rules --------------------------------------------------------
 
     def load_permission_rules(self) -> None:
@@ -448,3 +512,35 @@ class SettingsService(QObject):
     def shutdown(self) -> None:
         if self.catalog_worker:
             self.catalog_worker.wait(500)
+
+
+def _runtime_settings(values: dict[str, Any]) -> RuntimeSettings:
+    """Runner settings from saved JSON (snake_case) or the QML form (camelCase); zero or an
+    empty value means "derive from Docker's allocation" for CPUs and memory."""
+    if not isinstance(values, dict):
+        raise TypeError("Runner settings must be an object.")
+
+    def pick(snake: str, camel: str) -> Any:
+        return values.get(snake, values.get(camel))
+
+    cpus = optional_float(pick("cpus", "cpus"))
+    memory = pick("memory_gb", "memoryGb")
+    pids = pick("pids", "pids")
+    depth = pick("git_history_depth", "gitHistoryDepth")
+    return RuntimeSettings(
+        runner_target=str(pick("runner_target", "runnerTarget") or "auto"),
+        cpus=cpus or None,
+        memory_gb=_whole(memory) or None,
+        pids=DEFAULT_RUNNER_PIDS if pids in (None, "") else _whole(pids),
+        git_history_depth=(DEFAULT_GIT_HISTORY_DEPTH if depth in (None, "") else _whole(depth)),
+    )
+
+
+def _whole(value: Any) -> int:
+    """A whole number from JSON or QML (which sends numbers as floats); else ``ValueError``."""
+    if isinstance(value, bool) or value in (None, ""):
+        raise ValueError("Enter whole numbers for runner limits.")
+    number = float(value)
+    if not number.is_integer():
+        raise ValueError("Enter whole numbers for runner limits.")
+    return int(number)

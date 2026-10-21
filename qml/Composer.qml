@@ -108,6 +108,27 @@ Rectangle {
         }
 
         RowLayout {
+            objectName: "runMeter"
+            visible: backend.generating && backend.currentMode !== "chat"
+            spacing: 8
+            ProgressBar {
+                Layout.preferredWidth: 90
+                from: 0
+                to: 1
+                value: backend.runMeter.contextFraction
+                visible: backend.runMeter.workingSetTokens > 0
+                ToolTip.visible: hovered
+                ToolTip.text: "Context against the working-set cap"
+            }
+            Label {
+                Layout.fillWidth: true
+                text: backend.runMeter.text
+                color: root.mutedColor
+                elide: Text.ElideRight
+            }
+        }
+
+        RowLayout {
             Label {
                 Layout.fillWidth: true
                 text: backend.statusText
@@ -118,6 +139,17 @@ Rectangle {
                 visible: backend.generating
                 text: "Stop"
                 onClicked: root.stopRequested()
+            }
+            Button {
+                text: "Steer"
+                visible: backend.generating && backend.currentMode === "agent"
+                enabled: prompt.text.trim().length > 0
+                ToolTip.visible: hovered
+                ToolTip.text: "Send guidance the agent reads before its next step (Ctrl+Enter)"
+                onClicked: {
+                    root.sendRequested(prompt.text, true)
+                    prompt.clear()
+                }
             }
             Button {
                 text: backend.generating ? "Queue" : "Send"

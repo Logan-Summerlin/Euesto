@@ -40,6 +40,9 @@ class BridgeHost(Protocol):
     runtimeSetupFinished: SignalLike
     fileExported: SignalLike
     fileImported: SignalLike
+    meterChanged: SignalLike
+    conflictsChanged: SignalLike
+    leaveRequested: SignalLike
 
     runtime: RuntimeService
     settings: SettingsService

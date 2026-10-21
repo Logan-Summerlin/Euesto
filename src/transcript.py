@@ -17,9 +17,17 @@ EVENT_TITLES = {
     "approval.timeout": "Approval timed out",
     "checkpoint.created": "Checkpoint created",
     "checkpoint.restored": "Checkpoint restored",
+    "context.compacted": "Context compacted (handoff written)",
 }
+# Events whose row shows text: the model's narration between tool calls and steering.
+TEXT_EVENT_TYPES = frozenset({"model.narration", "input.steered"})
+MAX_ACTIVITY_TEXT_CHARS = 600
 ACTIVITY_EVENT_TYPES = frozenset(
     {
+        "model.narration",
+        "input.steered",
+        "model.retry",
+        "context.compacted",
         "tool.requested",
         "tool.failed",
         "approval.required",
@@ -45,7 +53,15 @@ ATTENTION_EVENT_TYPES = frozenset(
     }
 )
 # Payload keys loaded for activity; arguments only feed the file-name label and never reach QML.
-ACTIVITY_PAYLOAD_KEYS = ("tool", "request_id", "arguments", "checkpoint_id")
+ACTIVITY_PAYLOAD_KEYS = (
+    "tool",
+    "request_id",
+    "arguments",
+    "checkpoint_id",
+    "text",
+    "attempt",
+    "max_attempts",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +223,18 @@ def _activity_items(events: list[dict[str, object]]) -> list[dict[str, Any]]:
                 continue
             title = _activity_title(event_type, payload)
             attention = True
+        elif event_type in TEXT_EVENT_TYPES:
+            text = str(payload.get("text") or "")
+            if not text:
+                continue
+            title = f"Steering: {text}" if event_type == "input.steered" else text
+            attention = False
+        elif event_type == "model.retry":
+            title = (
+                f"Provider error; retrying (attempt {payload.get('attempt', '?')} "
+                f"of {payload.get('max_attempts', '?')})"
+            )
+            attention = False
         elif event_type in EVENT_TITLES:
             title = EVENT_TITLES[event_type]
             attention = event_type in ATTENTION_EVENT_TYPES
@@ -219,6 +247,7 @@ def _activity_items(events: list[dict[str, object]]) -> list[dict[str, Any]]:
                 "eventType": event_type,
                 "rollback": event_type == "mutation.rollback",
                 "attention": attention,
+                "narration": event_type in TEXT_EVENT_TYPES,
             }
         )
     return result
@@ -268,6 +297,10 @@ def compact_activity_event(event: dict[str, object]) -> dict[str, object] | None
         for key in ACTIVITY_PAYLOAD_KEYS
         if key != "arguments" and payload.get(key) is not None
     }
+    if "text" in compact_payload:
+        compact_payload["text"] = " ".join(str(compact_payload["text"]).split())[
+            :MAX_ACTIVITY_TEXT_CHARS
+        ]
     file_name = _file_name(str(payload.get("tool") or ""), payload)
     if file_name:
         compact_payload["file_name"] = file_name

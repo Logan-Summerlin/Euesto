@@ -14,7 +14,7 @@ from .desktop import (
     SettingsService,
     StagingPublicationService,
 )
-from .model_catalog import filter_model_entries
+from .model_catalog import AGENT_MODES, filter_model_entries
 from .settings import database_path
 from .storage import Storage
 from .window_services import GlobalQuickChatHotkey, TrayService
@@ -47,6 +47,9 @@ class DesktopBridge(QObject):
     approvalRequested = Signal("QVariantMap")
     fileExported = Signal(str)
     fileImported = Signal(str)
+    meterChanged = Signal()
+    conflictsChanged = Signal()
+    leaveRequested = Signal(str, str)
 
     def __init__(self, storage: Storage | None = None):
         super().__init__()
@@ -201,6 +204,14 @@ class DesktopBridge(QObject):
     def stagingBusy(self) -> bool:
         return self.staging.busy
 
+    @Property("QVariantMap", notify=meterChanged)
+    def runMeter(self) -> dict[str, Any]:
+        return self.generation.meter.to_dict()
+
+    @Property("QVariantList", notify=conflictsChanged)
+    def stagingConflicts(self) -> list[dict[str, Any]]:
+        return list(self.staging.conflicts)
+
     @Property(bool, notify=stateChanged)
     def archivedView(self) -> bool:
         return self.history.show_archived
@@ -238,6 +249,26 @@ class DesktopBridge(QObject):
     @Property("QVariantMap", notify=settingsChanged)
     def gatewaySettings(self) -> dict[str, Any]:
         return self.settings.gateway_settings()
+
+    @Property("QVariantMap", notify=settingsChanged)
+    def runtimeSettings(self) -> dict[str, Any]:
+        return self.settings.runtime_settings_view()
+
+    @Property("QVariantList", notify=settingsChanged)
+    def stagedSessions(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in self.runtime.staged_sessions]
+
+    @Slot("QVariantMap", result=bool)
+    def saveRuntimeSettings(self, values: dict[str, Any]) -> bool:
+        return self.settings.save_runtime_settings(dict(values))
+
+    @Slot()
+    def refreshStagedSessions(self) -> None:
+        self.runtime.refresh_staged_sessions()
+
+    @Slot(str)
+    def removeStagedSession(self, key: str) -> None:
+        self.runtime.request_remove_staged_session(key)
 
     @Slot(str)
     def saveInvestigationModel(self, model_id: str) -> None:
@@ -324,7 +355,15 @@ class DesktopBridge(QObject):
     def filteredModels(
         self, query: str, text_only: bool, max_price: float, max_rank: int, year: int
     ) -> list[dict[str, Any]]:
-        return filter_model_entries(self._models, query, text_only, max_price, max_rank, year)
+        return filter_model_entries(
+            self._models,
+            query,
+            text_only,
+            max_price,
+            max_rank,
+            year,
+            agent_only=self.generation.mode in AGENT_MODES,
+        )
 
     @Slot(str)
     def toggleFavoriteModel(self, model_id: str) -> None:
@@ -452,12 +491,32 @@ class DesktopBridge(QObject):
     def reviewStaging(self) -> None:
         self.staging.review()
 
+    @Slot()
+    def publishStaged(self) -> None:
+        self.staging.publish_staged()
+
+    @Slot()
+    def rebaseStaging(self) -> None:
+        self.staging.rebase()
+
+    @Slot(str, str)
+    def resolveConflict(self, path: str, choice: str) -> None:
+        self.staging.resolve_conflict(path, choice)
+
+    @Slot(str)
+    def resolveLeave(self, choice: str) -> None:
+        self.staging.resolve_leave(choice)
+
     # -- workspace runtime -------------------------------------------------------------
 
     @Slot(str)
     def selectWorkspace(self, value: str) -> None:
-        if not (self.generation.running or self.staging.busy):
+        if self.generation.running or self.staging.busy:
+            return
+        if self.runtime.is_current_workspace(value):
             self.runtime.select_workspace(value)
+            return
+        self.staging.guard_leave(lambda: self.runtime.select_workspace(value), closing=False)
 
     @Slot()
     def retryRuntime(self) -> None:
@@ -489,7 +548,7 @@ class DesktopBridge(QObject):
             window,
             show_quick_chat=self.showQuickChat,
             toggle_visibility=self.toggleWindowVisibility,
-            close=self.shutdown,
+            close=self.requestClose,
         )
         self.hotkey = GlobalQuickChatHotkey(window, self.showQuickChat)
         application = QGuiApplication.instance()
@@ -516,6 +575,12 @@ class DesktopBridge(QObject):
             self._window.hide()
         else:
             self.showQuickChat()
+
+    @Slot()
+    def requestClose(self) -> None:
+        """Close the app once staged work is published, discarded, or kept (plan 0.6)."""
+        if not self._closing:
+            self.staging.guard_leave(self.shutdown, closing=True)
 
     @Slot()
     def shutdown(self) -> None:

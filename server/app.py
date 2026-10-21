@@ -65,6 +65,7 @@ def create_app(
         Route(f"{workspace}/staging/mark-published", _mark_staging_published, methods=["POST"]),
         Route(f"{workspace}/staging/manifest", _publication_batch, methods=["POST"]),
         Route(f"{workspace}/staging/rebase", _rebase_staging, methods=["POST"]),
+        Route(f"{workspace}/staging/publication", _staged_publication, methods=["POST"]),
     ]
     app = Starlette(
         routes=routes,
@@ -302,6 +303,17 @@ async def _publication_batch(request: Request) -> Response:
         )
     except (KeyError, TypeError, ValueError) as exc:
         return _error("request.invalid_publication_batch", str(exc), status=422)
+    return JSONResponse(manifest.to_dict())
+
+
+async def _staged_publication(request: Request) -> Response:
+    workspace_id = request.path_params["workspace_id"]
+    try:
+        if await _json(request):
+            raise ValueError("A staged publication takes no fields")
+    except ValueError as exc:
+        return _error("request.invalid_publication", str(exc), status=422)
+    manifest = await _service(request).staged_publication(workspace_id)
     return JSONResponse(manifest.to_dict())
 
 

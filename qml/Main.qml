@@ -43,7 +43,8 @@ ApplicationWindow {
     }
     onClosing: close => {
         close.accepted = false
-        backend.shutdown()
+        // Staged work is never lost silently: publish, discard, or keep it first (plan 0.6).
+        backend.requestClose()
     }
 
     Shortcut { sequence: "Ctrl+N"; onActivated: backend.newConversation() }
@@ -392,6 +393,20 @@ ApplicationWindow {
                         }
                         Label {
                             Layout.fillWidth: true
+                            text: modelData.priceText || ""
+                            visible: text.length > 0
+                            color: window.mutedColor
+                            elide: Text.ElideRight
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            visible: (modelData.warnings || []).length > 0
+                            text: "⚠ " + (modelData.warnings || []).join(" · ")
+                            color: window.dark ? "#f0b45b" : "#a35b00"
+                            wrapMode: Text.Wrap
+                        }
+                        Label {
+                            Layout.fillWidth: true
                             visible: modelData.description.length > 0
                             text: modelData.description
                             color: window.mutedColor
@@ -408,8 +423,12 @@ ApplicationWindow {
                 }
             }
             Label {
-                text: "Press and hold a model to favorite it."
+                Layout.fillWidth: true
+                text: backend.currentMode === "chat"
+                    ? "Press and hold a model to favorite it."
+                    : "Plan and Agent list only models that call tools. Press and hold a model to favorite it."
                 color: window.mutedColor
+                wrapMode: Text.Wrap
             }
         }
     }
@@ -453,6 +472,14 @@ ApplicationWindow {
             stopSequences.text = (options.stop || []).join("\n")
             privacyDeny.checked = options.data_collection !== "allow"
             zdr.checked = options.zero_data_retention === true
+            let runner = backend.runtimeSettings
+            runnerTarget.currentIndex = Math.max(0, runnerTarget.model.indexOf(runner.runnerTarget))
+            runnerCpus.text = runner.cpus ? String(runner.cpus) : ""
+            runnerMemory.text = runner.memoryGb ? String(runner.memoryGb) : ""
+            runnerPids.text = String(runner.pids)
+            gitDepth.text = String(runner.gitHistoryDepth)
+            retentionDays.text = String(runner.retentionDays)
+            backend.refreshStagedSessions()
             let config = backend.workspaceConfiguration()
             workspaceInstructions.text = config.instructions || ""
             customTools.text = JSON.stringify(config.custom_tools || [], null, 2)
@@ -614,6 +641,16 @@ ApplicationWindow {
                         spacing: 10
                         Label { text: "Workspace instructions"; font.pixelSize: 18; font.weight: Font.DemiBold }
                         Label { text: backend.workspacePath || "No workspace selected"; color: window.mutedColor }
+                        Label {
+                            objectName: "workspaceInstructionsHelp"
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            color: window.mutedColor
+                            text: "Sent to the model with every Plan and Agent run in this workspace, marked as "
+                                + "user-authored configuration (up to 32,000 characters). Unlike AGENTS.md in the "
+                                + "project, they are trusted because you wrote them. They guide the model; they "
+                                + "cannot grant tools, permissions, or network access."
+                        }
                         TextArea {
                             id: workspaceInstructions
                             Layout.fillWidth: true
@@ -640,6 +677,122 @@ ApplicationWindow {
                                 text: backend.stagingBusy ? "Reseeding…" : "Discard staged changes"
                                 enabled: backend.workspaceReady && !backend.generating && !backend.stagingBusy
                                 onClicked: backend.requestDiscardStaging()
+                            }
+                        }
+                        RowLayout {
+                            Button {
+                                text: "Publish staged changes"
+                                enabled: backend.workspaceReady && !backend.generating && !backend.stagingBusy
+                                onClicked: backend.publishStaged()
+                                ToolTip.visible: hovered
+                                ToolTip.text: "Review and publish staged work, including work kept from an earlier session"
+                            }
+                            Button {
+                                text: "Bring in host changes"
+                                enabled: backend.workspaceReady && !backend.generating && !backend.stagingBusy
+                                onClicked: backend.rebaseStaging()
+                                ToolTip.visible: hovered
+                                ToolTip.text: "Update staging with files changed on the host since it was seeded"
+                            }
+                        }
+                        Label {
+                            visible: backend.stagingConflicts.length > 0
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            font.weight: Font.DemiBold
+                            text: "Changed on the host and in staging (held back from publication):"
+                        }
+                        Repeater {
+                            objectName: "stagingConflicts"
+                            model: backend.stagingConflicts
+                            delegate: RowLayout {
+                                required property var modelData
+                                Layout.fillWidth: true
+                                Label { Layout.fillWidth: true; text: modelData.path; elide: Text.ElideMiddle }
+                                Button {
+                                    text: "Keep staged"
+                                    enabled: !backend.generating && !backend.stagingBusy
+                                    onClicked: backend.resolveConflict(modelData.path, "keep_staged")
+                                }
+                                Button {
+                                    text: "Take host"
+                                    enabled: !backend.generating && !backend.stagingBusy
+                                    onClicked: backend.resolveConflict(modelData.path, "take_host")
+                                }
+                            }
+                        }
+                        Label { text: "Runner"; font.pixelSize: 18; font.weight: Font.DemiBold }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            color: window.mutedColor
+                            text: "Commands run in a separate, network-disabled runner container. Empty CPU or "
+                                + "memory fields use a share of Docker's allocation. Changes apply when the local "
+                                + "runtime next starts."
+                        }
+                        GridLayout {
+                            objectName: "runnerSettings"
+                            columns: 2
+                            Layout.fillWidth: true
+                            Label { text: "Image" }
+                            ComboBox {
+                                id: runnerTarget
+                                Layout.fillWidth: true
+                                model: ["auto", "base", "python", "node", "polyglot"]
+                                displayText: currentText === "auto" && backend.runtimeSettings.detectedTarget
+                                    ? "auto (" + backend.runtimeSettings.detectedTarget + ")" : currentText
+                            }
+                            Label { text: "CPUs (2–8)" }
+                            TextField { id: runnerCpus; Layout.fillWidth: true; placeholderText: "From Docker"; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+                            Label { text: "Memory, GB (2–16)" }
+                            TextField { id: runnerMemory; Layout.fillWidth: true; placeholderText: "From Docker"; inputMethodHints: Qt.ImhDigitsOnly }
+                            Label { text: "Process limit (256–4,096)" }
+                            TextField { id: runnerPids; Layout.fillWidth: true; inputMethodHints: Qt.ImhDigitsOnly }
+                            Label { text: "Git history depth (0 = full)" }
+                            TextField { id: gitDepth; Layout.fillWidth: true; inputMethodHints: Qt.ImhDigitsOnly }
+                            Label { text: "Offer removal after, days" }
+                            TextField { id: retentionDays; Layout.fillWidth: true; inputMethodHints: Qt.ImhDigitsOnly }
+                        }
+                        Button {
+                            text: "Save runner settings"
+                            onClicked: backend.saveRuntimeSettings({
+                                runnerTarget: runnerTarget.currentText,
+                                cpus: Number(runnerCpus.text || 0),
+                                memoryGb: Number(runnerMemory.text || 0),
+                                pids: runnerPids.text,
+                                gitHistoryDepth: gitDepth.text,
+                                retentionDays: retentionDays.text
+                            })
+                        }
+                        RowLayout {
+                            Label { text: "Staged sessions"; font.pixelSize: 18; font.weight: Font.DemiBold }
+                            Item { Layout.fillWidth: true }
+                            Button { text: "Refresh"; onClicked: backend.refreshStagedSessions() }
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            color: window.mutedColor
+                            text: backend.stagedSessions.length
+                                ? "Staged work is kept per workspace until you publish or discard it."
+                                : "No staged sessions are stored."
+                        }
+                        Repeater {
+                            objectName: "stagedSessions"
+                            model: backend.stagedSessions
+                            delegate: RowLayout {
+                                required property var modelData
+                                Layout.fillWidth: true
+                                Label {
+                                    Layout.fillWidth: true
+                                    elide: Text.ElideMiddle
+                                    text: (modelData.stale ? "⚠ unused · " : "")
+                                        + (modelData.workspace || modelData.key) + " · " + modelData.runner
+                                        + " · " + (Number(modelData.size) / 1048576).toFixed(1) + " MB · "
+                                        + (modelData.age_days === null || modelData.age_days === undefined
+                                            ? "age unknown" : Math.floor(modelData.age_days) + " days")
+                                }
+                                Button { text: "Remove"; onClicked: backend.removeStagedSession(modelData.key) }
                             }
                         }
                         RowLayout {
@@ -857,8 +1010,44 @@ ApplicationWindow {
         }
     }
 
+    Dialog {
+        id: leaveDialog
+        objectName: "leaveDialog"
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(640, window.width - 50)
+        property bool resolved: false
+        onOpened: resolved = false
+        onClosed: if (!resolved) backend.resolveLeave("cancel")
+        function choose(choice) {
+            resolved = true
+            backend.resolveLeave(choice)
+            close()
+        }
+        contentItem: ColumnLayout {
+            spacing: 12
+            Label {
+                id: leaveText
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+            }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                Button { text: "Review and publish"; highlighted: true; onClicked: leaveDialog.choose("publish") }
+                Button { text: "Discard"; onClicked: leaveDialog.choose("discard") }
+                Button { text: "Keep for later"; onClicked: leaveDialog.choose("keep") }
+                Button { text: "Cancel"; onClicked: leaveDialog.choose("cancel") }
+            }
+        }
+    }
+
     Connections {
         target: backend
+        function onLeaveRequested(title, message) {
+            leaveDialog.title = title
+            leaveText.text = message
+            leaveDialog.open()
+        }
         function onInfoRequested(title, message) {
             noticeDialog.show(title, message)
         }

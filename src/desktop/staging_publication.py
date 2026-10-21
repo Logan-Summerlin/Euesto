@@ -4,7 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, Slot
+from PySide6.QtCore import QObject, QTimer, Slot
 
 from shared.tools import PublishManifest
 
@@ -21,6 +21,10 @@ class StagingPublicationService(QObject):
     Every publication is an exact, hash-checked manifest applied by the desktop broker. A
     multi-batch publication keeps the batch in flight and the next batch awaiting approval;
     Auto sessions continue automatically, everything else is confirmed batch by batch.
+
+    Staging persists across sessions (plan 2.4), so this service also publishes staged work
+    kept from an earlier session, rebases staging onto host changes, resolves conflicts, and
+    guards closing the app or switching workspace so staged work is never lost silently (0.6).
     """
 
     def __init__(self, host: BridgeHost, *, recovery_root: Callable[[], Path] | None = None):
@@ -30,6 +34,11 @@ class StagingPublicationService(QObject):
         self.publication_worker: PublicationWorker | None = None
         self.discard_worker: StagingWorker | None = None
         self.inspect_worker: StagingWorker | None = None
+        # Publishing kept work, rebasing, or checking staging before leaving the workspace.
+        self.action_worker: StagingWorker | None = None
+        self._pending_leave: Callable[[], None] | None = None
+        # Open drift conflicts from the latest inspection or rebase, shown for resolution.
+        self.conflicts: list[dict[str, Any]] = []
         # Multi-batch publication: the batch in flight and the next batch awaiting its turn.
         self.active_publication: tuple[PublishManifest, bool] | None = None
         self.next_publication: tuple[PublishManifest, bool, GatewayClient | None] | None = None
@@ -37,7 +46,14 @@ class StagingPublicationService(QObject):
 
     @property
     def busy(self) -> bool:
-        return any((self.discard_worker, self.inspect_worker, self.publication_worker))
+        return any(
+            (
+                self.discard_worker,
+                self.inspect_worker,
+                self.publication_worker,
+                self.action_worker,
+            )
+        )
 
     @property
     def publishing(self) -> bool:
@@ -228,7 +244,7 @@ class StagingPublicationService(QObject):
             self._discard,
         )
 
-    def _discard(self) -> None:
+    def _discard(self, then: Callable[[], None] | None = None) -> None:
         connection = self.host.runtime.connection()
         if not connection or not self.host.runtime.workspace_path:
             self.host.errorRequested.emit(
@@ -239,18 +255,21 @@ class StagingPublicationService(QObject):
             GatewayClient(connection), self.host.runtime.identity(), "discard"
         )
         self.discard_worker = worker
-        worker.complete.connect(self._on_discarded)
+        worker.complete.connect(lambda result: self._on_discarded(result, then))
         worker.failed.connect(self._on_discard_failed)
         worker.finished.connect(self._on_discard_finished)
         self.host.set_status("Discarding staged changes and reseeding workspace…")
         worker.start()
 
-    @Slot(dict)
-    def _on_discarded(self, result: dict[str, Any]) -> None:
+    def _on_discarded(
+        self, result: dict[str, Any], then: Callable[[], None] | None = None
+    ) -> None:
         self.host.set_status(
             "Staging reseeded"
             + (f" · {int(result.get('file_count') or 0):,} files" if result else "")
         )
+        if then is not None:
+            QTimer.singleShot(0, then)
 
     @Slot(str)
     def _on_discard_failed(self, message: str) -> None:
@@ -286,6 +305,7 @@ class StagingPublicationService(QObject):
     def _on_inspected(self, result: dict[str, Any]) -> None:
         self.host.infoRequested.emit("Staged workspace review", describe_staged_changes(result))
         self.host.set_status("Staging reviewed")
+        self._set_conflicts(staged_conflicts(result))
 
     @Slot(str)
     def _on_inspect_failed(self, message: str) -> None:
@@ -297,6 +317,186 @@ class StagingPublicationService(QObject):
             self.inspect_worker.deleteLater()
         self.inspect_worker = None
         self.host.stateChanged.emit()
+
+    # -- persistent staging: publish kept work, rebase, resolve conflicts (plan 2.4) -----
+
+    def _client(self) -> GatewayClient | None:
+        connection = self.host.runtime.connection()
+        if not connection or not self.host.runtime.workspace_path:
+            self.host.errorRequested.emit(
+                "Workspace runtime required", "Select a ready workspace first."
+            )
+            return None
+        return GatewayClient(connection)
+
+    def _start_action(
+        self,
+        action: str,
+        status: str,
+        on_complete: Callable[[dict[str, Any]], None],
+        on_failed: Callable[[str], None],
+        resolutions: dict[str, list[str]] | None = None,
+    ) -> bool:
+        if self.host.generation.running or self.busy:
+            self.host.set_status("Wait for the active run or staging request to finish…")
+            return False
+        client = self._client()
+        if client is None:
+            return False
+        worker = StagingWorker(client, self.host.runtime.identity(), action, resolutions)
+        self.action_worker = worker
+        worker.complete.connect(on_complete)
+        worker.failed.connect(on_failed)
+        worker.finished.connect(self._on_action_finished)
+        self.host.set_status(status)
+        self.host.stateChanged.emit()
+        worker.start()
+        return True
+
+    @Slot()
+    def _on_action_finished(self) -> None:
+        if self.action_worker:
+            self.action_worker.deleteLater()
+        self.action_worker = None
+        self.host.stateChanged.emit()
+
+    def publish_staged(self) -> None:
+        """Review and publish staged work kept from an earlier session."""
+        self._start_action(
+            "publish",
+            "Preparing staged changes for review…",
+            self._on_staged_publication,
+            lambda message: self.host.errorRequested.emit(
+                "Could not prepare publication", message
+            ),
+        )
+
+    def _on_staged_publication(self, result: dict[str, Any]) -> None:
+        try:
+            manifest = PublishManifest.from_dict(result.get("manifest"))  # type: ignore[arg-type]
+        except (TypeError, ValueError) as exc:
+            self.host.errorRequested.emit("Publication blocked", str(exc))
+            return
+        if not manifest.operations:
+            self.host.set_status("Nothing to publish: staging matches the workspace")
+            return
+        self.host.set_status("Review the staged changes to publish")
+        self.confirm_publication(
+            manifest, f"publish-staged:{manifest.publication_id}:{manifest.batch_index}"
+        )
+
+    def rebase(self, resolutions: dict[str, list[str]] | None = None) -> None:
+        """Bring host changes into staging; ``resolutions`` settles named conflicts."""
+        self._start_action(
+            "rebase",
+            "Bringing host changes into staging…",
+            self._on_rebased,
+            lambda message: self.host.errorRequested.emit("Could not rebase staging", message),
+            resolutions,
+        )
+
+    def resolve_conflict(self, path: str, choice: str) -> None:
+        """Settle one conflict: ``keep_staged`` keeps the agent's version, ``take_host`` the host's."""
+        if choice not in {"keep_staged", "take_host"} or not path:
+            self.host.errorRequested.emit(
+                "Invalid conflict resolution",
+                "Choose to keep the staged or take the host file.",
+            )
+            return
+        self.rebase({choice: [path]})
+
+    def _on_rebased(self, result: dict[str, Any]) -> None:
+        self.host.set_status(describe_rebase(result))
+        self._set_conflicts(
+            staged_conflicts({"data": {"conflicts": result.get("open_conflicts")}})
+        )
+
+    def _set_conflicts(self, conflicts: list[dict[str, Any]]) -> None:
+        if conflicts != self.conflicts:
+            self.conflicts = conflicts
+            self.host.conflictsChanged.emit()
+
+    # -- leaving a workspace (plan 0.6) ------------------------------------------------
+
+    def guard_leave(self, proceed: Callable[[], None], *, closing: bool) -> None:
+        """Run ``proceed`` once staged work is safe: clean, or the user chose what to do.
+
+        Staging persists in its workspace's volumes, so *Keep for later* simply proceeds; the
+        next session for the same workspace resumes it.
+        """
+        connection = self.host.runtime.connection()
+        if (
+            not connection
+            or not self.host.runtime.workspace_path
+            or not self.host.runtime.workspace_ready()
+            or self.busy
+        ):
+            proceed()
+            return
+        self._pending_leave = proceed
+        worker = StagingWorker(
+            GatewayClient(connection), self.host.runtime.identity(), "inspect"
+        )
+        self.action_worker = worker
+        worker.complete.connect(lambda result: self._on_leave_inspected(result, closing))
+        worker.failed.connect(lambda _message: self.resolve_leave("keep"))
+        worker.finished.connect(self._on_action_finished)
+        self.host.set_status("Checking staged changes…")
+        worker.start()
+
+    def _on_leave_inspected(self, result: dict[str, Any], closing: bool) -> None:
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        if not data.get("unpublished_changes"):
+            self.resolve_leave("keep")
+            return
+        title = (
+            "Close with unpublished staged changes?"
+            if closing
+            else ("Switch workspace with unpublished staged changes?")
+        )
+        body = (
+            describe_staged_changes(result)
+            + "\n\nReview and publish writes them to the workspace after you approve each "
+            "file; Discard deletes them; Keep for later leaves them staged for the next "
+            "session with this workspace."
+        )
+        self.host.leaveRequested.emit(title, body)
+
+    def resolve_leave(self, choice: str) -> None:
+        proceed, self._pending_leave = self._pending_leave, None
+        if proceed is None:
+            return
+        if choice == "keep":
+            QTimer.singleShot(0, proceed)
+        elif choice == "discard":
+            QTimer.singleShot(0, lambda: self._discard(then=proceed))
+        elif choice == "publish":
+            # Publication is reviewed; leaving waits for the user to close or switch again.
+            QTimer.singleShot(0, self.publish_staged)
+        else:
+            self.host.set_status("Kept the workspace open")
+
+
+def staged_conflicts(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """The open drift conflicts in a staging inspection, for the conflict list in QML."""
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    conflicts = data.get("conflicts") if isinstance(data.get("conflicts"), list) else []
+    return [
+        {"path": str(item["path"])}
+        for item in conflicts
+        if isinstance(item, dict) and isinstance(item.get("path"), str)
+    ]
+
+
+def describe_rebase(result: dict[str, Any]) -> str:
+    absorbed = len(result.get("absorbed") or ())
+    resolved = len(result.get("resolved") or ())
+    conflicts = len(result.get("open_conflicts") or ())
+    parts = [f"Rebased staging: {absorbed} host change(s) absorbed"]
+    if resolved:
+        parts.append(f"{resolved} conflict(s) resolved")
+    parts.append(f"{conflicts} conflict(s) open" if conflicts else "no conflicts")
+    return " · ".join(parts)
 
 
 def describe_staged_changes(result: dict[str, Any]) -> str:
@@ -315,4 +515,15 @@ def describe_staged_changes(result: dict[str, Any]) -> str:
         state = "Staging is clean: it matches the workspace baseline."
     files = int(data.get("file_count") or 0)
     size = int(data.get("total_bytes") or 0)
-    return f"{state}\nStaged snapshot: {files:,} files, {size:,} bytes."
+    lines = [state, f"Staged snapshot: {files:,} files, {size:,} bytes."]
+    if data.get("staging_resumed"):
+        lines.append("Staging was resumed from an earlier session with this workspace.")
+    conflicts = staged_conflicts(result)
+    if conflicts:
+        names = ", ".join(item["path"] for item in conflicts[:10])
+        more = f" and {len(conflicts) - 10} more" if len(conflicts) > 10 else ""
+        lines.append(
+            f"{len(conflicts)} file(s) changed both on the host and in staging: {names}{more}. "
+            "They are held back from publication until you keep the staged or take the host version."
+        )
+    return "\n".join(lines)

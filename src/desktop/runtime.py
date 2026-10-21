@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QTimer, Slot
@@ -8,7 +9,7 @@ from PySide6.QtCore import QObject, QTimer, Slot
 from shared.responses import GatewayStatus
 
 from ..connection import GatewayHealthWorker, HealthResult, HealthState
-from ..gateway_client import DEFAULT_GATEWAY_URL, GatewayConnection
+from ..gateway_client import DEFAULT_GATEWAY_URL, GatewayClient, GatewayConnection, GatewayError
 from ..runtime_manager import RuntimeManager, RuntimeResult
 from ..settings import (
     app_data_dir,
@@ -17,6 +18,7 @@ from ..settings import (
     save_gateway_token,
 )
 from ..storage import Storage
+from ..workers import CallWorker
 from ..workspace_broker import BrokerError, canonical_workspace, workspace_id
 from .conversations import local_path
 from .host import BridgeHost
@@ -69,6 +71,11 @@ class RuntimeService(QObject):
         self.gateway_token = get_gateway_session_token() or get_gateway_token() or ""
         self.closing = False
         self._recheck_requested = False
+        # Gateway notices (a migration disabling broad saved rules, say) shown once each.
+        self._shown_notices: set[str] = set()
+        # Persistent staged sessions Docker holds, for the Settings retention list (2.4).
+        self.staged_sessions: list[dict[str, object]] = []
+        self.sessions_worker: CallWorker | None = None
         self.health_timer = QTimer(self)
         self.health_timer.setInterval(10_000)
         self.health_timer.timeout.connect(self.check_gateway)
@@ -141,6 +148,16 @@ class RuntimeService(QObject):
         self.host.infoRequested.emit("Gateway status", self.status_report())
 
     # -- workspace and gateway configuration --------------------------------------------
+
+    def is_current_workspace(self, value: str) -> bool:
+        """Whether ``value`` names the workspace already selected (no staged work at risk)."""
+        local = local_path(value)
+        if local is None or not self.workspace_path:
+            return False
+        try:
+            return str(canonical_workspace(local)) == self.workspace_path
+        except BrokerError:
+            return False
 
     def select_workspace(self, value: str) -> None:
         local = local_path(value)
@@ -270,6 +287,24 @@ class RuntimeService(QObject):
         self.host.stateChanged.emit()
         if result.state in {HealthState.READY, HealthState.DEGRADED}:
             self.host.settings.refresh_catalog_if_stale()
+            self._show_notices(result.status)
+
+    def _show_notices(self, status: GatewayStatus | None) -> None:
+        """Show each unacknowledged gateway notice once, then acknowledge it."""
+        notices = status.notices if status else ()
+        connection = self.connection()
+        for notice in notices:
+            notice_id = str(notice.get("notice_id") or "")
+            message = str(notice.get("message") or "")
+            if not notice_id or not message or notice_id in self._shown_notices:
+                continue
+            self._shown_notices.add(notice_id)
+            self.host.infoRequested.emit("Notice", message)
+            if connection is not None:
+                try:
+                    GatewayClient(connection).acknowledge_notice(notice_id)
+                except GatewayError:
+                    pass
 
     # -- runtime manager -----------------------------------------------------------------
 
@@ -291,7 +326,7 @@ class RuntimeService(QObject):
     def _ensure_runtime(self, workspace: Path | None) -> None:
         self.target_identity = workspace_id(workspace) if workspace else None
         try:
-            self.manager.ensure(workspace)
+            self.manager.ensure(workspace, settings=self.host.settings.runtime_settings())
         except (OSError, RuntimeError, ValueError) as exc:
             self._runtime_failed(str(exc))
 
@@ -334,6 +369,55 @@ class RuntimeService(QObject):
         )
         self.host.stateChanged.emit()
         self.host.errorRequested.emit("Local runtime setup failed", self.detail)
+
+    # -- staged sessions (plan 2.4 retention) -------------------------------------------
+
+    def refresh_staged_sessions(self) -> None:
+        if self.sessions_worker or not self.automatic:
+            return
+        retention = self.host.settings.retention_days()
+        self._run_sessions(
+            lambda: self.manager.staged_sessions(retention), "Could not list staged sessions"
+        )
+
+    def request_remove_staged_session(self, key: str) -> None:
+        session = next((item for item in self.staged_sessions if item.get("key") == key), None)
+        if session is None or self.sessions_worker:
+            return
+        self.host.confirm(
+            f"remove-staged-session:{key}",
+            "Remove this staged session?",
+            f"This deletes the staged copy, state, and caches kept for {session.get('workspace') or key}. "
+            "Host files are not changed, but any unpublished staged edits there are lost.",
+            lambda: self._run_sessions(
+                lambda: self._remove_and_list(key), "Could not remove the staged session"
+            ),
+        )
+
+    def _remove_and_list(self, key: str) -> list[dict[str, object]]:
+        self.manager.remove_staged_session(key)
+        return self.manager.staged_sessions(self.host.settings.retention_days())
+
+    def _run_sessions(self, action: Callable[[], object], unexpected: str) -> None:
+        worker = CallWorker(action, unexpected)
+        worker.complete.connect(self._sessions_listed)
+        worker.failed.connect(
+            lambda message: self.host.errorRequested.emit("Staged sessions", message)
+        )
+        worker.finished.connect(self._sessions_finished)
+        self.sessions_worker = worker
+        worker.start()
+
+    @Slot(object)
+    def _sessions_listed(self, sessions: object) -> None:
+        self.staged_sessions = [item for item in sessions or () if isinstance(item, dict)]
+        self.host.settingsChanged.emit()
+
+    @Slot()
+    def _sessions_finished(self) -> None:
+        if self.sessions_worker:
+            self.sessions_worker.deleteLater()
+        self.sessions_worker = None
 
     def shutdown(self) -> None:
         self.closing = True

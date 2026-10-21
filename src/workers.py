@@ -181,8 +181,12 @@ class AgentWorker(_StreamWorker):
                 self._note_run(event.run_id)
                 if event.type == "model.delta" and event.payload.get("text"):
                     self._chunks.append(str(event.payload["text"]))
-                elif event.type in {"usage.updated", "run.completed"}:
+                elif event.type == "run.completed":
                     usage.update(event.payload)
+                elif event.type == "usage.updated":
+                    usage.update(event.payload)
+                    # The run meter (plan 0.8) folds running totals in as they arrive.
+                    self.eventReceived.emit(event)
                 elif event.type not in {"tool.output", "tool.completed"}:
                     self.eventReceived.emit(event)
                     if event.type == "run.failed":
@@ -201,23 +205,73 @@ class AgentWorker(_StreamWorker):
         self.last_usage = dict(usage)
 
 
+class CallWorker(QThread):
+    """Run one blocking call (a Docker CLI query, say) off the UI thread."""
+
+    complete = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, action: Callable[[], object], unexpected: str):
+        super().__init__()
+        self.action = action
+        self.unexpected = unexpected
+
+    def run(self) -> None:
+        try:
+            result = self.action()
+        except (OSError, RuntimeError, *EXPECTED_ERRORS) as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:
+            self.failed.emit(f"{self.unexpected}: {exc}")
+        else:
+            self.complete.emit(result)
+
+
 class StagingWorker(QThread):
-    """Run one staging request (``discard`` or ``inspect``) against the gateway off the UI thread."""
+    """Run one staging request against the gateway off the UI thread.
+
+    Actions: ``inspect``, ``discard``, ``publish`` (the first batch of staged work kept from
+    an earlier session, emitted as ``{"manifest": ...}``), and ``rebase`` (absorb host
+    changes, resolving ``resolutions`` = ``{"keep_staged": [...], "take_host": [...]}``).
+    """
 
     complete = Signal(dict)
     failed = Signal(str)
 
-    def __init__(self, client: GatewayClient, workspace_id: str, action: str):
+    def __init__(
+        self,
+        client: GatewayClient,
+        workspace_id: str,
+        action: str,
+        resolutions: dict[str, list[str]] | None = None,
+    ):
         super().__init__()
         self.client = client
         self.workspace_id = workspace_id
         self.action = action
+        self.resolutions = resolutions or {}
 
     def run(self) -> None:
-        if self.action == "discard":
-            request, description = self.client.discard_staging, "discard"
-        else:
-            request, description = self.client.inspect_staging, "inspection"
+        requests = {
+            "discard": (self.client.discard_staging, "discard"),
+            "publish": (
+                lambda workspace: {
+                    "manifest": self.client.staged_publication(workspace).to_dict()
+                },
+                "publication",
+            ),
+            "rebase": (
+                lambda workspace: self.client.rebase_staging(
+                    workspace,
+                    keep_staged=self.resolutions.get("keep_staged", ()),
+                    take_host=self.resolutions.get("take_host", ()),
+                ),
+                "rebase",
+            ),
+        }
+        request, description = requests.get(
+            self.action, (self.client.inspect_staging, "inspection")
+        )
         result, error = _attempt(
             lambda: request(self.workspace_id), f"Unexpected staging {description} error"
         )

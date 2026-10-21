@@ -10,6 +10,7 @@ from ..controllers import GenerationController
 from ..extensions import load_selected_skills
 from ..gateway_client import GatewayClient, GatewayConnection, GatewayError
 from ..models import ServerToolOptions
+from ..run_meter import RunMeter
 from ..settings import app_data_dir, get_api_key
 from ..storage import Storage
 from ..transcript import compact_activity_event
@@ -41,6 +42,8 @@ class GenerationService(QObject):
         # Middle approval tier: staged file edits run without prompts, Bash still asks.
         self.accept_edits = False
         self.live_events: list[dict[str, object]] = []
+        # Cost, cache hit rate, context, tool calls, and time for the active run (0.8).
+        self.meter = RunMeter()
         self._pending_approvals: dict[str, dict[str, Any]] = {}
 
     @property
@@ -169,10 +172,27 @@ class GenerationService(QObject):
         if resolved is None:
             return
         if self.running:
+            if steer and self._steer(resolved):
+                return
             self.controller.enqueue(resolved, steered=steer, front=steer)
             self.host.set_status(f"Queued {self.controller.pending_count} message(s)")
             return
         self.start_user_turn(resolved)
+
+    def _steer(self, text: str) -> bool:
+        """Send guidance to the active agent run; it arrives before the next model turn.
+
+        Chat runs and gateways that refuse the message fall back to the input queue.
+        """
+        run_id = self.controller.state.run_id
+        if not isinstance(self.worker, AgentWorker) or not run_id:
+            return False
+        try:
+            self.worker.client.steer(run_id, text)
+        except GatewayError:
+            return False
+        self.host.set_status("Steering sent; the agent reads it before its next step")
+        return True
 
     def _handle_prompt_command(self, text: str) -> str | None:
         if not text.startswith("/"):
@@ -343,6 +363,8 @@ class GenerationService(QObject):
 
     def _attach(self, worker: ChatWorker | AgentWorker) -> None:
         self.worker = worker
+        self.meter = RunMeter()
+        self.host.meterChanged.emit()
         worker.runStarted.connect(self.on_run_started)
         worker.chunk.connect(self.on_stream_chunk)
         worker.complete.connect(self.on_stream_complete)
@@ -379,6 +401,10 @@ class GenerationService(QObject):
         event_type = str(event.type)
         payload = event.payload
         compact: dict[str, object] | None = None
+        if self.meter.update(event_type, payload):
+            self.host.meterChanged.emit()
+        if event_type == "usage.updated":
+            return
         try:
             if event_type not in {"model.delta", "tool.output", "tool.completed"}:
                 self.controller.save_event(event)

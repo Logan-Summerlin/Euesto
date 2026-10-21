@@ -231,7 +231,8 @@ def test_agent_worker_delivers_one_answer_and_drops_large_transport_events() -> 
     worker.complete.connect(lambda usage, cancelled: completions.append((usage, cancelled)))
     worker.run()
     assert chunks == ["hello"]
-    assert [event.type for event in desktop_events] == ["tool.requested"]
+    # Running usage totals reach the run meter (plan 0.8); large tool output does not.
+    assert [event.type for event in desktop_events] == ["tool.requested", "usage.updated"]
     assert completions == [({"tokens": 9, "run_id": "run-1"}, False)]
 
 

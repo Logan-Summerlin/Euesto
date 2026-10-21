@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -14,7 +15,7 @@ from server.config import GatewayConfig
 from server.journal import JournalStore
 from server.service import MAX_STEERING_CHARS, GatewayService, GatewayServiceError
 from shared.permissions import PermissionDecision, PermissionRule
-from shared.tools import ToolRequest
+from shared.tools import PublishManifest, ToolRequest
 
 TOKEN = "t" * 43
 
@@ -141,6 +142,63 @@ def test_rebase_endpoint_forwards_only_well_formed_conflict_resolutions(tmp_path
         ("w", {"keep_staged": [], "take_host": []}),
         ("w", {"keep_staged": ["a.txt"], "take_host": ["b.txt"]}),
     ]
+
+
+def test_staged_publication_endpoint_takes_no_fields_and_waits_for_runs(
+    tmp_path: Path,
+) -> None:
+    """Persistent staged work (plan 2.4) publishes through the same reviewed manifest."""
+    service = _service(tmp_path, _Runtime(set()))
+    requested: list[str] = []
+    real = service.staged_publication
+
+    async def staged_publication(workspace_id: str):
+        requested.append(workspace_id)
+        return PublishManifest(
+            manifest_id="staged-1",
+            run_id="p",
+            workspace_id=workspace_id,
+            source_snapshot_id="s",
+            approval_id="p",
+            operations=(),
+            publication_id="p",
+        )
+
+    service.staged_publication = staged_publication  # type: ignore[method-assign]
+
+    async def scenario() -> list[tuple[int, str]]:
+        transport = httpx.ASGITransport(app=create_app(service.config, service))
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://127.0.0.1",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as client:
+            results = []
+            for body in ({}, {"run_id": "x"}):
+                response = await client.post("/v1/workspaces/w/staging/publication", json=body)
+                results.append((response.status_code, response.json().get("manifest_id", "")))
+            return results
+
+    assert asyncio.run(scenario()) == [(200, "staged-1"), (422, "")]
+    assert requested == ["w"]
+
+    # Without the active workspace executor, or while a run is active, nothing is built.
+    assert _code(real("w")) == ("workspace.invalid", 409)
+    service.executor = object()  # type: ignore[assignment]
+    service.config = replace(service.config, workspace_id="w")
+
+    async def active_run() -> tuple[str, int]:
+        task = asyncio.get_running_loop().create_future()
+        service._tasks["live"] = task  # type: ignore[assignment]
+        try:
+            await real("w")
+        except GatewayServiceError as error:
+            return error.code, error.status
+        finally:
+            task.cancel()
+        return "", 0
+
+    assert asyncio.run(active_run()) == ("staging.busy", 409)
 
 
 def _legacy_database(path: Path) -> None:

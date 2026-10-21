@@ -122,3 +122,56 @@ def test_agent_events_map_the_final_model_delta_and_completion() -> None:
 
     assert delta is not None and (delta.text, delta.done) == ("Task complete.", False)
     assert completed is not None and completed.done is True
+
+
+def test_steering_rebase_publication_and_notice_requests(monkeypatch) -> None:
+    bodies: list[object] = []
+    manifest = {
+        "manifest_id": "staged-1",
+        "run_id": "p1",
+        "workspace_id": "ws",
+        "source_snapshot_id": "s",
+        "approval_id": "p1",
+        "operations": [],
+        "publication_id": "p1",
+        "batch_index": 1,
+        "batch_count": 1,
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content or b"null"))
+        if request.url.path.endswith("/staging/publication"):
+            return httpx.Response(200, json=manifest)
+        if request.url.path.endswith("/staging/rebase"):
+            return httpx.Response(200, json={"ok": True, "absorbed": ["a.py"]})
+        return httpx.Response(200, json={"ok": True})
+
+    gateway, calls = _gateway(monkeypatch, handler)
+    gateway.steer("run-1", "Use the v2 API")
+    assert gateway.rebase_staging("ws", keep_staged=["a.py"], take_host=["b.py"])["absorbed"]
+    assert gateway.staged_publication("ws").manifest_id == "staged-1"
+    gateway.acknowledge_notice("notice-1")
+
+    assert calls == [
+        ("POST", "/v1/runs/run-1/messages"),
+        ("POST", "/v1/workspaces/ws/staging/rebase"),
+        ("POST", "/v1/workspaces/ws/staging/publication"),
+        ("POST", "/v1/notices/notice-1/acknowledge"),
+    ]
+    assert bodies == [
+        {"content": "Use the v2 API"},
+        {"keep_staged": ["a.py"], "take_host": ["b.py"]},
+        {},
+        {},
+    ]
+
+
+def test_steering_rejected_by_the_gateway_raises(monkeypatch) -> None:
+    gateway, _calls = _gateway(
+        monkeypatch,
+        lambda _request: httpx.Response(
+            409, json={"error": {"code": "run.not_active", "message": "Run is not active."}}
+        ),
+    )
+    with pytest.raises(GatewayError):
+        gateway.steer("run-1", "late")

@@ -6,6 +6,7 @@ show in QML (signals, status line, confirmations) and supplies stub sibling serv
 
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,7 +34,9 @@ from src.desktop import (
 )
 from src.desktop import runtime as runtime_module
 from src.desktop import staging_publication as staging_module
+from src.gateway_client import GatewayConnection, GatewayError
 from src.storage import Storage
+from src.workers import AgentWorker, StagingWorker
 from src.workspace_broker import workspace_id
 
 
@@ -70,6 +73,9 @@ class FakeHost(QObject):
         "runtimeSetupFinished",
         "fileExported",
         "fileImported",
+        "meterChanged",
+        "conflictsChanged",
+        "leaveRequested",
     )
 
     def __init__(self) -> None:
@@ -723,3 +729,302 @@ def test_staging_review_describes_the_inspected_state() -> None:
     assert dirty.startswith("Staging has unpublished changes.")
     assert "1,200 files, 4,096 bytes" in dirty
     assert clean.startswith("Staging is clean")
+
+
+# -- persistent staging, leaving a workspace, steering, meter, settings (plans 0.6-2.7) ---
+
+
+class Hook:
+    """A signal stand-in that calls what is connected to it."""
+
+    def __init__(self) -> None:
+        self.slots: list[Any] = []
+
+    def connect(self, slot: Any) -> None:
+        self.slots.append(slot)
+
+    def emit(self, *args: Any) -> None:
+        for slot in self.slots:
+            slot(*args)
+
+
+class FakeStagingWorker:
+    started: list[FakeStagingWorker] = []
+
+    def __init__(self, client, workspace_id, action, resolutions=None) -> None:
+        self.action = action
+        self.resolutions = resolutions
+        self.complete, self.failed, self.finished = Hook(), Hook(), Hook()
+
+    def start(self) -> None:
+        FakeStagingWorker.started.append(self)
+
+    def deleteLater(self) -> None:
+        return None
+
+    def succeed(self, result: dict[str, Any]) -> None:
+        self.complete.emit(result)
+        self.finished.emit()
+
+
+class ImmediateTimer:
+    @staticmethod
+    def singleShot(_delay: int, action: Any) -> None:
+        action()
+
+
+@pytest.fixture
+def ready_staging(host, staging, monkeypatch):
+    service, _stopped = staging
+    FakeStagingWorker.started = []
+    monkeypatch.setattr(staging_module, "StagingWorker", FakeStagingWorker)
+    monkeypatch.setattr(staging_module, "QTimer", ImmediateTimer)
+    host.runtime.connection = lambda: GatewayConnection(token="t" * 43)
+    host.runtime.workspace_ready = lambda: True
+    return service
+
+
+DIRTY = {"data": {"unpublished_changes": True, "file_count": 3, "total_bytes": 10}}
+
+
+def test_leaving_with_clean_or_unreachable_staging_proceeds_at_once(
+    host, ready_staging
+) -> None:
+    left: list[int] = []
+    host.runtime.connection = lambda: None
+    ready_staging.guard_leave(lambda: left.append(1), closing=True)
+    assert left == [1] and FakeStagingWorker.started == []
+
+    host.runtime.connection = lambda: GatewayConnection(token="t" * 43)
+    ready_staging.guard_leave(lambda: left.append(2), closing=True)
+    FakeStagingWorker.started[-1].succeed({"data": {"unpublished_changes": False}})
+    assert left == [1, 2] and host.leaveRequested.calls == []
+
+
+@pytest.mark.parametrize("choice", ["keep", "discard", "publish", "cancel"])
+def test_leaving_with_unpublished_changes_offers_each_choice(
+    host, ready_staging, choice: str
+) -> None:
+    left: list[int] = []
+    ready_staging.guard_leave(lambda: left.append(1), closing=True)
+    inspect = FakeStagingWorker.started[-1]
+    assert inspect.action == "inspect"
+    inspect.succeed(DIRTY)
+    title, body = host.leaveRequested.calls[-1]
+    assert title == "Close with unpublished staged changes?"
+    assert "Keep for later" in body and left == []
+
+    ready_staging.resolve_leave(choice)
+    if choice == "keep":
+        assert left == [1]
+    elif choice == "discard":
+        discard = FakeStagingWorker.started[-1]
+        assert discard.action == "discard" and left == []
+        discard.succeed({"ok": True, "file_count": 3})
+        assert left == [1]
+    elif choice == "publish":
+        publish = FakeStagingWorker.started[-1]
+        assert publish.action == "publish"
+        publish.succeed({"manifest": _manifest(operations=[]).to_dict()})
+        assert host.statuses[-1] == "Nothing to publish: staging matches the workspace"
+        assert left == []  # leaving waits until the user closes again
+    else:
+        assert left == [] and host.statuses[-1] == "Kept the workspace open"
+    # A choice only applies once.
+    ready_staging.resolve_leave("keep")
+    assert left.count(1) <= 1
+
+
+def test_publishing_kept_staged_work_asks_for_review(host, ready_staging) -> None:
+    ready_staging.publish_staged()
+    manifest = _manifest(
+        operations=[
+            {
+                "path": "a.py",
+                "operation": "update",
+                "base_sha256": "0" * 64,
+                "staged_sha256": hashlib.sha256(b"x").hexdigest(),
+                "content": "x",
+            }
+        ]
+    )
+    FakeStagingWorker.started[-1].succeed({"manifest": manifest.to_dict()})
+    title = host.confirmations["publish-staged:pub:1"][0]
+    assert title == "Publish staged changes to the host?"
+
+
+def test_conflicts_are_listed_and_resolved_one_file_at_a_time(host, ready_staging) -> None:
+    ready_staging._on_inspected(
+        {
+            "data": {
+                "unpublished_changes": True,
+                "staging_resumed": True,
+                "conflicts": [{"path": "a.py", "base_sha256": "0"}, {"path": "b.py"}],
+            }
+        }
+    )
+    assert ready_staging.conflicts == [{"path": "a.py"}, {"path": "b.py"}]
+    review = host.infoRequested.calls[-1][1]
+    assert "resumed from an earlier session" in review and "a.py, b.py" in review
+
+    ready_staging.resolve_conflict("a.py", "take_host")
+    rebase = FakeStagingWorker.started[-1]
+    assert rebase.action == "rebase" and rebase.resolutions == {"take_host": ["a.py"]}
+    rebase.succeed({"absorbed": [], "resolved": ["a.py"], "open_conflicts": [{"path": "b.py"}]})
+    assert ready_staging.conflicts == [{"path": "b.py"}] and host.conflictsChanged.calls
+    assert host.statuses[-1] == (
+        "Rebased staging: 0 host change(s) absorbed · 1 conflict(s) resolved · 1 conflict(s) open"
+    )
+
+    ready_staging.resolve_conflict("b.py", "merge")
+    assert host.errorRequested.calls[-1][0] == "Invalid conflict resolution"
+
+
+def test_staging_actions_wait_for_an_active_run(host, ready_staging) -> None:
+    host.generation.running = True
+    ready_staging.rebase()
+    assert FakeStagingWorker.started == []
+    assert host.statuses[-1] == "Wait for the active run or staging request to finish…"
+
+
+def test_steering_goes_to_the_active_agent_run_or_falls_back_to_the_queue(
+    host, storage, tmp_path: Path
+) -> None:
+    generation = _generation(host, storage, tmp_path)
+    sent: list[tuple[str, str]] = []
+    client = SimpleNamespace(
+        cancel=lambda: None, steer=lambda run, text: sent.append((run, text))
+    )
+    generation.worker = AgentWorker(client, lambda _stop: iter(()))
+    generation.controller.state.run_id = "run-1"
+
+    generation.send_message("Use the v2 API", steer=True)
+    assert sent == [("run-1", "Use the v2 API")] and generation.controller.pending_count == 0
+
+    def refuse(_run: str, _text: str) -> None:
+        raise GatewayError("Run is not active.")
+
+    client.steer = refuse
+    generation.send_message("too late", steer=True)
+    assert generation.controller.pending_count == 1  # queued for the next turn instead
+    generation.send_message("plain follow-up")
+    assert generation.controller.pending_count == 2
+    generation.worker = None
+
+
+def test_run_meter_updates_from_agent_events_and_resets_per_run(
+    host, storage, tmp_path: Path
+) -> None:
+    generation = _generation(host, storage, tmp_path)
+    generation.on_agent_event(
+        EventEnvelope(
+            1,
+            "run-1",
+            "usage.updated",
+            "2026-01-01T00:00:00Z",
+            {"budget": {"tool_calls": 4, "elapsed_seconds": 61}, "cost": 0.01},
+        )
+    )
+    assert generation.meter.tool_calls == 4 and host.meterChanged.calls
+    assert generation.meter.to_dict()["text"].startswith("$0.0100")
+    generation._attach(AgentWorker(SimpleNamespace(cancel=lambda: None), lambda _s: iter(())))
+    assert generation.meter.tool_calls == 0
+    generation.worker = None
+
+
+def test_gateway_notices_are_shown_once_and_acknowledged(
+    host, storage, tmp_path: Path, monkeypatch
+) -> None:
+    acknowledged: list[str] = []
+
+    class Client:
+        def __init__(self, _connection) -> None:
+            pass
+
+        def acknowledge_notice(self, notice_id: str) -> None:
+            acknowledged.append(notice_id)
+
+    monkeypatch.setattr(runtime_module, "GatewayClient", Client)
+    workspace = tmp_path / "projects" / "demo"
+    workspace.mkdir(parents=True)
+    runtime = _runtime(host, storage)
+    runtime.gateway_token = "t" * 43
+    status = _status(
+        workspace, notices=({"notice_id": "rules-1", "message": "Broad Bash rules disabled."},)
+    )
+    runtime.apply_health(HealthResult(HealthState.READY, "ok", status))
+    runtime.apply_health(HealthResult(HealthState.READY, "ok", status))
+    assert host.infoRequested.calls == [("Notice", "Broad Bash rules disabled.")]
+    assert acknowledged == ["rules-1"]
+
+
+def test_runner_settings_are_validated_and_saved(host, storage, tmp_path: Path) -> None:
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    host.runtime.workspace_path = str(tmp_path)
+    settings = SettingsService(
+        host, storage, catalog=SimpleNamespace(is_stale=lambda: False, models=lambda: [])
+    )
+    view = settings.runtime_settings_view()
+    assert view["runnerTarget"] == "auto" and view["detectedTarget"] == "node"
+    assert (view["pids"], view["gitHistoryDepth"], view["retentionDays"]) == (1024, 200, 30)
+
+    assert settings.save_runtime_settings(
+        {
+            "runnerTarget": "polyglot",
+            "cpus": 4,
+            "memoryGb": 8.0,
+            "pids": "2048",
+            "gitHistoryDepth": "0",
+            "retentionDays": "14",
+        }
+    )
+    saved = settings.runtime_settings()
+    assert (saved.runner_target, saved.cpus, saved.memory_gb, saved.pids) == (
+        "polyglot",
+        4.0,
+        8,
+        2048,
+    )
+    assert saved.git_history_depth == 0 and settings.retention_days() == 14
+
+    for bad in (
+        {"cpus": 16},
+        {"memoryGb": 1},
+        {"pids": 128},
+        {"pids": "1.5"},
+        {"runnerTarget": "ruby"},
+        {"retentionDays": 0},
+    ):
+        assert not settings.save_runtime_settings(bad), bad
+        assert host.errorRequested.calls[-1][0] == "Invalid runner settings"
+    assert settings.runtime_settings().runner_target == "polyglot"  # unchanged
+
+    storage.set_setting("runtime_settings", '{"cpus": 99}')
+    assert settings.runtime_settings().cpus is None  # unreadable values fall back to defaults
+
+
+def test_staging_worker_publish_and_rebase_actions_call_the_gateway() -> None:
+    calls: list[tuple[str, object]] = []
+    manifest = _manifest()
+    client = SimpleNamespace(
+        staged_publication=lambda workspace: calls.append(("publish", workspace)) or manifest,
+        rebase_staging=lambda workspace, **choices: calls.append(("rebase", choices))
+        or {"ok": 1},
+        inspect_staging=lambda workspace: calls.append(("inspect", workspace)) or {"data": {}},
+        discard_staging=lambda workspace: calls.append(("discard", workspace)) or {},
+    )
+    results: list[dict] = []
+    for action, resolutions in (
+        ("publish", None),
+        ("rebase", {"keep_staged": ["a.py"]}),
+        ("inspect", None),
+    ):
+        worker = StagingWorker(client, "ws", action, resolutions)
+        worker.complete.connect(results.append)
+        worker.run()
+    assert calls == [
+        ("publish", "ws"),
+        ("rebase", {"keep_staged": ["a.py"], "take_host": ()}),
+        ("inspect", "ws"),
+    ]
+    assert results[0] == {"manifest": manifest.to_dict()}
