@@ -29,6 +29,7 @@ This document is a status-oriented roadmap. It is not the authoritative architec
 - Improve observability and recovery UX without expanding executor authority.
 - Add narrowly scoped usability improvements that preserve the current security and publication model.
 - Keep resource defaults evidence-based as real workloads reveal bottlenecks.
+- Turn the harness into a capable, long-running software-engineering agent without weakening the boundary: see [AGENTIC_HARNESS_PLAN.md](AGENTIC_HARNESS_PLAN.md) (proposed; it maps each open item below to a phase).
 
 ### Open items carried from archived plans
 
