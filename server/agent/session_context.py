@@ -117,7 +117,12 @@ def clip_visibly(text: str, limit: int) -> str:
 
 
 def render_executor_facts(
-    status: dict[str, Any], mode: str, *, read_bytes: int, bash_chars: int
+    status: dict[str, Any],
+    mode: str,
+    *,
+    read_bytes: int,
+    bash_chars: int,
+    declared_checks: dict[str, str] | None = None,
 ) -> str:
     """Stable facts the model acts on. Storage figures stay in ``/v1/status``."""
     environment = status.get("environment") if isinstance(status, dict) else None
@@ -155,28 +160,52 @@ def render_executor_facts(
             )
         if limits.get("max_command_seconds"):
             lines.append(f"- Commands time out after at most {limits['max_command_seconds']}s.")
+        if declared_checks:
+            checks = "; ".join(
+                f"{name}: `{command}`" for name, command in list(declared_checks.items())[:10]
+            )
+            lines.append(f"- Declared checks (.euesto/policy.toml): {checks}.")
     else:
         lines.append("- Plan mode reads the workspace; nothing can be changed or run.")
     lines.append(f"- read returns up to {read_bytes} bytes per call; continue with start_line.")
     return "\n".join(lines)
 
 
+TIER_NOTES = {
+    "prompt": "- Approval tier: prompt. Each file change and command asks the user.",
+    "sandbox": "- Approval tier: sandbox. File changes and commands run without prompts in the "
+    "offline staged copy; the user still reviews every publication.",
+    "auto": "- Approval tier: auto. Calls run without prompts and staged changes publish "
+    "automatically when you finish, except risk-flagged files.",
+}
+NETWORK_NOTE = (
+    "- The runner can reach allowlisted package registries, so each bash command asks the user "
+    "unless a saved rule allows it; give bash a one-line description."
+)
+CONTINUATION_NOTE = (
+    "- The previous budget ran out and the user approved a new one; continue from your "
+    "summary and the plan."
+)
+
+
 def render_run_notes(
-    mode: str, approval_policy: str, budget: dict[str, Any], *, resumed: bool = False
+    mode: str,
+    approval_policy: str,
+    budget: dict[str, Any],
+    *,
+    resumed: bool = False,
+    network: bool = False,
+    continuation: bool = False,
 ) -> str:
     lines = [f"{RUN_NOTES_HEADER} (application-generated, for this run only)"]
-    if resumed:
+    if continuation:
+        lines.append(CONTINUATION_NOTE)
+    elif resumed:
         lines.append("- This run resumed after a pause; continue where you stopped.")
     if mode == "agent":
-        lines.append(
-            {
-                "prompt": "- Approval tier: prompt. Each file change and command asks the user.",
-                "accept_edits": "- Approval tier: accept edits. write, edit, and apply_patch "
-                "run without prompts; bash asks the user.",
-                "auto": "- Approval tier: auto. Calls run without prompts and staged changes "
-                "publish automatically when you finish.",
-            }.get(approval_policy, f"- Approval tier: {approval_policy}.")
-        )
+        lines.append(TIER_NOTES.get(approval_policy, f"- Approval tier: {approval_policy}."))
+        if network:
+            lines.append(NETWORK_NOTE)
     lines.append(
         f"- Budget: {budget.get('remaining_tool_calls', 0)} tool calls, "
         f"{budget.get('remaining_iterations', 0)} turns, "

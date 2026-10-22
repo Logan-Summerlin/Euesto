@@ -112,8 +112,9 @@ def test_status_excludes_secret_metadata_and_checkpoint_content(tmp_path: Path) 
     ]
     assert reported == ["a.txt", "a.txt"]
     assert "secret" not in result.output and ".local-chat" not in result.output
-    with pytest.raises(ValueError):
-        ToolRequest("s", "run", "status", "plan", {})
+    # Investigation may review staged changes from a Plan run (3.6); it stays read-only.
+    reviewed = asyncio.run(service.execute(ToolRequest("s", "run", "status", "plan", {})))
+    assert reviewed.ok and "a.txt" in reviewed.output and "secret" not in reviewed.output
     denied = asyncio.run(
         service.execute(ToolRequest("s2", "run", "status", "agent", {"paths": [".env"]}))
     )

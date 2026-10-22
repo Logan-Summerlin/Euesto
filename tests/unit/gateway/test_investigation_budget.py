@@ -89,12 +89,12 @@ def test_investigator_prompt_explains_plan_harness_and_budget(monkeypatch):
 
     system = captured["messages"][0]["content"]
     assert "bounded plan-mode harness" in system
-    assert "read, grep, find, and ls" in system
+    assert "read, grep, find, ls, and status" in system
     assert "36 tool calls" in system
     assert "36 iterations" in system
     assert "stop researching once you have enough evidence" in system
     assert "final available tool call" in system
-    assert captured["allowed_tools"] == {"read", "grep", "find", "ls"}
+    assert captured["allowed_tools"] == {"read", "grep", "find", "ls", "status"}
 
 
 def test_investigator_reserves_final_budget_for_synthesis(monkeypatch):
@@ -103,7 +103,13 @@ def test_investigator_reserves_final_budget_for_synthesis(monkeypatch):
     calls = []
 
     async def fake_agent_turn(*args, **kwargs):
-        calls.append({"messages": args[1], "allowed_tools": kwargs["allowed_tools"]})
+        calls.append(
+            {
+                "messages": args[1],
+                "allowed_tools": kwargs["allowed_tools"],
+                "offered_tools": kwargs["offered_tools"],
+            }
+        )
         if len(calls) == 1:
             return AgentTurn(
                 content="",
@@ -140,7 +146,8 @@ def test_investigator_reserves_final_budget_for_synthesis(monkeypatch):
     )
 
     assert len(calls) == 2
-    assert calls[0]["allowed_tools"] == {"read", "grep", "find", "ls"}
+    assert calls[0]["allowed_tools"] == {"read", "grep", "find", "ls", "status"}
+    assert calls[0]["offered_tools"] == calls[1]["offered_tools"]
     assert calls[1]["allowed_tools"] == set()
     assert any(
         message["role"] == "user" and "Stop repository exploration now" in message["content"]
@@ -620,9 +627,10 @@ def test_wall_time_reserve_stops_exploration_and_still_returns_summary(monkeypat
     assert result["summary"] == "Answer within the wall-time reserve."
     assert result["budget_exhausted"] is True
     assert calls[-1]["allowed_tools"] == set()
-    assert calls[-1]["timeout"] >= 60
+    assert calls[-1]["turn_timeout"] >= 60
     assert all(
-        call["timeout"] <= investigation_module.INVESTIGATION_MAX_TURN_SECONDS for call in calls
+        call["turn_timeout"] <= investigation_module.INVESTIGATION_MAX_TURN_SECONDS
+        for call in calls
     )
 
 

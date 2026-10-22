@@ -8,8 +8,7 @@ from typing import Any, Literal
 
 from .coercion import optional_nonnegative_int, optional_string
 
-# The executor's nine tools, in the order the gateway advertises them. investigate_repository
-# runs in the gateway (a nested Plan-tool loop) and never reaches the executor itself.
+# The executor's nine tools, in the order the gateway advertises them.
 EXECUTOR_TOOLS = (
     "read",
     "write",
@@ -21,10 +20,24 @@ EXECUTOR_TOOLS = (
     "ls",
     "status",
 )
-TOOL_NAMES = frozenset({*EXECUTOR_TOOLS, "investigate_repository"})
-PLAN_TOOLS = frozenset({"read", "grep", "find", "ls"})
-# Read-only tools: Plan's four, Agent-only staged-change review (status), and investigation.
-READ_TOOLS = PLAN_TOOLS | {"status", "investigate_repository"}
+# Tools the gateway runs itself; they never reach the executor. investigate_repository drives a
+# nested read-only loop, update_plan records the session plan, and the two web tools fetch
+# documentation (opt-in per workspace, Agent only).
+GATEWAY_TOOLS = ("investigate_repository", "update_plan", "web_search", "fetch_url")
+WEB_TOOLS = frozenset({"web_search", "fetch_url"})
+TOOL_NAMES = frozenset({*EXECUTOR_TOOLS, *GATEWAY_TOOLS})
+# Plan mode's read-only workspace tools.
+PLAN_READ_TOOLS = frozenset({"read", "grep", "find", "ls"})
+# Every tool offered to a Plan run: the workspace reads plus the two gateway tools that
+# never mutate the workspace.
+PLAN_TOOLS = PLAN_READ_TOOLS | {"investigate_repository", "update_plan"}
+# The nested investigation loop: Plan's reads plus staged-change review.
+INVESTIGATION_TOOLS = PLAN_READ_TOOLS | {"status"}
+# Tools a plan-mode request may carry to the executor: Plan's reads, and status for the
+# investigation loop's staged-change review. Neither changes anything.
+PLAN_EXECUTOR_TOOLS = INVESTIGATION_TOOLS
+# Read-only tools: never prompt (fetch_url prompts only for URLs off its allowlist).
+READ_TOOLS = PLAN_TOOLS | {"status"} | WEB_TOOLS
 MUTATION_TOOLS = frozenset({"write", "edit", "apply_patch", "bash"})
 # File edits confined to staging: checkpointed, reversible, previewable as diffs, and still gated
 # by publication approval. Bash is a mutation too but its effects are broader and harder to preview.
@@ -32,7 +45,17 @@ STAGED_EDIT_TOOLS = frozenset({"write", "edit", "apply_patch"})
 # Independent, side-effect-free executor calls that a turn may run concurrently. Investigation
 # is read-only too, but it drives a nested model loop against the shared parent budget, so it
 # stays serialized with the mutations.
-PARALLEL_SAFE_TOOLS = PLAN_TOOLS | {"status"}
+PARALLEL_SAFE_TOOLS = PLAN_READ_TOOLS | {"status"}
+
+
+def mode_tools(mode: str, *, web: bool = False) -> frozenset[str]:
+    """The tools offered to a run in ``mode``; the web tools only when the workspace enabled
+    them, and only in Agent mode."""
+    if mode == "plan":
+        return PLAN_TOOLS
+    return TOOL_NAMES if web else TOOL_NAMES - WEB_TOOLS
+
+
 # Protocol-level argument cap. It is a malformed-request guard, not a tool limit, so it
 # must never bind below any per-tool limit the executor can be configured to accept.
 # Derivation from the argument-carrying hard ceilings in executor/config.py
@@ -97,7 +120,7 @@ class ToolRequest:
             raise ValueError(f"Unknown tool: {self.tool}")
         if self.mode not in {"plan", "agent"}:
             raise ValueError("Executor tools require Plan or Agent mode")
-        if self.mode == "plan" and self.tool not in PLAN_TOOLS:
+        if self.mode == "plan" and self.tool not in PLAN_TOOLS | PLAN_EXECUTOR_TOOLS:
             raise ValueError("Plan mode only permits read-only tools")
         if tool_argument_bytes(self.arguments) > MAX_TOOL_ARGUMENT_BYTES:
             raise ValueError("Tool arguments are too large")

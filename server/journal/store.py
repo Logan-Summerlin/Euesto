@@ -89,6 +89,18 @@ class JournalStore:
                     payload_json TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS session_plans (
+                    session_key TEXT PRIMARY KEY,
+                    plan_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS check_results (
+                    workspace_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (workspace_id, name)
+                );
                 CREATE TABLE IF NOT EXISTS notices (
                     notice_id TEXT PRIMARY KEY,
                     message TEXT NOT NULL,
@@ -394,6 +406,64 @@ class JournalStore:
         except (TypeError, json.JSONDecodeError):
             return {}
         return dict(payload) if isinstance(payload, dict) else {}
+
+    def save_session_plan(
+        self, session_key: str, plan: dict[str, Any], updated_at: str
+    ) -> None:
+        """The ``update_plan`` state of one session (``session_id``, or ``run:<id>``)."""
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO session_plans VALUES (?, ?, ?)
+                ON CONFLICT(session_key) DO UPDATE SET
+                    plan_json=excluded.plan_json, updated_at=excluded.updated_at
+                """,
+                (session_key, json.dumps(plan, separators=(",", ":")), updated_at),
+            )
+
+    def load_session_plan(self, session_key: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT plan_json FROM session_plans WHERE session_key = ?", (session_key,)
+            ).fetchone()
+        if not row:
+            return {}
+        try:
+            payload = json.loads(row[0])
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return dict(payload) if isinstance(payload, dict) else {}
+
+    def save_check_result(
+        self, workspace_id: str, name: str, payload: dict[str, Any], updated_at: str
+    ) -> None:
+        """The latest result of one declared check, tied to the staged fingerprint it ran on."""
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO check_results VALUES (?, ?, ?, ?)
+                ON CONFLICT(workspace_id, name) DO UPDATE SET
+                    payload_json=excluded.payload_json, updated_at=excluded.updated_at
+                """,
+                (workspace_id, name, json.dumps(payload, separators=(",", ":")), updated_at),
+            )
+
+    def check_results(self, workspace_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT name, payload_json, updated_at FROM check_results "
+                "WHERE workspace_id = ? ORDER BY name",
+                (workspace_id,),
+            ).fetchall()
+        results = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload_json"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict):
+                results.append({**payload, "name": str(row["name"]), "at": row["updated_at"]})
+        return results
 
     def is_terminal(self, run_id: str) -> bool:
         events = self.events_after(run_id)

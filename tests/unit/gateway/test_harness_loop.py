@@ -120,7 +120,8 @@ class Provider:
         allowed_tools=None,
         **kwargs,
     ):
-        kwargs.pop("timeout", None)
+        for name in ("idle_timeout", "turn_timeout", "on_delta"):
+            kwargs.pop(name, None)
         payload = agent_payload(
             model, messages, mode, provider_preferences, allowed_tools, **kwargs
         )

@@ -1,7 +1,8 @@
 """Scoped, read-only repository investigation behind ``investigate_repository``.
 
-Each call runs a bounded nested model loop restricted to the Plan tools, through the parent
-run's executor session. The loop has its own capped budget, debits every model call against
+Each call runs a bounded nested model loop restricted to the read-only investigation tools
+(Plan's reads plus ``status``, so it can review staged changes), through the parent run's
+executor session. It is offered in Plan and Agent mode. The loop has its own capped budget, debits every model call against
 the parent's budget, and keeps its own evidence ledger: nested results never enter the
 parent's context, so they neither consume nor are starved by the parent's result allowance.
 """
@@ -26,10 +27,11 @@ from shared.investigation import (
     reinspection_target,
 )
 from shared.requests import DEFAULT_INVESTIGATION_MODEL, AgentRunRequest
-from shared.tools import PLAN_TOOLS, ToolRequest, ToolResult
+from shared.tools import INVESTIGATION_TOOLS, ToolRequest, ToolResult
 
 from .budgets import BudgetExceededError, RunBudget
 from .context import compact_agent_context
+from .redaction import Redactor
 from .tool_calls import (
     Message,
     bounded_excerpt,
@@ -71,6 +73,8 @@ class RepositoryInvestigation:
         request: AgentRunRequest,
         request_id: str,
         parent_budget: RunBudget,
+        *,
+        redactor: Redactor | None = None,
     ):
         self.executor = executor
         self.append = append
@@ -78,6 +82,7 @@ class RepositoryInvestigation:
         self.run_id = run_id
         self.request = request
         self.parent_budget = parent_budget
+        self.redactor = redactor or Redactor()
         self.link = {"parent_run_id": run_id, "parent_tool_call_id": request_id}
         self.model = str(request.investigation_model_id or DEFAULT_INVESTIGATION_MODEL)
         self.messages: list[Message] = []
@@ -86,6 +91,7 @@ class RepositoryInvestigation:
         self.observed: set[str] = set()
         self.skipped: list[str] = []
         self.evidence_bytes = 0
+        self.pending_redactions: list[dict[str, Any]] = []
 
     async def run(self, raw_arguments: str) -> str:
         """Investigate and return the parent's tool-result content: a report or an error.
@@ -157,7 +163,7 @@ class RepositoryInvestigation:
             self.messages = compact_agent_context(self.messages, INVESTIGATION_CONTEXT_TOKENS)
             cost_before = child.cost
             try:
-                turn = await self._turn(child, set(PLAN_TOOLS))
+                turn = await self._turn(child, set(INVESTIGATION_TOOLS))
             except ProviderError as exc:
                 if not self._has_evidence:
                     raise
@@ -258,7 +264,8 @@ class RepositoryInvestigation:
                     "plan",
                     self.request.provider_preferences,
                     allowed_tools=allowed_tools,
-                    timeout=min(INVESTIGATION_MAX_TURN_SECONDS, max(floor, available)),
+                    offered_tools=INVESTIGATION_TOOLS,
+                    turn_timeout=min(INVESTIGATION_MAX_TURN_SECONDS, max(floor, available)),
                 )
             except ProviderError as exc:
                 if (
@@ -279,14 +286,14 @@ class RepositoryInvestigation:
     async def _tool_call(self, call: dict[str, Any]) -> None:
         """Run, refuse, or skip one of the investigation model's tool calls."""
         sub_id, sub_name, raw_arguments = parse_tool_call(call)
-        if sub_name not in PLAN_TOOLS:
+        if sub_name not in INVESTIGATION_TOOLS:
             await self._reject(
                 sub_id,
                 sub_name,
                 raw_arguments,
                 "investigation.tool_not_permitted",
                 f"Tool '{sub_name}' is not permitted in repository investigation. "
-                f"Available tools: {', '.join(sorted(PLAN_TOOLS))}.",
+                f"Available tools: {', '.join(sorted(INVESTIGATION_TOOLS))}.",
             )
             return
         try:
@@ -336,6 +343,9 @@ class RepositoryInvestigation:
             )
             self.observed.update(_observed_files(sub_name, args, result))
         self.messages.append(self._result_message(sub_id, sub_name, result))
+        for redaction in self.pending_redactions:
+            await self.append(self.run_id, "secret.redacted", {**self.link, **redaction})
+        self.pending_redactions.clear()
 
     async def _reject(
         self, sub_id: str, sub_name: str, raw_arguments: str, error_code: str, error: str
@@ -356,7 +366,7 @@ class RepositoryInvestigation:
             False,
             output=error,
             error_code=error_code,
-            data={"allowed_tools": sorted(PLAN_TOOLS)},
+            data={"allowed_tools": sorted(INVESTIGATION_TOOLS)},
         )
         await self.append(
             self.run_id,
@@ -376,6 +386,9 @@ class RepositoryInvestigation:
         text = bounded_tool_result(
             name, result, INVESTIGATION_RESULT_BYTES - self.evidence_bytes
         )
+        text, kinds = self.redactor.redact(name, {"path": result.data.get("path")}, text)
+        if kinds:
+            self.pending_redactions.append({"request_id": sub_id, "tool": name, "kinds": kinds})
         self.evidence_bytes += len(text.encode())
         return tool_message(sub_id, text)
 
@@ -440,7 +453,8 @@ def _parse_investigation_arguments(raw_arguments: str) -> tuple[str, tuple[str, 
 def _system_prompt(child: RunBudget) -> str:
     return (
         "You are the repository investigation subagent in a bounded plan-mode harness. "
-        "You are strictly read-only: use only read, grep, find, and ls. Never write, edit, "
+        "You are strictly read-only: use only read, grep, find, ls, and status (staged "
+        "changes). Never write, edit, "
         "execute commands, or publish. Your job is to investigate the user's question efficiently, "
         "not exhaustively. You have a limited investigation budget and must stop researching once "
         "you have enough evidence to answer the question. Return a concise factual synthesis as soon "

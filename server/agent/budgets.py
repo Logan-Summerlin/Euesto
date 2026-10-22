@@ -25,6 +25,9 @@ class BudgetProfile:
     read_result_bytes: int = 32_000
     bash_result_chars: int = 8_000
     max_output_tokens: int = 16_000
+    # One streamed model turn: the longest wait between chunks, and the turn's ceiling (3.1).
+    turn_idle_seconds: int = 120
+    turn_ceiling_seconds: int = 600
 
     def result_cap(self, tool: str) -> int:
         """Model-facing byte cap for one result of ``tool``."""
@@ -91,6 +94,13 @@ def requires_budget_approval(profile: BudgetProfile) -> bool:
         or profile.max_wall_seconds > standard.max_wall_seconds * 2
         or profile.max_cost > standard.max_cost * 2
     )
+
+
+# Wind-down (3.3): a note at this share of any budget, and a reserve for the summary turn.
+WIND_DOWN_WARNING_SHARE = 0.85
+WIND_DOWN_SHARE = 0.05
+WIND_DOWN_MAX_RESERVE_SECONDS = 60.0
+WIND_DOWN_RESERVE_ITERATIONS = 1
 
 
 class BudgetExceededError(RuntimeError):
@@ -176,6 +186,10 @@ class RunBudget:
         if check:
             self.check()
 
+    def charge(self, usage: dict[str, object]) -> None:
+        """Charge a gateway tool's provider call (``web_search``) without counting a turn."""
+        self.cost += max(0.0, optional_float(usage.get("cost")) or 0.0)
+
     def usage(self) -> dict[str, int | float]:
         return {
             "prompt_tokens": self.prompt_tokens,
@@ -207,6 +221,46 @@ class RunBudget:
             raise BudgetExceededError("wall-time", elapsed, self.max_wall_seconds, "seconds")
         if self.cost > self.max_cost:
             raise BudgetExceededError("cost", self.cost, self.max_cost, "USD")
+
+    def usage_fraction(self) -> tuple[str, float]:
+        """The budget closest to its limit and the share of it used (0.0 to 1.0+)."""
+        shares = {
+            "iteration": self.iterations / self.max_iterations if self.max_iterations else 1.0,
+            "tool-call": self.tool_calls / self.max_tool_calls if self.max_tool_calls else 1.0,
+            "wall-time": self.elapsed_seconds / self.max_wall_seconds
+            if self.max_wall_seconds
+            else 1.0,
+            "cost": self.cost / self.max_cost if self.max_cost else 1.0,
+        }
+        name = max(shares, key=lambda key: shares[key])
+        return name, shares[name]
+
+    @property
+    def reserve_seconds(self) -> float:
+        """Wall time kept back for the wind-down summary turn (3.3)."""
+        return min(WIND_DOWN_MAX_RESERVE_SECONDS, self.max_wall_seconds * WIND_DOWN_SHARE)
+
+    @property
+    def reserve_cost(self) -> float:
+        """Cost kept back for the wind-down summary turn (3.3)."""
+        return self.max_cost * WIND_DOWN_SHARE
+
+    def wind_down_reason(self, *, between_turns: bool = True) -> str | None:
+        """The budget that leaves only the wind-down reserve, or ``None`` to keep going.
+
+        The loop stops for a summary while one iteration, the reserved wall time, and the
+        reserved cost remain, so the summary is funded without breaking a hard limit. Within
+        a turn (``between_turns=False``) the iteration is already spent and is not checked.
+        """
+        if between_turns and self.remaining_iterations <= WIND_DOWN_RESERVE_ITERATIONS:
+            return "iteration"
+        if self.remaining_tool_calls <= 0:
+            return "tool-call"
+        if self.remaining_wall_seconds <= self.reserve_seconds:
+            return "wall-time"
+        if self.remaining_cost <= self.reserve_cost:
+            return "cost"
+        return None
 
     @property
     def elapsed_seconds(self) -> float:

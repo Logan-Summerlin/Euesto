@@ -12,11 +12,15 @@ from executor.config import ExecutorConfig
 from server.openrouter.agent import LOCAL_TOOL_SCHEMAS
 from shared.tools import (
     EXECUTOR_TOOLS,
+    GATEWAY_TOOLS,
+    INVESTIGATION_TOOLS,
     MUTATION_TOOLS,
     PLAN_TOOLS,
     READ_TOOLS,
     TOOL_NAMES,
+    WEB_TOOLS,
     ToolRequest,
+    mode_tools,
 )
 from tests.helpers import executor_config
 
@@ -31,8 +35,17 @@ CANONICAL_TOOLS = (
     "ls",
     "status",
 )
-MODEL_TOOL_NAMES = CANONICAL_TOOLS + ("investigate_repository",)
+MODEL_TOOL_NAMES = CANONICAL_TOOLS + (
+    "investigate_repository",
+    "update_plan",
+    "web_search",
+    "fetch_url",
+)
 READ_ONLY_TOOLS = frozenset({"read", "grep", "find", "ls"})
+# Plan: the four reads plus the two gateway tools that never touch the workspace (3.2, 3.6).
+PLAN_MODE_TOOLS = READ_ONLY_TOOLS | {"investigate_repository", "update_plan"}
+# Requests a plan-mode run may send to the executor: the reads, and status for investigation.
+PLAN_EXECUTOR_REQUESTS = READ_ONLY_TOOLS | {"status"}
 LEGACY_TOOL_NAMES = frozenset(
     {
         "list_files",
@@ -82,6 +95,9 @@ SCHEMA_PROPERTIES = {
     "ls": {"path", "max_results", "details", "cursor"},
     "status": {"paths", "include_diffs", "max_results", "cursor"},
     "investigate_repository": {"query", "inspected_paths"},
+    "update_plan": {"steps", "note"},
+    "web_search": {"query", "max_results"},
+    "fetch_url": {"url"},
 }
 
 
@@ -96,14 +112,23 @@ def _config(tmp_path: Path, **limits: int) -> ExecutorConfig:
 # Vocabulary
 
 
-def test_public_vocabulary_is_exactly_the_ten_tools() -> None:
+def test_public_vocabulary_is_exactly_the_thirteen_tools() -> None:
     assert tuple(item["function"]["name"] for item in LOCAL_TOOL_SCHEMAS) == MODEL_TOOL_NAMES
     assert TOOL_NAMES == frozenset(MODEL_TOOL_NAMES)
     assert EXECUTOR_TOOLS == CANONICAL_TOOLS
-    assert PLAN_TOOLS == READ_ONLY_TOOLS
-    assert READ_TOOLS == READ_ONLY_TOOLS | {"investigate_repository", "status"}
+    assert GATEWAY_TOOLS == ("investigate_repository", "update_plan", "web_search", "fetch_url")
+    assert PLAN_TOOLS == PLAN_MODE_TOOLS
+    assert INVESTIGATION_TOOLS == READ_ONLY_TOOLS | {"status"}
+    assert READ_TOOLS == PLAN_MODE_TOOLS | {"status"} | WEB_TOOLS
     assert MUTATION_TOOLS == {"write", "edit", "apply_patch", "bash"}
     assert not LEGACY_TOOL_NAMES & TOOL_NAMES
+
+
+def test_mode_tool_sets_offer_web_tools_only_when_enabled_in_agent_mode() -> None:
+    assert mode_tools("plan") == PLAN_MODE_TOOLS
+    assert mode_tools("plan", web=True) == PLAN_MODE_TOOLS
+    assert mode_tools("agent") == TOOL_NAMES - WEB_TOOLS
+    assert mode_tools("agent", web=True) == TOOL_NAMES
 
 
 def test_executor_exports_exactly_the_canonical_tools() -> None:
@@ -172,11 +197,18 @@ def test_model_schema_hard_maxima_match_configuration_ceilings() -> None:
 @pytest.mark.parametrize("name", MODEL_TOOL_NAMES)
 def test_mode_boundaries(name: str) -> None:
     assert ToolRequest("request", "run", name, "agent", {}).tool == name
-    if name in READ_ONLY_TOOLS:
+    if name in PLAN_MODE_TOOLS | PLAN_EXECUTOR_REQUESTS:
         assert ToolRequest("request", "run", name, "plan", {}).tool == name
     else:
         with pytest.raises(ValueError, match="Plan mode only permits"):
             ToolRequest("request", "run", name, "plan", {})
+
+
+@pytest.mark.parametrize("name", GATEWAY_TOOLS)
+def test_the_executor_refuses_gateway_tools(tmp_path: Path, name: str) -> None:
+    service = ExecutorService(_config(tmp_path))
+    result = asyncio.run(service.execute(ToolRequest("request", "run", name, "agent", {})))
+    assert not result.ok and result.error_code == "permission.denied"
 
 
 @pytest.mark.parametrize("name", sorted(LEGACY_TOOL_NAMES))

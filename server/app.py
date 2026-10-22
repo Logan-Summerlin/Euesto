@@ -175,9 +175,17 @@ async def _pause_run(request: Request) -> Response:
 
 
 async def _resume_run(request: Request) -> Response:
+    try:
+        data = await _json(request) if await request.body() else {}
+        if set(data) - {"new_budget"} or not isinstance(data.get("new_budget", False), bool):
+            raise ValueError("A resume takes only new_budget (a boolean)")
+    except ValueError as exc:
+        return _error("request.invalid_resume", str(exc), status=422)
     existing = _service(request).journal.events_after(request.path_params["run_id"])
     after_event_id = existing[-1].event_id if existing else 0
-    resumed = await _service(request).resume_agent(request.path_params["run_id"])
+    resumed = await _service(request).resume_agent(
+        request.path_params["run_id"], new_budget=bool(data.get("new_budget", False))
+    )
     return JSONResponse(
         {"resumed": resumed, "after_event_id": after_event_id},
         status_code=202 if resumed else 200,

@@ -14,6 +14,7 @@ from shared.responses import GatewayStatus
 from shared.tools import (
     EXECUTOR_TOOLS,
     MUTATION_TOOLS,
+    PLAN_EXECUTOR_TOOLS,
     PLAN_TOOLS,
     PublicationReceipt,
     PublishManifest,
@@ -75,6 +76,10 @@ class GatewayService:
                 snapshot_saver=self._save_snapshot,
                 session_saver=self._save_session,
                 pause_requested=self._pause_requested,
+                plan_loader=self.journal.load_session_plan,
+                plan_saver=lambda key, plan: self.journal.save_session_plan(
+                    key, plan, utc_now()
+                ),
             )
             if self.executor
             else None
@@ -108,7 +113,9 @@ class GatewayService:
             {
                 "name": name,
                 "kind": "workspace_tool",
-                "modes": ["plan", "agent"] if name in PLAN_TOOLS else ["agent"],
+                "modes": ["plan", "agent"]
+                if name in PLAN_TOOLS | PLAN_EXECUTOR_TOOLS
+                else ["agent"],
                 "requires_approval": name in MUTATION_TOOLS,
                 "custom": False,
             }
@@ -123,7 +130,16 @@ class GatewayService:
                     "requires_approval": False,
                     "custom": False,
                 }
-                for name in ("agent_accept_edits", "agent_auto", "agent_steering")
+                for name in (
+                    "agent_sandbox",
+                    "agent_auto",
+                    "agent_steering",
+                    "agent_budget_continuation",
+                    "agent_plan",
+                    "staging_review",
+                    "declared_checks",
+                    "documentation_tools",
+                )
             )
             capabilities += discover_custom_capabilities(
                 self.journal.load_workspace_config(self.config.workspace_id)
@@ -396,7 +412,10 @@ class GatewayService:
         )
         return run_id
 
-    async def resume_agent(self, run_id: str) -> bool:
+    async def resume_agent(self, run_id: str, *, new_budget: bool = False) -> bool:
+        """Resume a paused run. A run paused because its budget ran out continues only with
+        ``new_budget`` (a fresh budget of the same profile, 3.3); any other pause keeps the
+        remaining budget."""
         if not self.openrouter_key or self.agent_runtime is None:
             raise GatewayServiceError(
                 "agent.unavailable",
@@ -416,10 +435,28 @@ class GatewayService:
             raise GatewayServiceError(
                 "run.not_resumable", "Run is not at a safe resume point.", status=409
             )
+        budget_paused = self._pause_reason(run_id) == "budget"
+        if budget_paused and not new_budget:
+            raise GatewayServiceError(
+                "run.budget_exhausted",
+                "This run used its budget. Continue it with another budget.",
+                status=409,
+            )
+        if new_budget and not budget_paused:
+            raise GatewayServiceError(
+                "run.budget_available",
+                "Only a run that used its budget continues with another one.",
+                status=409,
+            )
         # Session approval tiers never survive a resume; the user re-enables them explicitly.
-        request = replace(
-            AgentRunRequest.from_dict(snapshot["request"]), approval_policy="prompt"
-        )
+        try:
+            request = AgentRunRequest.from_dict(
+                {**snapshot["request"], "approval_policy": "prompt"}
+            )
+        except (TypeError, ValueError) as exc:
+            raise GatewayServiceError(
+                "run.not_resumable", f"The saved run cannot be resumed: {exc}", status=409
+            ) from exc
         if request.workspace_id != self.config.workspace_id:
             raise GatewayServiceError(
                 "workspace.invalid", "Resume requires the original workspace.", status=409
@@ -431,12 +468,21 @@ class GatewayService:
                 request,
                 initial_messages=[dict(item) for item in snapshot["messages"]],
                 visible_messages=[dict(item) for item in snapshot["visible_messages"]],
-                budget_state=dict(snapshot["budget"]),
+                budget_state=None if new_budget else dict(snapshot["budget"]),
                 resumed=True,
+                continuation=new_budget,
             ),
             name=f"agent-resume-{run_id}",
         )
         return True
+
+    def _pause_reason(self, run_id: str) -> str | None:
+        for event in reversed(self.journal.events_after(run_id)):
+            if event.type == "run.paused":
+                return str(event.payload.get("reason") or "")
+            if event.type in {"run.started", "run.resumed"}:
+                return None
+        return None
 
     def resolve_approval(self, run_id: str, approval_id: str, decision: str) -> bool:
         try:
@@ -627,6 +673,7 @@ class GatewayService:
         visible_messages: list[dict[str, Any]] | None = None,
         budget_state: dict[str, Any] | None = None,
         resumed: bool = False,
+        continuation: bool = False,
     ) -> None:
         key = self.openrouter_key
         if key is None or self.agent_runtime is None:
@@ -649,6 +696,7 @@ class GatewayService:
                 visible_messages=visible_messages,
                 budget_state=budget_state,
                 resumed=resumed,
+                continuation=continuation,
             )
         except asyncio.CancelledError:
             if not self.journal.is_terminal(run_id):
