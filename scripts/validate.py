@@ -22,6 +22,10 @@ ROOT = Path(__file__).resolve().parents[1]
 QML_FILES = ("qml/Main.qml", "qml/Sidebar.qml", "qml/Transcript.qml", "qml/Composer.qml")
 PYTHON_PACKAGES = ("PySide6", "pytest", "pytest-timeout", "ruff")
 EXECUTABLES = ("pyside6-qmllint", "docker", "docker compose", "pyinstaller")
+# Hard ceilings per command. A hung command must fail its tier by name, not stall the whole
+# validation step (the release job's Windows step once sat for hours with no output).
+COMMAND_TIMEOUT_SECONDS = 1200
+DOCKER_TIMEOUT_SECONDS = 3600
 
 
 def _safe_env() -> dict[str, str]:
@@ -220,23 +224,50 @@ def commands(tier: str) -> list[tuple[str, list[str]]]:
     raise ValueError(f"unknown validation tier: {tier}")
 
 
+def _run_command(
+    command: list[str], *, cwd: Path, env: dict[str, str], timeout: float
+) -> subprocess.CompletedProcess:
+    """Run a validation command; on timeout, kill its whole process tree.
+
+    ``subprocess.run`` kills only the direct child. On Windows a grandchild (a test helper, a
+    launcher) that inherits the step's output keeps the CI log open, so the step never ends.
+    """
+    process = subprocess.Popen(command, cwd=cwd, env=env)
+    try:
+        code = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=60,
+            )
+        process.kill()
+        process.wait()
+        raise
+    return subprocess.CompletedProcess(command, code)
+
+
 def execute(
     tier: str,
     allow_unavailable: bool = False,
     report: dict[str, Any] | None = None,
-    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    runner: Callable[..., subprocess.CompletedProcess] = _run_command,
 ) -> int:
     report = report or {"schema_version": 1, "tier": tier, "checks": []}
     worst = 0
     for name, command in commands(tier):
         print("+", " ".join(command), flush=True)
+        timeout = DOCKER_TIMEOUT_SECONDS if name == "docker" else COMMAND_TIMEOUT_SECONDS
         try:
-            result = runner(command, cwd=ROOT, env=_safe_env())
+            result = runner(command, cwd=ROOT, env=_safe_env(), timeout=timeout)
             code = result.returncode
         except (FileNotFoundError, OSError) as exc:
             code, detail = 127, f"unavailable: {type(exc).__name__}"
         except subprocess.TimeoutExpired:
-            code, detail = 124, "failed: timed out"
+            code, detail = 124, f"failed: timed out after {timeout}s"
         else:
             detail = (
                 "passed" if code == 0 else ("empty test tier" if code == 5 else f"exit {code}")

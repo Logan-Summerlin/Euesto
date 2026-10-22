@@ -186,6 +186,7 @@ jobs:
   build-windows:
     needs: runtime-images
     runs-on: windows-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -196,6 +197,7 @@ jobs:
         run: python scripts/bootstrap.py
       - name: Validate non-container application
         shell: bash
+        timeout-minutes: 40
         run: |
           python scripts/validate.py fast
           python scripts/validate.py slow --allow-unavailable

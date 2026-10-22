@@ -104,7 +104,7 @@ def test_proxy_tunnels_allowlisted_hosts_and_audits_every_decision() -> None:
             # A bare connect-and-close (a health probe) is not an egress attempt and is not audited.
             probe_reader, probe_writer = await asyncio.open_connection("127.0.0.1", port)
             probe_writer.close()
-            assert await probe_reader.read() == b""
+            assert await asyncio.wait_for(probe_reader.read(), timeout=5) == b""
             head, _ = await _request(
                 port, f"CONNECT example.com:{upstream_port} HTTP/1.1\r\n\r\n".encode()
             )

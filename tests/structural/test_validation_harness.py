@@ -3,6 +3,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 import scripts.validate as validate
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -49,6 +51,40 @@ def test_missing_and_failed_commands_are_distinguished() -> None:
 
     assert validate.execute("qml", report=report, runner=failed) == 3
     assert report["checks"][0]["status"] == "failed"
+
+
+def test_a_hung_command_fails_its_tier_by_name_with_its_deadline() -> None:
+    seen: list[float] = []
+
+    def hung(*args, **kwargs):
+        seen.append(kwargs["timeout"])
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    report: dict = {"checks": []}
+    assert validate.execute("fast", report=report, runner=hung) == 124
+    assert seen == [validate.COMMAND_TIMEOUT_SECONDS]
+    assert report["checks"][0]["status"] == "failed"
+    assert report["checks"][0]["detail"] == (
+        f"failed: timed out after {validate.COMMAND_TIMEOUT_SECONDS}s"
+    )
+
+
+def test_the_default_runner_kills_a_command_that_outlives_its_deadline() -> None:
+    import sys
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        validate._run_command(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            cwd=ROOT,
+            env=validate._safe_env(),
+            timeout=0.5,
+        )
+    assert (
+        validate._run_command(
+            [sys.executable, "-c", "pass"], cwd=ROOT, env=validate._safe_env(), timeout=60
+        ).returncode
+        == 0
+    )
 
 
 def test_pytest_empty_tier_is_explicit_and_requires_allowance() -> None:
