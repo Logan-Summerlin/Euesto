@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 import stat
 import unicodedata
 from pathlib import Path, PurePosixPath
 
-from .errors import PATH_INVALID_TYPE, PATH_UNSAFE, ExecutorToolError
+from shared import policy
+from shared.policy import matches_publish_glob as matches_publish_glob
+
+from .errors import INVALID_ARGUMENTS, PATH_INVALID_TYPE, PATH_UNSAFE, ExecutorToolError
 
 RESERVED = frozenset(
     {
@@ -30,8 +34,25 @@ SECRET_PARTS = frozenset(
         "credentials",
         "id_rsa",
         "id_ed25519",
+        ".netrc",
+        ".git-credentials",
+        "kubeconfig",
+        ".dockercfg",
     }
 )
+# Segment globs (matched case-insensitively) for key stores, certificates, Terraform state,
+# and secrets files. A workspace policy may add patterns (``configure_secret_patterns``) but
+# never remove these.
+SECRET_GLOBS = (
+    "*.pem",
+    "*.key",
+    "*.p12",
+    "*.pfx",
+    "*.tfstate",
+    "*.tfstate.*",
+    "secrets.*",
+)
+_extra_secret_globs: tuple[str, ...] = ()
 OUTPUT_DIRECTORY = ".euesto-output"
 # Matched against every path segment, so only names that are unambiguously metadata,
 # dependency, or cache directories belong here. A bare "env" is deliberately absent:
@@ -66,9 +87,36 @@ class UnsafePath(ExecutorToolError):
         ExecutorToolError.__init__(self, PATH_UNSAFE, message)
 
 
+def validate_secret_patterns(patterns: object) -> tuple[str, ...]:
+    """Workspace-added secret name globs (``shared.policy``), as a typed executor error."""
+    try:
+        return policy.validate_secret_patterns(patterns)
+    except ValueError as exc:
+        raise ExecutorToolError(INVALID_ARGUMENTS, str(exc)) from exc
+
+
+def validate_publish_globs(patterns: object) -> tuple[str, ...]:
+    """``never_publish`` path globs (``shared.policy``), as a typed executor error."""
+    try:
+        return policy.validate_publish_globs(patterns)
+    except ValueError as exc:
+        raise ExecutorToolError(INVALID_ARGUMENTS, str(exc)) from exc
+
+
+def configure_secret_patterns(patterns: object) -> tuple[str, ...]:
+    """Add workspace secret name globs to the built-in set for this process."""
+    global _extra_secret_globs
+    _extra_secret_globs = validate_secret_patterns(patterns)
+    return _extra_secret_globs
+
+
 def _is_secret_part(part: str) -> bool:
     folded = part.casefold()
-    return folded in SECRET_PARTS or folded.startswith(".env")
+    if folded in SECRET_PARTS or folded.startswith(".env"):
+        return True
+    return any(
+        fnmatch.fnmatchcase(folded, glob) for glob in (*SECRET_GLOBS, *_extra_secret_globs)
+    )
 
 
 def is_hidden_part(part: str) -> bool:

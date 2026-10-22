@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import hmac
 import json
 import platform
+import re
 import shutil
 import time
 import uuid
@@ -28,11 +30,12 @@ from shared.tools import (
 )
 
 from . import sandbox_git
-from .checkpoints import checkpoint_files, configure_store
+from .checkpoints import checkpoint_files, configure_store, restore_checkpoint
 from .config import ExecutorConfig
 from .drift import rebase
 from .egress import egress_status
 from .errors import INVALID_ARGUMENTS, STAGING_CONFLICT, ExecutorToolError, classify_error
+from .paths import configure_secret_patterns, matches_publish_glob, normalize_relative
 from .permissions import enforce_capability
 from .snapshot import agents_md, workspace_snapshot
 from .staging import (
@@ -44,6 +47,7 @@ from .staging import (
     refresh_visible_files,
     seed_staging,
     staging_links,
+    visible_files,
     workspace_changes,
 )
 from .state import Baseline, Conflict, StateStore
@@ -87,6 +91,22 @@ DEVELOPER_EXECUTABLE_CANDIDATES = (
 
 ToolRunner = Callable[[ToolRequest, Path], Awaitable[tuple[str, dict]]]
 
+# Declared checks (harness plan 3.4) run like Bash in the runner and always restore staging.
+CHECK_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+DEFAULT_CHECK_SECONDS = 300
+MAX_CHECK_OUTPUT_CHARS = 16_000
+MAX_MANIFEST_PATHS = 10_000
+
+
+def staged_fingerprint(files: dict[str, tuple[str, int, int]]) -> str:
+    """The staged snapshot's identity: a digest of every visible file's path, content hash,
+    and mode. Any later mutation changes it, so results tied to it go stale."""
+    digest = hashlib.sha256()
+    for path in sorted(files):
+        content, _size, mode = files[path]
+        digest.update(f"{path}\0{content}\0{mode:o}\n".encode())
+    return digest.hexdigest()
+
 
 class ExecutorService:
     """The control plane: file tools, status, checkpoints, baselines, and manifests.
@@ -101,6 +121,7 @@ class ExecutorService:
         self.state = StateStore(config.state_directory, config.workspace_id)
         configure_store(config.work_root, self.state.checkpoints)
         configure_runner(config.runner_socket)
+        configure_secret_patterns(config.secret_patterns)
         self.conflicts: dict[str, Conflict] = {}
         self.last_rebase: dict[str, object] = {}
         # What the runner's toolchain image provides; probed once the runner answers.
@@ -332,6 +353,8 @@ class ExecutorService:
     def workspace_status(
         self, current: dict[str, tuple[str, int, int]] | None = None
     ) -> dict[str, object]:
+        if current is None:
+            current = visible_files(self.config.work_root)
         changes = workspace_changes(self.snapshot, self.config.work_root, current)
         created = [change.path for change in changes if change.operation == "create"]
         modified = [change.path for change in changes if change.operation == "update"]
@@ -345,6 +368,8 @@ class ExecutorService:
             ],
             "unpublishable_links": staging_links(self.config.work_root),
             "conflicts": sorted(self.conflicts),
+            "never_publish": self._withheld(changes),
+            "fingerprint": staged_fingerprint(current),
             "staged": bool(changes),
             "publication": "pending_review" if changes else "no_changes",
             "summary": (
@@ -360,8 +385,13 @@ class ExecutorService:
         *,
         publication_id: str | None = None,
         batch_index: int = 1,
+        paths: list[str] | None = None,
     ) -> PublishManifest:
         """Build the next publication batch from the changes still pending.
+
+        ``paths`` selects a subset (partial publication, plan 4.4): only those changes are
+        offered and the rest stay staged. Paths matching the workspace policy's
+        ``never_publish`` globs are never offered.
 
         Publishing a batch advances the baseline for exactly its operations, so requesting the
         next batch recomputes what remains: a retry after a failure only re-attempts the
@@ -375,7 +405,20 @@ class ExecutorService:
             change
             for change in workspace_changes(self.snapshot, self.config.work_root)
             if change.path not in self.conflicts
+            and not matches_publish_glob(change.path, self.config.never_publish)
         ]
+        if paths is not None:
+            selected_paths = _selected_paths(paths)
+            unknown = selected_paths - {change.path for change in pending}
+            # A later batch of the same selection: earlier batches already published.
+            if batch_index > 1:
+                unknown = set()
+            if unknown:
+                raise ExecutorToolError(
+                    INVALID_ARGUMENTS,
+                    "Not a publishable staged change: " + ", ".join(sorted(unknown)[:5]),
+                )
+            pending = [change for change in pending if change.path in selected_paths]
         batches = publication_batches(pending)
         selected = batches[0] if batches else []
         operations = tuple(self._publish_operation(change) for change in selected)
@@ -416,6 +459,85 @@ class ExecutorService:
             )
         return PublishOperation(**staged, content=text)
 
+    def _withheld(self, changes: list[WorkspaceChange]) -> list[str]:
+        return [
+            change.path
+            for change in changes
+            if matches_publish_glob(change.path, self.config.never_publish)
+        ]
+
+    def review(self, arguments: dict) -> dict[str, object]:
+        """Staged changes with per-file unified diffs for the desktop review pane (4.4)."""
+        current = visible_files(self.config.work_root)
+        arguments = {"include_diffs": True, "max_results": 100, **arguments}
+        output, data = status(
+            self.config.work_root,
+            self.config.source_root,
+            self.snapshot,
+            arguments,
+            current=current,
+            conflicts=self.conflicts,
+        )
+        changes = workspace_changes(self.snapshot, self.config.work_root, current)
+        return {
+            **data,
+            "summary": output.splitlines()[0] if output else "",
+            "fingerprint": staged_fingerprint(current),
+            "never_publish": self._withheld(changes),
+        }
+
+    async def run_check(self, name: str, command: str, timeout_seconds: int) -> dict:
+        """Run one declared check against staging in the runner, then restore staging.
+
+        A check verifies; it never changes what would be published. Its result is tied to the
+        staged fingerprint taken before it ran.
+        """
+        if not isinstance(name, str) or not CHECK_NAME_PATTERN.match(name):
+            raise ExecutorToolError(INVALID_ARGUMENTS, "check name must be a short identifier")
+        if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int):
+            raise ExecutorToolError(INVALID_ARGUMENTS, "timeout_seconds must be an integer")
+        root = self.config.work_root
+        before = staged_fingerprint(await asyncio.to_thread(visible_files, root))
+        limit = self.config.effective_limit
+        started = time.perf_counter()
+        request_id = f"check-{uuid.uuid4()}"
+        try:
+            output, data = await bash(
+                request_id,
+                root,
+                {
+                    "command": command,
+                    "timeout_seconds": timeout_seconds,
+                    "rollback_on_failure": True,
+                },
+                max_seconds=limit("max_command_seconds"),
+                max_output=limit("max_bash_output_bytes"),
+                max_command_bytes=limit("max_command_bytes"),
+                max_checkpoint_files=self.config.max_staged_files,
+                max_checkpoint_bytes=self.config.max_checkpoint_bytes,
+            )
+        except TimeoutError:
+            exit_code, outcome, output, data = None, "timed_out", "", {}
+        else:
+            exit_code = int(data.get("exit_code", -1))
+            outcome = "passed" if exit_code == 0 else "failed"
+            if not data.get("rolled_back") and data.get("checkpoint_id"):
+                await asyncio.to_thread(restore_checkpoint, root, str(data["checkpoint_id"]))
+        after = staged_fingerprint(await asyncio.to_thread(visible_files, root))
+        reduction = data.get("reduction") if isinstance(data.get("reduction"), dict) else None
+        return {
+            "name": name,
+            "command": command,
+            "outcome": outcome,
+            "exit_code": exit_code,
+            "fingerprint": before,
+            "restored": after == before,
+            "elapsed_seconds": round(time.perf_counter() - started, 3),
+            "output": output[-MAX_CHECK_OUTPUT_CHARS:],
+            "output_truncated": len(output) > MAX_CHECK_OUTPUT_CHARS,
+            "reduction": reduction,
+        }
+
     def discard(self) -> Snapshot:
         """Drop every staged change, log, checkpoint, and the sandbox repository; reseed."""
         clear_staging(self.config.work_root)
@@ -440,6 +562,17 @@ class ExecutorService:
         )
         self._baseline_changed()
         return self.snapshot
+
+
+def _selected_paths(paths: object) -> set[str]:
+    if (
+        not isinstance(paths, list)
+        or not paths
+        or len(paths) > MAX_MANIFEST_PATHS
+        or not all(isinstance(item, str) for item in paths)
+    ):
+        raise ExecutorToolError(INVALID_ARGUMENTS, "paths must be a non-empty list of paths")
+    return {normalize_relative(item) for item in paths}
 
 
 async def _inline(
@@ -527,6 +660,7 @@ def create_app(
                 str(data.get("approval_id") or ""),
                 publication_id=str(data.get("publication_id") or "") or None,
                 batch_index=data.get("batch_index", 1),
+                paths=data.get("paths"),
             )
         except (OSError, UnicodeError, ValueError) as exc:
             return _error("manifest.invalid", str(exc), 422)
@@ -579,6 +713,30 @@ def create_app(
             return _error("staging.discard_failed", str(exc), 409)
         return _snapshot_response(snapshot)
 
+    async def review(request: Request) -> JSONResponse:
+        try:
+            data = await _json(request) if await request.body() else {}
+            if set(data) - {"paths", "cursor", "max_results"}:
+                raise ExecutorToolError(INVALID_ARGUMENTS, "Unknown review fields")
+            result = await asyncio.to_thread(executor.review, data)
+        except (OSError, UnicodeError, ValueError) as exc:
+            return _error("staging.review_failed", str(exc), 422)
+        return JSONResponse(result)
+
+    async def check(request: Request) -> JSONResponse:
+        try:
+            data = await _json(request)
+            if set(data) - {"name", "command", "timeout_seconds"}:
+                raise ExecutorToolError(INVALID_ARGUMENTS, "Unknown check fields")
+            result = await executor.run_check(
+                data.get("name"),
+                data.get("command"),
+                data.get("timeout_seconds", DEFAULT_CHECK_SECONDS),
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            return _error("check.failed", str(exc), 422)
+        return JSONResponse(result)
+
     async def cancel(request: Request) -> JSONResponse:
         return JSONResponse({"cancelled": await cancel_bash(request.path_params["request_id"])})
 
@@ -589,6 +747,8 @@ def create_app(
         ("/v1/staging/mark-published", mark_published, "POST"),
         ("/v1/staging/discard", discard, "POST"),
         ("/v1/staging/rebase", rebase_staging, "POST"),
+        ("/v1/staging/review", review, "POST"),
+        ("/v1/staging/checks", check, "POST"),
         ("/v1/workspace-snapshot", snapshot, "GET"),
         ("/v1/tools/{request_id:str}/cancel", cancel, "POST"),
     )

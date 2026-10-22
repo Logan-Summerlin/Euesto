@@ -68,11 +68,14 @@ class ExecutorClient:
         *,
         publication_id: str | None = None,
         batch_index: int = 1,
+        paths: list[str] | None = None,
     ) -> PublishManifest:
         body: dict[str, object] = {"run_id": run_id, "approval_id": approval_id}
         if publication_id:
             body["publication_id"] = publication_id
             body["batch_index"] = batch_index
+        if paths is not None:
+            body["paths"] = list(paths)
         return PublishManifest.from_dict(
             await self._json("POST", "/v1/manifest", timeout=30, json=body)
         )
@@ -98,3 +101,14 @@ class ExecutorClient:
         """Absorb host changes made since the staging baseline (see docs/PUBLICATION.md)."""
         body = {"keep_staged": keep_staged or [], "take_host": take_host or []}
         return await self._json("POST", "/v1/staging/rebase", timeout=120, json=body)
+
+    async def review_staging(self, body: dict | None = None) -> dict:
+        """Staged changes with per-file diffs and the staged fingerprint (plan 4.4)."""
+        return await self._json("POST", "/v1/staging/review", timeout=60, json=body or {})
+
+    async def run_check(self, name: str, command: str, timeout_seconds: int) -> dict:
+        """Run one declared check against staging; staging is always restored (plan 3.4)."""
+        body = {"name": name, "command": command, "timeout_seconds": timeout_seconds}
+        return await self._json(
+            "POST", "/v1/staging/checks", timeout=timeout_seconds + 60, json=body
+        )

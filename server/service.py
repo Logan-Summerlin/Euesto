@@ -31,6 +31,7 @@ from .openrouter.client import OpenRouterGatewayClient
 from .openrouter.errors import ProviderError
 
 MAX_STEERING_CHARS = 8_000
+DEFAULT_CHECK_TIMEOUT_SECONDS = 300
 
 
 class GatewayServiceError(RuntimeError):
@@ -243,9 +244,15 @@ class GatewayService:
             ) from exc
 
     async def publication_batch(
-        self, workspace_id: str, run_id: str, publication_id: str, batch_index: int
+        self,
+        workspace_id: str,
+        run_id: str,
+        publication_id: str,
+        batch_index: int,
+        paths: list[str] | None = None,
     ) -> PublishManifest:
-        """Build the next batch of a multi-batch publication from the changes still pending."""
+        """Build the next batch of a multi-batch publication from the changes still pending;
+        a partial publication passes the same ``paths`` selection for every batch."""
         executor = self._active_executor(workspace_id)
         try:
             return await executor.manifest(
@@ -253,6 +260,7 @@ class GatewayService:
                 str(uuid.uuid4()),
                 publication_id=publication_id,
                 batch_index=batch_index,
+                paths=paths,
             )
         except Exception as exc:
             raise GatewayServiceError(
@@ -262,8 +270,13 @@ class GatewayService:
                 status=409,
             ) from exc
 
-    async def staged_publication(self, workspace_id: str) -> PublishManifest:
-        """The first batch of a publication of staged work kept from earlier sessions.
+    async def staged_publication(
+        self, workspace_id: str, paths: list[str] | None = None
+    ) -> PublishManifest:
+        """The first batch of a publication of staged work, optionally only ``paths``.
+
+        Partial publication (plan 4.4) selects files in the review pane; unselected changes
+        stay staged.
 
         Staging persists (plan 2.4), so changes can outlive the run that made them. The
         manifest is built exactly as at the end of a run, and the desktop still asks the
@@ -282,6 +295,7 @@ class GatewayService:
                 str(uuid.uuid4()),
                 publication_id=str(uuid.uuid4()),
                 batch_index=1,
+                paths=paths,
             )
         except Exception as exc:
             raise GatewayServiceError(
@@ -290,6 +304,94 @@ class GatewayService:
                 retryable=True,
                 status=409,
             ) from exc
+
+    async def review_staging(
+        self, workspace_id: str, body: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Per-file diffs for the review pane, with the declared checks' latest results; a
+        result counts only while the staged fingerprint it ran on is still current (3.4)."""
+        executor = self._active_executor(workspace_id)
+        try:
+            review = await executor.review_staging(body or {})
+        except Exception as exc:
+            raise GatewayServiceError(
+                "staging.review_failed",
+                f"The executor could not list the staged changes: {exc}",
+                retryable=True,
+                status=409,
+            ) from exc
+        review["checks"] = self.check_results(
+            workspace_id, str(review.get("fingerprint") or "")
+        )
+        return review
+
+    def declared_checks(self, workspace_id: str) -> dict[str, dict[str, Any]]:
+        """The checks the confirmed workspace policy declares, by name."""
+        config = self.journal.load_workspace_config(workspace_id)
+        policy = config.get("policy") if isinstance(config, dict) else None
+        checks = policy.get("checks") if isinstance(policy, dict) else None
+        if not isinstance(checks, dict):
+            return {}
+        declared: dict[str, dict[str, Any]] = {}
+        for name, value in checks.items():
+            if isinstance(value, dict) and isinstance(value.get("command"), str):
+                declared[str(name)] = value
+            elif isinstance(value, str):
+                declared[str(name)] = {"command": value}
+        return declared
+
+    def check_results(self, workspace_id: str, fingerprint: str) -> list[dict[str, Any]]:
+        declared = self.declared_checks(workspace_id)
+        recorded = {item["name"]: item for item in self.journal.check_results(workspace_id)}
+        results = []
+        for name, check in sorted(declared.items()):
+            item = recorded.get(name)
+            current = bool(
+                item
+                and fingerprint
+                and item.get("fingerprint") == fingerprint
+                and item.get("command") == check["command"]
+            )
+            results.append(
+                {
+                    "name": name,
+                    "command": check["command"],
+                    "status": (item or {}).get("outcome", "not_run")
+                    if current
+                    else ("stale" if item else "not_run"),
+                    "current": current,
+                    "result": item,
+                }
+            )
+        return results
+
+    async def run_check(self, workspace_id: str, name: str) -> dict[str, Any]:
+        """Run one declared check in the runner against staging and record its result."""
+        executor = self._active_executor(workspace_id)
+        check = self.declared_checks(workspace_id).get(name)
+        if check is None:
+            raise GatewayServiceError(
+                "check.unknown",
+                f"The workspace policy declares no check named {name}.",
+                status=404,
+            )
+        if any(not task.done() for task in self._tasks.values()):
+            raise GatewayServiceError(
+                "staging.busy",
+                "Wait for the active run to finish before running checks.",
+                status=409,
+            )
+        timeout = check.get("timeout_seconds", DEFAULT_CHECK_TIMEOUT_SECONDS)
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1:
+            timeout = DEFAULT_CHECK_TIMEOUT_SECONDS
+        try:
+            result = await executor.run_check(name, check["command"], timeout)
+        except Exception as exc:
+            raise GatewayServiceError(
+                "check.failed", f"The check could not run: {exc}", retryable=True, status=409
+            ) from exc
+        self.journal.save_check_result(workspace_id, name, result, utc_now())
+        return result
 
     async def inspect_staging(self, workspace_id: str) -> dict[str, Any]:
         environment = await self._staging_environment(self._active_executor(workspace_id))

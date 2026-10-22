@@ -1764,11 +1764,12 @@ def _declared_checks(config: dict[str, Any]) -> dict[str, str]:
     checks = policy.get("checks") if isinstance(policy, dict) else None
     if not isinstance(checks, dict):
         return {}
-    return {
-        str(name): " ".join(str(command).split())[:200]
-        for name, command in checks.items()
-        if isinstance(command, str) and command.strip()
-    }
+    declared: dict[str, str] = {}
+    for name, value in checks.items():
+        command = value.get("command") if isinstance(value, dict) else value
+        if isinstance(command, str) and command.strip():
+            declared[str(name)] = " ".join(command.split())[:200]
+    return declared
 
 
 def _clamp_bash_timeout(arguments: dict[str, Any], budget: RunBudget) -> None:

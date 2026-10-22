@@ -144,16 +144,16 @@ def test_rebase_endpoint_forwards_only_well_formed_conflict_resolutions(tmp_path
     ]
 
 
-def test_staged_publication_endpoint_takes_no_fields_and_waits_for_runs(
+def test_staged_publication_endpoint_takes_only_a_path_selection_and_waits_for_runs(
     tmp_path: Path,
 ) -> None:
     """Persistent staged work (plan 2.4) publishes through the same reviewed manifest."""
     service = _service(tmp_path, _Runtime(set()))
-    requested: list[str] = []
+    requested: list[tuple[str, list[str] | None]] = []
     real = service.staged_publication
 
-    async def staged_publication(workspace_id: str):
-        requested.append(workspace_id)
+    async def staged_publication(workspace_id: str, paths=None):
+        requested.append((workspace_id, paths))
         return PublishManifest(
             manifest_id="staged-1",
             run_id="p",
@@ -174,13 +174,18 @@ def test_staged_publication_endpoint_takes_no_fields_and_waits_for_runs(
             headers={"Authorization": f"Bearer {TOKEN}"},
         ) as client:
             results = []
-            for body in ({}, {"run_id": "x"}):
+            for body in ({}, {"run_id": "x"}, {"paths": ["a.py"]}, {"paths": []}):
                 response = await client.post("/v1/workspaces/w/staging/publication", json=body)
                 results.append((response.status_code, response.json().get("manifest_id", "")))
             return results
 
-    assert asyncio.run(scenario()) == [(200, "staged-1"), (422, "")]
-    assert requested == ["w"]
+    assert asyncio.run(scenario()) == [
+        (200, "staged-1"),
+        (422, ""),
+        (200, "staged-1"),
+        (422, ""),
+    ]
+    assert requested == [("w", None), ("w", ["a.py"])]
 
     # Without the active workspace executor, or while a run is active, nothing is built.
     assert _code(real("w")) == ("workspace.invalid", 409)

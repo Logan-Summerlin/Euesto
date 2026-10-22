@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import ClassVar
 
 from .errors import INVALID_ARGUMENTS, ExecutorToolError
+from .paths import validate_publish_globs, validate_secret_patterns
 
 MAX_GIT_HISTORY_DEPTH = 100_000
 
@@ -33,6 +35,10 @@ class ExecutorConfig:
     # Commits of host history cloned into the sandbox repository; 0 clones the full history.
     git_history_depth: int = 200
     runner_image: str = ""
+    # Workspace policy (``.euesto/policy.toml``, validated by the desktop): extra secret name
+    # globs added to the built-in set, and path globs that are never offered for publication.
+    secret_patterns: tuple[str, ...] = ()
+    never_publish: tuple[str, ...] = ()
 
     max_read_bytes: int = 1_000_000
     max_write_bytes: int = 1_000_000
@@ -135,6 +141,12 @@ class ExecutorConfig:
             raise ValueError(
                 f"git_history_depth must be an integer from 0 to {MAX_GIT_HISTORY_DEPTH}"
             )
+        object.__setattr__(
+            self, "secret_patterns", validate_secret_patterns(list(self.secret_patterns))
+        )
+        object.__setattr__(
+            self, "never_publish", validate_publish_globs(list(self.never_publish))
+        )
         if self.required_capacity_bytes >= self.work_capacity_bytes:
             raise ValueError(
                 "Staging capacity, checkpoint capacity, and required temporary headroom must fit "
@@ -189,6 +201,8 @@ class ExecutorConfig:
             ),
             git_history_depth=git_history_depth,
             runner_image=os.environ.get("LOCAL_CHAT_RUNNER_IMAGE", "").strip()[:200],
+            secret_patterns=tuple(_json_list("LOCAL_CHAT_SECRET_PATTERNS")),
+            never_publish=tuple(_json_list("LOCAL_CHAT_NEVER_PUBLISH")),
             sources=sources,
             **values,
         )
@@ -273,3 +287,16 @@ class ExecutorConfig:
         for name, value in derived.items():
             status[name] = {"configured": value, "effective": value, "source": "resource-model"}
         return status
+
+
+def _json_list(name: str) -> list[object]:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{name} must be a JSON list") from exc
+    if not isinstance(value, list):
+        raise ValueError(f"{name} must be a JSON list")
+    return value

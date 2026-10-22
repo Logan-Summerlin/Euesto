@@ -6,7 +6,7 @@ from enum import StrEnum
 from typing import Any
 
 from .coercion import relative_posix_path
-from .tools import MUTATION_TOOLS, READ_TOOLS, ToolRequest
+from .tools import EXECUTOR_TOOLS, MUTATION_TOOLS, READ_TOOLS, ToolRequest
 
 # Session approval policies for Agent runs, from most to least prompting:
 #   prompt   every mutation or command asks unless a rule matches
@@ -16,6 +16,10 @@ from .tools import MUTATION_TOOLS, READ_TOOLS, ToolRequest
 # Explicit DENY rules win under every policy, and publication stays separately approved
 # (under auto, risk-flagged files still need confirmation).
 APPROVAL_POLICIES = ("prompt", "sandbox", "auto")
+# Decisions a saved rule may carry (harness plan 4.2). Rules cover executor tools only: the
+# gateway's own tools never prompt (update_plan, investigate_repository) or always ask per URL.
+RULE_DECISIONS = ("allow_rule", "ask", "deny")
+MAX_RULE_COMMAND_CHARS = 500
 
 
 class PermissionDecision(StrEnum):
@@ -79,6 +83,64 @@ class PermissionRule:
             ):
                 return False
         return True
+
+
+def new_permission_rule(
+    rule_id: str, workspace_id: str, spec: dict[str, Any]
+) -> PermissionRule:
+    """A saved rule from the rules screen: a tool, an optional path prefix, and for Bash a
+    command prefix such as ``pytest`` or ``npm test`` (the executable plus leading arguments).
+
+    Raises ``ValueError`` for anything a rule cannot mean exactly.
+    """
+    allowed = {"workspace_id", "mode", "tool", "decision", "path_prefix", "command", "enabled"}
+    if not isinstance(spec, dict) or set(spec) - allowed:
+        raise ValueError("A rule takes tool, decision, mode, path_prefix, command, enabled")
+    tool = spec.get("tool")
+    if tool not in EXECUTOR_TOOLS:
+        raise ValueError(f"tool must be one of: {', '.join(sorted(EXECUTOR_TOOLS))}")
+    decision = spec.get("decision", "allow_rule")
+    if decision not in RULE_DECISIONS:
+        raise ValueError(f"decision must be one of: {', '.join(RULE_DECISIONS)}")
+    mode = spec.get("mode", "agent")
+    if mode not in {"agent", "plan"}:
+        raise ValueError("mode must be agent or plan")
+    enabled = spec.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ValueError("enabled must be a boolean")
+    path_prefix = spec.get("path_prefix")
+    if path_prefix in ("", None):
+        path_prefix = None
+    elif not isinstance(path_prefix, str) or relative_posix_path(path_prefix) is None:
+        raise ValueError("path_prefix must be a relative workspace path")
+    else:
+        path_prefix = relative_posix_path(path_prefix)
+    command = spec.get("command")
+    executable: str | None = None
+    argument_prefix: tuple[str, ...] = ()
+    if command not in ("", None):
+        if tool != "bash":
+            raise ValueError("Only bash rules take a command prefix")
+        if not isinstance(command, str) or len(command) > MAX_RULE_COMMAND_CHARS:
+            raise ValueError("command must be a short command prefix")
+        executable, argument_prefix = bash_command_tokens(command)
+        if executable is None:
+            raise ValueError("command must name an executable")
+    if tool == "bash" and executable is None and decision != "deny":
+        raise ValueError("A bash rule that allows or asks must name a command prefix")
+    if tool == "bash" and path_prefix is not None:
+        raise ValueError("bash rules are scoped by command, not path")
+    return PermissionRule(
+        rule_id,
+        PermissionDecision(decision),
+        workspace_id,
+        mode,
+        tool,
+        path_prefix,
+        executable,
+        argument_prefix,
+        enabled,
+    )
 
 
 def bash_command_tokens(command: str) -> tuple[str | None, tuple[str, ...]]:

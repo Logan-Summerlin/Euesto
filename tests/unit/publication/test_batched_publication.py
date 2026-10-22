@@ -279,7 +279,9 @@ def test_gateway_serves_next_batches_and_content_free_receipts(tmp_path: Path) -
     calls: list[tuple] = []
 
     class FakeExecutor:
-        async def manifest(self, run_id, approval_id, *, publication_id=None, batch_index=1):
+        async def manifest(
+            self, run_id, approval_id, *, publication_id=None, batch_index=1, paths=None
+        ):
             calls.append(("manifest", run_id, publication_id, batch_index))
             return PublishManifest(
                 "m2",

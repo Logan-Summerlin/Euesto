@@ -98,7 +98,9 @@ def test_single_file_mutation_hashing_does_not_scale_with_repository_size(
     assert small == large
     assert large <= 4
     assert large_data["workspace_status"]["modified"] == ["pkg0/module0.py", "pkg0/module1.py"]
-    assert small_data["workspace_status"] == {**large_data["workspace_status"]}
+    # The fingerprint identifies the whole staged tree, so only it differs between sizes.
+    small_status = {**small_data["workspace_status"], "fingerprint": None}
+    assert small_status == {**large_data["workspace_status"], "fingerprint": None}
 
 
 @pytest.mark.posix
