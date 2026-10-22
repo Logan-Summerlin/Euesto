@@ -10,6 +10,7 @@ from PySide6.QtGui import QGuiApplication, QWindow
 from .desktop import (
     ConversationService,
     GenerationService,
+    PolicyService,
     RuntimeService,
     SettingsService,
     StagingPublicationService,
@@ -50,6 +51,8 @@ class DesktopBridge(QObject):
     meterChanged = Signal()
     conflictsChanged = Signal()
     leaveRequested = Signal(str, str)
+    policyChanged = Signal()
+    reviewChanged = Signal()
 
     def __init__(self, storage: Storage | None = None):
         super().__init__()
@@ -68,6 +71,7 @@ class DesktopBridge(QObject):
         self.history = ConversationService(self, self.storage)
         self.generation = GenerationService(self, self.storage)
         self.staging = StagingPublicationService(self)
+        self.policy = PolicyService(self, self.storage)
         self.reload_models()
         self.settings.reload_commands()
         self.settings.reload_presets()
@@ -157,12 +161,28 @@ class DesktopBridge(QObject):
         return self.runtime.has_capability("agent_auto")
 
     @Property(bool, notify=stateChanged)
-    def acceptEditsEnabled(self) -> bool:
-        return self.generation.accept_edits
+    def sandboxEnabled(self) -> bool:
+        return self.generation.sandbox
 
     @Property(bool, notify=stateChanged)
-    def acceptEditsAvailable(self) -> bool:
-        return self.runtime.has_capability("agent_accept_edits")
+    def sandboxAvailable(self) -> bool:
+        return self.runtime.has_capability("agent_sandbox")
+
+    @Property(str, notify=stateChanged)
+    def networkMode(self) -> str:
+        return self.runtime.network_mode
+
+    @Property(bool, notify=policyChanged)
+    def registriesAllowed(self) -> bool:
+        return self.policy.allows_registries() and self.runtime.automatic
+
+    @Property("QVariantMap", notify=stateChanged)
+    def agentPlan(self) -> dict[str, Any]:
+        return dict(self.generation.plan or {"steps": [], "note": ""})
+
+    @Property(bool, notify=stateChanged)
+    def budgetContinuationAvailable(self) -> bool:
+        return bool(self.generation.budget_paused_run) and not self.generation.running
 
     @Property(str, notify=stateChanged)
     def workspacePath(self) -> str:
@@ -215,6 +235,14 @@ class DesktopBridge(QObject):
     @Property(bool, notify=stateChanged)
     def archivedView(self) -> bool:
         return self.history.show_archived
+
+    @Property("QVariantMap", notify=reviewChanged)
+    def stagingReview(self) -> dict[str, Any]:
+        return self.staging.review_view()
+
+    @Property("QVariantMap", notify=policyChanged)
+    def workspacePolicy(self) -> dict[str, Any]:
+        return self.policy.view()
 
     # -- settings ----------------------------------------------------------------------
 
@@ -334,6 +362,34 @@ class DesktopBridge(QObject):
     def workspaceConfiguration(self) -> dict[str, Any]:
         return self.settings.workspace_configuration()
 
+    @Slot(bool)
+    def setWebTools(self, enabled: bool) -> None:
+        self.settings.set_web_tools(enabled)
+
+    @Slot(str)
+    def saveUnredactedPaths(self, text: str) -> None:
+        self.settings.save_unredacted_paths(text)
+
+    @Slot("QVariantMap")
+    def addPermissionRule(self, spec: dict[str, Any]) -> None:
+        self.settings.add_permission_rule(dict(spec))
+
+    @Slot()
+    def refreshPolicy(self) -> None:
+        self.policy.refresh()
+
+    @Slot()
+    def confirmPolicy(self) -> None:
+        self.policy.request_confirm()
+
+    @Slot(bool)
+    def runDependencySetup(self, full: bool) -> None:
+        self.policy.request_setup(full)
+
+    @Slot()
+    def loadEgressAudit(self) -> None:
+        self.policy.load_audit()
+
     @Slot()
     def loadPermissionRules(self) -> None:
         # Deferred so a rule change reloads after the gateway call that triggered it returns.
@@ -450,8 +506,16 @@ class DesktopBridge(QObject):
         self.generation.request_auto_mode(enabled)
 
     @Slot(bool)
-    def requestAcceptEdits(self, enabled: bool) -> None:
-        self.generation.request_accept_edits(enabled)
+    def requestSandbox(self, enabled: bool) -> None:
+        self.generation.request_sandbox(enabled)
+
+    @Slot(bool)
+    def requestRegistryAccess(self, enabled: bool) -> None:
+        self.generation.request_registry_access(enabled)
+
+    @Slot()
+    def continueWithBudget(self) -> None:
+        self.generation.continue_with_budget()
 
     @Slot(str, bool)
     def sendMessage(self, text: str, steer: bool = False) -> None:
@@ -494,6 +558,30 @@ class DesktopBridge(QObject):
     @Slot()
     def publishStaged(self) -> None:
         self.staging.publish_staged()
+
+    @Slot()
+    def openReview(self) -> None:
+        self.staging.open_review()
+
+    @Slot()
+    def closeReview(self) -> None:
+        self.staging.close_review()
+
+    @Slot(str, bool)
+    def setReviewSelected(self, path: str, selected: bool) -> None:
+        self.staging.set_review_selected(path, selected)
+
+    @Slot(bool)
+    def setReviewAll(self, selected: bool) -> None:
+        self.staging.set_review_all(selected)
+
+    @Slot()
+    def publishSelection(self) -> None:
+        self.staging.publish_selection()
+
+    @Slot(str)
+    def runCheck(self, name: str) -> None:
+        self.staging.run_check(name)
 
     @Slot()
     def rebaseStaging(self) -> None:
@@ -589,6 +677,7 @@ class DesktopBridge(QObject):
         self._closing = True
         self.generation.shutdown()
         self.settings.shutdown()
+        self.policy.shutdown()
         self.runtime.shutdown()
         if self.hotkey:
             self.hotkey.unregister()

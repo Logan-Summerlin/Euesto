@@ -18,6 +18,15 @@ from queue import Empty, Queue
 import httpx
 from PySide6.QtCore import QObject, QThread, Signal
 
+from shared.policy import (
+    DEFAULT_REGISTRY_HOSTS,
+    NETWORK_MODES,
+    REGISTRY_ADDITIONS,
+    SETUP_OUTPUT_DIRECTORIES,
+    setup_manifests,
+    validate_publish_globs,
+    validate_secret_patterns,
+)
 from shared.responses import GatewayStatus
 
 from .gateway_client import DEFAULT_GATEWAY_URL
@@ -26,11 +35,12 @@ from .workspace_broker import canonical_workspace, workspace_id
 PROJECT_NAME = "local-openrouter-chat"
 DEFAULT_GATEWAY_IMAGE = "local-openrouter-chat-gateway:1.1.0"
 DEFAULT_EXECUTOR_IMAGE = "local-openrouter-chat-executor:1.1.0"
+DEFAULT_EGRESS_PROXY_IMAGE = "local-openrouter-chat-egress-proxy:1.1.0"
 RUNNER_TARGETS = ("base", "python", "node", "polyglot")
 DEFAULT_RUNNER_IMAGES = {
     target: f"local-openrouter-chat-runner-{target}:1.1.0" for target in RUNNER_TARGETS
 }
-RELEASE_MANIFEST_SCHEMA = 2
+RELEASE_MANIFEST_SCHEMA = 3
 # Runner resource ceilings (docs/LIMITS.md, "Runner resources"); values outside fail closed.
 RUNNER_CPU_RANGE = (2.0, 8.0)
 RUNNER_MEMORY_GB_RANGE = (2, 16)
@@ -45,8 +55,27 @@ VOLUME_KINDS = ("work", "state", "cache")
 SESSION_TOKEN_BYTES = 32
 READINESS_TIMEOUT_SECONDS = 180
 DOCKER_START_TIMEOUT_SECONDS = 120
-EGRESS_MODE_ENV = "LOCAL_CHAT_EXECUTOR_EGRESS"
 EGRESS_OVERLAY = "compose.egress.yaml"
+SETUP_OVERLAY = "compose.setup.yaml"
+SETUP_MOUNTS_FILE = "setup-mounts.json"
+# Proxy audit lines kept from setup runs and registry sessions (docs/EGRESS.md, "Audit log").
+AUDIT_FILE = "egress-audit.jsonl"
+MAX_AUDIT_ENTRIES = 2_000
+AUDIT_FIELDS = (
+    "event",
+    "reason",
+    "method",
+    "host",
+    "port",
+    "client",
+    "timestamp",
+    "duration_seconds",
+    "bytes_up",
+    "bytes_down",
+)
+MAX_SETUP_OUTPUT_CHARS = 16_000
+# Extra time a setup run gets beyond its own limit, to start the proxy and the container.
+SETUP_START_SECONDS = 180
 IMAGE_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9./_:@-]{0,511}$")
 IMAGE_DIGEST_PATTERN = re.compile(r"@sha256:[0-9a-f]{64}$")
 DOCKER_INFO = ["info", "--format", "{{.ServerVersion}}"]
@@ -64,6 +93,7 @@ class RuntimeImages:
     executor: str
     prebuilt: bool
     runners: tuple[tuple[str, str], ...] = tuple(DEFAULT_RUNNER_IMAGES.items())
+    egress_proxy: str = DEFAULT_EGRESS_PROXY_IMAGE
 
     def runner(self, target: str) -> str:
         return dict(self.runners)[target]
@@ -95,6 +125,7 @@ class RuntimeImages:
             )
         gateway = _image_ref(data.get("gateway"), "gateway")
         executor = _image_ref(data.get("executor"), "executor")
+        egress_proxy = _image_ref(data.get("egress_proxy"), "egress proxy")
         runners = data.get("runners")
         if not isinstance(runners, dict) or set(runners) != set(RUNNER_TARGETS):
             raise RuntimeErrorMessage(
@@ -105,21 +136,36 @@ class RuntimeImages:
             (target, _image_ref(runners[target], f"{target} runner"))
             for target in RUNNER_TARGETS
         )
-        references = (gateway, executor, *(image for _target, image in runner_images))
+        references = (
+            gateway,
+            executor,
+            egress_proxy,
+            *(image for _target, image in runner_images),
+        )
         if not all(IMAGE_DIGEST_PATTERN.search(reference) for reference in references):
             raise RuntimeErrorMessage("The bundled Docker image manifest is not digest-pinned.")
-        return cls(gateway, executor, True, runner_images)
+        return cls(gateway, executor, True, runner_images, egress_proxy)
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeSettings:
-    """User-chosen runner settings; ``None`` resources default from Docker's allocation."""
+    """User-chosen runner settings; ``None`` resources default from Docker's allocation.
+
+    ``network_mode`` is the agent phase's network (plan 5.3): ``none`` keeps the runner off
+    every network; ``registries`` loads the allowlisted-egress overlay for a session that
+    opted in. ``registry_hosts``, ``secret_patterns``, and ``never_publish`` come from the
+    confirmed workspace policy (4.6), never from staging.
+    """
 
     runner_target: str = "auto"
     cpus: float | None = None
     memory_gb: int | None = None
     pids: int = DEFAULT_RUNNER_PIDS
     git_history_depth: int = DEFAULT_GIT_HISTORY_DEPTH
+    network_mode: str = "none"
+    registry_hosts: tuple[str, ...] = DEFAULT_REGISTRY_HOSTS
+    secret_patterns: tuple[str, ...] = ()
+    never_publish: tuple[str, ...] = ()
 
     def validated(self) -> RuntimeSettings:
         """Return these settings, or fail closed on any value outside its ceiling."""
@@ -127,6 +173,18 @@ class RuntimeSettings:
             raise RuntimeErrorMessage(
                 "The runner image must be auto, base, python, node, or polyglot."
             )
+        if self.network_mode not in NETWORK_MODES:
+            raise RuntimeErrorMessage("The network mode must be none or registries.")
+        allowed_hosts = {*DEFAULT_REGISTRY_HOSTS, *REGISTRY_ADDITIONS}
+        if not self.registry_hosts or any(
+            host not in allowed_hosts for host in self.registry_hosts
+        ):
+            raise RuntimeErrorMessage("Registry hosts must be allowlisted public registries.")
+        try:
+            validate_secret_patterns(list(self.secret_patterns))
+            validate_publish_globs(list(self.never_publish))
+        except ValueError as exc:
+            raise RuntimeErrorMessage(f"The workspace policy is invalid: {exc}") from exc
         if self.cpus is not None and not (
             isinstance(self.cpus, int | float)
             and RUNNER_CPU_RANGE[0] <= self.cpus <= RUNNER_CPU_RANGE[1]
@@ -208,9 +266,25 @@ class RuntimeTarget:
 
 
 @dataclass(frozen=True, slots=True)
+class ComposeSession:
+    """How the running runtime was started, so later commands (setup, audit) address it."""
+
+    docker: Path
+    bundle: Path
+    environment: dict[str, str]
+    overlays: tuple[Path, ...]
+    network_mode: str = "none"
+
+    @property
+    def compose_file(self) -> Path:
+        return self.bundle / "docker" / "compose.yaml"
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeResult:
     target: RuntimeTarget
     gateway_token: str
+    session: ComposeSession | None = None
 
 
 def bundle_root() -> Path:
@@ -262,31 +336,111 @@ def compose_base_args(compose_file: Path, *, overlays: tuple[Path, ...] = ()) ->
     return arguments
 
 
-def egress_overlays(
-    bundle: Path, *, prebuilt: bool, environ: dict[str, str] | None = None
-) -> tuple[Path, ...]:
-    """Compose overlays for the opt-in allowlisted-egress executor profile.
+def egress_overlays(bundle: Path, *, network_mode: str) -> tuple[Path, ...]:
+    """Compose overlays for the agent phase's network mode (plan 5.3).
 
-    The default (``LOCAL_CHAT_EXECUTOR_EGRESS`` unset, ``none``, or ``off``) adds nothing, so the
-    executor keeps ``network_mode: none``. ``allowlisted`` adds ``docker/compose.egress.yaml``
-    (developer bundles only while the profile is a prototype); any other value fails closed.
+    ``none`` (the default) adds nothing, so the runner keeps ``network_mode: none``.
+    ``registries`` adds ``docker/compose.egress.yaml``: the runner joins the internal network
+    whose only other member is the allowlisted proxy. Release builds pull the digest-pinned
+    proxy image from their manifest; developer builds build it.
     """
-    mode = (
-        (os.environ if environ is None else environ).get(EGRESS_MODE_ENV, "").strip().casefold()
-    )
-    if mode in {"", "none", "off"}:
+    if network_mode == "none":
         return ()
-    if mode != "allowlisted":
-        raise RuntimeErrorMessage(f"{EGRESS_MODE_ENV} must be 'allowlisted' or unset.")
-    if prebuilt:
-        raise RuntimeErrorMessage(
-            "Allowlisted executor egress is a developer prototype and is not available "
-            "with release images."
-        )
+    if network_mode != "registries":
+        raise RuntimeErrorMessage("The network mode must be none or registries.")
     overlay = bundle / "docker" / EGRESS_OVERLAY
     if not overlay.is_file():
         raise RuntimeErrorMessage("The allowlisted egress Compose overlay is missing.")
     return (overlay,)
+
+
+def setup_mounts(workspace: Path, *, isolated: bool) -> dict[str, object]:
+    """The generated Compose overlay that gives the setup container its ``/work``.
+
+    Full setup mounts the whole staging volume. Isolated setup mounts a private ``/work``
+    holding only the host's dependency manifests and lockfiles (read-only) and the staging
+    volume's ``.venv`` and ``node_modules`` directories, so install scripts never see the
+    source tree while the network is open.
+    """
+    if not isolated:
+        volumes: list[dict[str, object]] = [
+            {"type": "volume", "source": "work", "target": "/work"}
+        ]
+        return {"services": {"setup": {"volumes": volumes}}}
+    volumes = [
+        {
+            "type": "bind",
+            "source": str(workspace / name),
+            "target": f"/work/{name}",
+            "read_only": True,
+        }
+        for name in setup_manifests(workspace)
+    ]
+    volumes.extend(
+        {
+            "type": "volume",
+            "source": "work",
+            "target": f"/work/{directory}",
+            "volume": {"subpath": directory},
+        }
+        for directory in SETUP_OUTPUT_DIRECTORIES
+    )
+    return {
+        "services": {
+            "setup": {
+                "tmpfs": ["/work:size=256m,mode=1777,nosuid,nodev,exec"],
+                "volumes": volumes,
+            }
+        }
+    }
+
+
+def parse_audit_lines(text: str) -> list[dict[str, object]]:
+    """Proxy audit entries from ``docker compose logs`` output (one JSON object per line)."""
+    entries: list[dict[str, object]] = []
+    for line in text.splitlines():
+        start = line.find("{")
+        if start < 0:
+            continue
+        try:
+            value = json.loads(line[start:])
+        except ValueError:
+            continue
+        if not isinstance(value, dict) or value.get("event") not in {
+            "egress.allowed",
+            "egress.denied",
+        }:
+            continue
+        entries.append({key: value[key] for key in AUDIT_FIELDS if key in value})
+    return entries
+
+
+def append_audit(data_dir: Path, entries: list[dict[str, object]]) -> None:
+    """Keep proxy audit entries after the proxy container is gone, newest last, bounded."""
+    if not entries:
+        return
+    existing = read_audit(data_dir)
+    seen = {_audit_key(item) for item in existing}
+    merged = existing + [item for item in entries if _audit_key(item) not in seen]
+    merged = merged[-MAX_AUDIT_ENTRIES:]
+    path = data_dir / AUDIT_FILE
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(
+        "".join(json.dumps(item, sort_keys=True) + "\n" for item in merged), encoding="utf-8"
+    )
+    os.replace(temporary, path)
+
+
+def read_audit(data_dir: Path) -> list[dict[str, object]]:
+    try:
+        text = (data_dir / AUDIT_FILE).read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return []
+    return parse_audit_lines(text)
+
+
+def _audit_key(entry: dict[str, object]) -> tuple[object, ...]:
+    return tuple(entry.get(key) for key in ("timestamp", "event", "host", "port", "client"))
 
 
 def _image_ref(value: object, name: str) -> str:
@@ -412,6 +566,79 @@ def remove_staged_session(
         path.write_text(json.dumps(sessions, indent=1, sort_keys=True), encoding="utf-8")
 
 
+def run_docker(
+    docker: Path,
+    arguments: list[str],
+    *,
+    cwd: Path,
+    environment: dict[str, str],
+    timeout: float,
+    stop_event: threading.Event,
+    on_line: Callable[[str], None] | None = None,
+) -> tuple[int, str]:
+    """Run one Docker CLI command without a console window; return its exit code and output.
+
+    A set ``stop_event`` terminates the command (exit code 0, no output); the deadline kills it
+    and raises. ``on_line`` sees each output line as it arrives.
+    """
+    try:
+        process = subprocess.Popen(
+            [str(docker), *arguments],
+            cwd=str(cwd),
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=CREATE_NO_WINDOW,
+        )
+    except OSError as exc:
+        raise RuntimeErrorMessage(f"Could not run Docker: {exc}") from exc
+
+    output: list[str] = []
+    chunks: Queue[str] = Queue()
+
+    def read_output() -> None:
+        if not process.stdout:
+            return
+        try:
+            for line in process.stdout:
+                chunks.put(line)
+        except OSError:
+            return
+
+    def take(line: str) -> None:
+        output.append(line)
+        if on_line is not None:
+            on_line(line)
+
+    reader = threading.Thread(target=read_output, daemon=True)
+    reader.start()
+    deadline = time.monotonic() + timeout
+    while process.poll() is None:
+        if stop_event.is_set():
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            return 0, ""
+        if time.monotonic() >= deadline:
+            process.kill()
+            process.wait()
+            raise RuntimeErrorMessage(f"Docker command timed out: {' '.join(arguments[:3])}")
+        try:
+            take(chunks.get(timeout=0.1))
+        except Empty:
+            continue
+    reader.join(timeout=1)
+    while not chunks.empty():
+        take(chunks.get_nowait())
+    return int(process.returncode or 0), "".join(output)
+
+
 class RuntimeWorker(QThread):
     progress = Signal(str, str)
     succeeded = Signal(object)
@@ -450,7 +677,9 @@ class RuntimeWorker(QThread):
                 raise RuntimeErrorMessage("The bundled Docker Compose file is missing.")
             self.settings.validated()
             if self.target.workspace:
-                self.overlays = egress_overlays(self.bundle, prebuilt=self.images.prebuilt)
+                self.overlays = egress_overlays(
+                    self.bundle, network_mode=self.settings.network_mode
+                )
                 self.runner_target = (
                     detect_runner_target(self.target.workspace)
                     if self.settings.runner_target == "auto"
@@ -499,7 +728,15 @@ class RuntimeWorker(QThread):
                         self.target.workspace,
                         self.runner_target,
                     )
-            self.succeeded.emit(RuntimeResult(self.target, gateway_token))
+            assert self.docker is not None
+            session = ComposeSession(
+                self.docker,
+                self.bundle,
+                dict(self.environment),
+                self.overlays,
+                self.settings.network_mode if self.target.workspace else "none",
+            )
+            self.succeeded.emit(RuntimeResult(self.target, gateway_token, session))
         except RuntimeErrorMessage as exc:
             if not self.stop_event.is_set():
                 self.failed.emit(str(exc))
@@ -514,6 +751,11 @@ class RuntimeWorker(QThread):
                 "LOCAL_CHAT_SECRETS_DIR": str(self.data_dir / "gateway-session"),
                 "LOCAL_CHAT_GATEWAY_IMAGE": self.images.gateway,
                 "LOCAL_CHAT_EXECUTOR_IMAGE": self.images.executor,
+                "LOCAL_CHAT_EGRESS_PROXY_IMAGE": self.images.egress_proxy,
+                # The confirmed workspace policy (plan 4.6 and 5.2); never read from staging.
+                "LOCAL_CHAT_EGRESS_ALLOWED_HOSTS": ",".join(self.settings.registry_hosts),
+                "LOCAL_CHAT_SECRET_PATTERNS": json.dumps(list(self.settings.secret_patterns)),
+                "LOCAL_CHAT_NEVER_PUBLISH": json.dumps(list(self.settings.never_publish)),
             }
         )
         if self.target.workspace:
@@ -591,60 +833,15 @@ class RuntimeWorker(QThread):
 
     def _run(self, arguments: list[str], *, timeout: float, allow_failure: bool = False) -> str:
         assert self.docker is not None
-        try:
-            process = subprocess.Popen(
-                [str(self.docker), *arguments],
-                cwd=str(self.bundle),
-                env=self.environment,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                creationflags=CREATE_NO_WINDOW,
-            )
-        except OSError as exc:
-            raise RuntimeErrorMessage(f"Could not run Docker: {exc}") from exc
-
-        output: list[str] = []
-        chunks: Queue[str] = Queue()
-
-        def read_output() -> None:
-            if not process.stdout:
-                return
-            try:
-                for line in process.stdout:
-                    chunks.put(line)
-            except OSError:
-                return
-
-        reader = threading.Thread(target=read_output, daemon=True)
-        reader.start()
-        deadline = time.monotonic() + timeout
-        while process.poll() is None:
-            if self.stop_event.is_set():
-                process.terminate()
-                try:
-                    process.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
-                return ""
-            if time.monotonic() >= deadline:
-                process.kill()
-                process.wait()
-                raise RuntimeErrorMessage(
-                    f"Docker command timed out: {' '.join(arguments[:3])}"
-                )
-            try:
-                output.append(chunks.get(timeout=0.1))
-            except Empty:
-                continue
-        reader.join(timeout=1)
-        while not chunks.empty():
-            output.append(chunks.get_nowait())
-        text = "".join(output)
-        if process.returncode and not allow_failure:
+        code, text = run_docker(
+            self.docker,
+            arguments,
+            cwd=self.bundle,
+            environment=self.environment,
+            timeout=timeout,
+            stop_event=self.stop_event,
+        )
+        if code and not allow_failure:
             raise RuntimeErrorMessage(self._command_error(arguments, text))
         return text
 
@@ -710,6 +907,178 @@ class RuntimeWorker(QThread):
             raise RuntimeErrorMessage("Runtime setup was cancelled.")
 
 
+@dataclass(frozen=True, slots=True)
+class SetupRequest:
+    """One approved dependency setup (plan 5.1)."""
+
+    command: str
+    isolated: bool = True
+    timeout_seconds: int = 900
+
+
+class SetupWorker(QThread):
+    """Run the approved setup command once, with registry access, then close the network.
+
+    The ``setup`` service (``docker/compose.setup.yaml``) joins the internal egress network for
+    this run only. Afterwards the proxy's audit lines are kept in ``egress-audit.jsonl`` and,
+    unless the session itself opted into registry access, the proxy is stopped, so the agent
+    loop's runner stays without any network.
+    """
+
+    output = Signal(str)
+    succeeded = Signal(dict)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        *,
+        session: ComposeSession,
+        workspace: Path,
+        data_dir: Path,
+        request: SetupRequest,
+        parent: QObject | None = None,
+    ):
+        super().__init__(parent)
+        self.session = session
+        self.workspace = workspace
+        self.data_dir = data_dir
+        self.request = request
+        self.stop_event = threading.Event()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+
+    def run(self) -> None:
+        try:
+            result = self._setup()
+        except RuntimeErrorMessage as exc:
+            if not self.stop_event.is_set():
+                self.failed.emit(str(exc))
+            return
+        except Exception as exc:
+            if not self.stop_event.is_set():
+                self.failed.emit(f"Dependency setup failed: {exc}")
+            return
+        if self.stop_event.is_set():
+            return
+        if result["exit_code"] == 0:
+            self.succeeded.emit(result)
+        else:
+            self.failed.emit(
+                f"The setup command exited with {result['exit_code']}. {result['output_tail']}"
+            )
+
+    def files(self) -> tuple[Path, ...]:
+        docker_dir = self.session.bundle / "docker"
+        return (
+            docker_dir / EGRESS_OVERLAY,
+            docker_dir / SETUP_OVERLAY,
+            self.data_dir / SETUP_MOUNTS_FILE,
+        )
+
+    def _setup(self) -> dict[str, object]:
+        overlays = self.files()
+        if not all(path.is_file() for path in overlays[:2]):
+            raise RuntimeErrorMessage("The setup Compose overlays are missing.")
+        environment = {
+            **self.session.environment,
+            "LOCAL_CHAT_SETUP_COMMAND": self.request.command,
+            "LOCAL_CHAT_SETUP_TIMEOUT": str(self.request.timeout_seconds),
+        }
+        if self.request.isolated:
+            # Volume subpaths must exist before they can be mounted; create them in staging.
+            self._docker(
+                self.session.overlays,
+                ["--profile", "agent", "exec", "-T", "runner", "mkdir", "-p"]
+                + [f"/work/{name}" for name in SETUP_OUTPUT_DIRECTORIES],
+                environment,
+                timeout=60,
+            )
+        mounts = setup_mounts(self.workspace, isolated=self.request.isolated)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        (self.data_dir / SETUP_MOUNTS_FILE).write_text(json.dumps(mounts), encoding="utf-8")
+        tail: list[str] = []
+
+        def line(value: str) -> None:
+            text = _redact_output(value, environment)
+            tail.append(text)
+            del tail[:-200]
+            self.output.emit(text)
+
+        try:
+            code, _output = run_docker(
+                self.session.docker,
+                [
+                    *compose_base_args(self.session.compose_file, overlays=overlays),
+                    "--profile",
+                    "agent",
+                    "--profile",
+                    "setup",
+                    "run",
+                    "--rm",
+                    "--no-TTY",
+                    "setup",
+                ],
+                cwd=self.session.bundle,
+                environment=environment,
+                timeout=self.request.timeout_seconds + SETUP_START_SECONDS,
+                stop_event=self.stop_event,
+                on_line=line,
+            )
+        finally:
+            self._close_network(environment)
+        output_tail = "".join(tail)[-MAX_SETUP_OUTPUT_CHARS:]
+        return {
+            "exit_code": code,
+            "isolated": self.request.isolated,
+            "command": self.request.command,
+            "output_tail": output_tail.strip()[-1_200:],
+            "output": output_tail,
+        }
+
+    def _close_network(self, environment: dict[str, str]) -> None:
+        overlays = self.files()
+        with contextlib.suppress(RuntimeErrorMessage, OSError):
+            _code, logs = self._docker(
+                overlays,
+                ["--profile", "agent", "logs", "--no-color", "egress-proxy"],
+                environment,
+                timeout=60,
+            )
+            append_audit(self.data_dir, parse_audit_lines(logs))
+        if self.session.network_mode != "registries":
+            with contextlib.suppress(RuntimeErrorMessage, OSError):
+                self._docker(
+                    overlays,
+                    ["--profile", "agent", "rm", "--stop", "--force", "egress-proxy"],
+                    environment,
+                    timeout=60,
+                )
+
+    def _docker(
+        self,
+        overlays: tuple[Path, ...],
+        arguments: list[str],
+        environment: dict[str, str],
+        *,
+        timeout: float,
+    ) -> tuple[int, str]:
+        code, text = run_docker(
+            self.session.docker,
+            [*compose_base_args(self.session.compose_file, overlays=overlays), *arguments],
+            cwd=self.session.bundle,
+            environment=environment,
+            timeout=timeout,
+            stop_event=threading.Event(),
+        )
+        if code:
+            raise RuntimeErrorMessage(
+                f"Docker command failed ({' '.join(arguments[:3])}): "
+                f"{_redact_output(text, environment)}"
+            )
+        return code, text
+
+
 class RuntimeManager(QObject):
     """Own the app-controlled Docker lifecycle without exposing Docker to QML."""
 
@@ -718,6 +1087,9 @@ class RuntimeManager(QObject):
     failed = Signal(str)
     setupStarted = Signal()
     setupFinished = Signal(bool)
+    # The dependency setup phase (plan 5.1), distinct from runtime setup above.
+    dependencyOutput = Signal(str)
+    dependencySetupFinished = Signal(bool, object)
 
     def __init__(self, data_dir: Path, parent: QObject | None = None):
         super().__init__(parent)
@@ -731,11 +1103,15 @@ class RuntimeManager(QObject):
             self.image_error = str(exc)
         self.worker: RuntimeWorker | None = None
         self.target: RuntimeTarget | None = None
+        self.session: ComposeSession | None = None
+        self.setup_worker: SetupWorker | None = None
 
     def ensure(self, workspace: Path | None, settings: RuntimeSettings | None = None) -> None:
         target = RuntimeTarget.from_workspace(workspace)
         self.stop_worker()
+        self.stop_setup()
         self.target = target
+        self.session = None
         self.setupStarted.emit()
         if self.images is None:
             self._failed(self.image_error)
@@ -776,11 +1152,17 @@ class RuntimeManager(QObject):
             **os.environ,
             "LOCAL_CHAT_SECRETS_DIR": str(self.data_dir / "gateway-session"),
         }
+        self.stop_setup()
         agent = bool(target and target.workspace)
+        # The setup overlays name the proxy too, so `down` removes it whichever ran last.
         overlays: tuple[Path, ...] = ()
         if agent:
-            with contextlib.suppress(RuntimeErrorMessage):
-                overlays = egress_overlays(self.bundle, prebuilt=False)
+            docker_dir = self.bundle / "docker"
+            overlays = tuple(
+                path
+                for path in (docker_dir / EGRESS_OVERLAY, docker_dir / SETUP_OVERLAY)
+                if path.is_file()
+            )
         with contextlib.suppress(OSError):
             _spawn_detached(
                 [
@@ -793,6 +1175,80 @@ class RuntimeManager(QObject):
                 cwd=str(self.bundle),
                 env=environment,
             )
+
+    @property
+    def network_mode(self) -> str:
+        return self.session.network_mode if self.session else "none"
+
+    @property
+    def setup_running(self) -> bool:
+        return self.setup_worker is not None
+
+    def run_setup(self, request: SetupRequest) -> None:
+        """Start an approved dependency setup against the running workspace runtime."""
+        if self.setup_worker is not None:
+            return
+        target = self.target
+        if self.session is None or target is None or target.workspace is None:
+            self.dependencySetupFinished.emit(
+                False, "Start the workspace runtime before running dependency setup."
+            )
+            return
+        worker = SetupWorker(
+            session=self.session,
+            workspace=target.workspace,
+            data_dir=self.data_dir,
+            request=request,
+            parent=self,
+        )
+        worker.output.connect(self.dependencyOutput)
+        worker.succeeded.connect(lambda result: self.dependencySetupFinished.emit(True, result))
+        worker.failed.connect(lambda message: self.dependencySetupFinished.emit(False, message))
+        worker.finished.connect(self._setup_finished)
+        self.setup_worker = worker
+        worker.start()
+
+    def stop_setup(self) -> None:
+        worker = self.setup_worker
+        if worker is None:
+            return
+        worker.stop()
+        if not worker.wait(5000):
+            worker.terminate()
+            worker.wait(500)
+        self.setup_worker = None
+
+    def _setup_finished(self) -> None:
+        worker = self.setup_worker
+        if worker is not None:
+            worker.deleteLater()
+        self.setup_worker = None
+
+    def egress_audit(self, limit: int = 200) -> list[dict[str, object]]:
+        """Recent proxy decisions, newest first: kept entries plus the live proxy's log when
+        this session runs with registry access."""
+        session = self.session
+        if session is not None and session.network_mode == "registries":
+            with contextlib.suppress(RuntimeErrorMessage, OSError):
+                code, logs = run_docker(
+                    session.docker,
+                    [
+                        *compose_base_args(session.compose_file, overlays=session.overlays),
+                        "--profile",
+                        "agent",
+                        "logs",
+                        "--no-color",
+                        "egress-proxy",
+                    ],
+                    cwd=session.bundle,
+                    environment=session.environment,
+                    timeout=30,
+                    stop_event=threading.Event(),
+                )
+                if not code:
+                    append_audit(self.data_dir, parse_audit_lines(logs))
+        entries = read_audit(self.data_dir)
+        return list(reversed(entries[-max(1, min(limit, MAX_AUDIT_ENTRIES)) :]))
 
     def staged_sessions(self, retention_days: int = DEFAULT_RETENTION_DAYS) -> list[dict]:
         return staged_sessions(self._docker_cli(), self.data_dir, retention_days=retention_days)
@@ -833,6 +1289,8 @@ class RuntimeManager(QObject):
         return run
 
     def _ready(self, result: object) -> None:
+        if isinstance(result, RuntimeResult):
+            self.session = result.session
         self.ready.emit(result)
         self.setupFinished.emit(True)
 

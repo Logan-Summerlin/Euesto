@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 if TYPE_CHECKING:
     from .conversations import ConversationService
     from .generation import GenerationService
+    from .policy import PolicyService
     from .preferences import SettingsService
     from .runtime import RuntimeService
     from .staging_publication import StagingPublicationService
@@ -43,12 +44,15 @@ class BridgeHost(Protocol):
     meterChanged: SignalLike
     conflictsChanged: SignalLike
     leaveRequested: SignalLike
+    policyChanged: SignalLike
+    reviewChanged: SignalLike
 
     runtime: RuntimeService
     settings: SettingsService
     history: ConversationService
     generation: GenerationService
     staging: StagingPublicationService
+    policy: PolicyService
 
     def set_status(self, text: str) -> None: ...
 

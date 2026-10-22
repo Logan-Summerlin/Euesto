@@ -165,11 +165,14 @@ class AgentWorker(_StreamWorker):
         )
 
     @classmethod
-    def for_resume(cls, client: GatewayClient, run_id: str, api_key: str) -> AgentWorker:
+    def for_resume(
+        cls, client: GatewayClient, run_id: str, api_key: str, *, new_budget: bool = False
+    ) -> AgentWorker:
+        """Resume a paused run; ``new_budget`` continues one that stopped at its budget (3.3)."""
         return cls(
             client,
             lambda stop_event: client.resume_agent(
-                run_id, api_key=api_key, stop_event=stop_event
+                run_id, api_key=api_key, stop_event=stop_event, new_budget=new_budget
             ),
             failure_context="Agent resume",
         )
@@ -230,9 +233,11 @@ class CallWorker(QThread):
 class StagingWorker(QThread):
     """Run one staging request against the gateway off the UI thread.
 
-    Actions: ``inspect``, ``discard``, ``publish`` (the first batch of staged work kept from
-    an earlier session, emitted as ``{"manifest": ...}``), and ``rebase`` (absorb host
-    changes, resolving ``resolutions`` = ``{"keep_staged": [...], "take_host": [...]}``).
+    Actions: ``inspect``, ``discard``, ``publish`` (the first batch of staged work, or of only
+    ``paths`` for a partial publication, emitted as ``{"manifest": ...}``), ``rebase`` (absorb
+    host changes, resolving ``resolutions`` = ``{"keep_staged": [...], "take_host": [...]}``),
+    ``review`` (changes with per-file diffs and declared check results, plan 4.4), and
+    ``check`` (run the declared check named ``check``, plan 3.4).
     """
 
     complete = Signal(dict)
@@ -244,22 +249,29 @@ class StagingWorker(QThread):
         workspace_id: str,
         action: str,
         resolutions: dict[str, list[str]] | None = None,
+        *,
+        paths: tuple[str, ...] | None = None,
+        check: str = "",
     ):
         super().__init__()
         self.client = client
         self.workspace_id = workspace_id
         self.action = action
         self.resolutions = resolutions or {}
+        self.paths = paths
+        self.check = check
 
     def run(self) -> None:
         requests = {
             "discard": (self.client.discard_staging, "discard"),
             "publish": (
                 lambda workspace: {
-                    "manifest": self.client.staged_publication(workspace).to_dict()
+                    "manifest": self.client.staged_publication(workspace, self.paths).to_dict()
                 },
                 "publication",
             ),
+            "review": (lambda workspace: self.client.review_staging(workspace), "review"),
+            "check": (lambda workspace: self.client.run_check(workspace, self.check), "check"),
             "rebase": (
                 lambda workspace: self.client.rebase_staging(
                     workspace,
@@ -286,7 +298,12 @@ class PublicationWorker(QThread):
 
     Multi-batch publications record each batch in the PublicationLedger. When more batches
     remain, the next manifest is returned as ``next_manifest`` for its own approval; nothing
-    beyond the approved batch is ever written by this worker.
+    beyond the approved batch is ever written by this worker. A partial publication passes its
+    ``paths`` selection so later batches stay within it (plan 4.4).
+
+    ``required_checks`` names the policy's ``verify_before_publish`` checks (3.4): an Auto
+    publication refuses to write unless each has passed against the current staged snapshot.
+    ``never_publish`` is the confirmed policy's withheld globs, re-checked by the broker.
     """
 
     complete = Signal(dict)
@@ -299,18 +316,27 @@ class PublicationWorker(QThread):
         recovery_root: Path,
         *,
         reseed_client: GatewayClient | None = None,
+        paths: tuple[str, ...] | None = None,
+        required_checks: tuple[str, ...] = (),
+        never_publish: tuple[str, ...] = (),
     ):
         super().__init__()
         self.manifest = manifest
         self.workspace_root = workspace_root
         self.recovery_root = recovery_root
         self.reseed_client = reseed_client
+        self.paths = paths
+        self.required_checks = required_checks
+        self.never_publish = never_publish
         self.continuation_client: GatewayClient | None = None
         self.multi_batch = int(getattr(manifest, "batch_count", 1) or 1) > 1
 
     def run(self) -> None:
         try:
-            broker = WorkspaceBroker(self.workspace_root, self.recovery_root)
+            self._verify_checks()
+            broker = WorkspaceBroker(
+                self.workspace_root, self.recovery_root, never_publish=self.never_publish
+            )
             published = broker.publish(
                 self.manifest, {item.path for item in self.manifest.operations}
             )
@@ -351,7 +377,7 @@ class PublicationWorker(QThread):
             )
             if client is not None and reseed_error is None and self.manifest.has_more_batches:
                 following, batch_error = _attempt(
-                    lambda: client.next_publication_batch(self.manifest),
+                    lambda: client.next_publication_batch(self.manifest, self.paths),
                     "Unexpected publication batch error",
                 )
                 if batch_error is not None:
@@ -360,6 +386,33 @@ class PublicationWorker(QThread):
                     result["next_manifest"] = following.to_dict()
                     self.continuation_client = client
         self.complete.emit(result)
+
+    def _verify_checks(self) -> None:
+        """Refuse an unattended publication whose required checks have not passed against
+        the staged snapshot being published."""
+        if not self.required_checks:
+            return
+        if self.reseed_client is None:
+            raise BrokerError("Required checks cannot be verified without the local gateway")
+        review = self.reseed_client.review_staging(self.manifest.workspace_id)
+        results = {
+            str(item.get("name")): item
+            for item in review.get("checks") or ()
+            if isinstance(item, dict)
+        }
+        missing = [
+            name
+            for name in self.required_checks
+            if not (
+                results.get(name, {}).get("status") == "passed"
+                and results.get(name, {}).get("current") is True
+            )
+        ]
+        if missing:
+            raise BrokerError(
+                "Auto stopped: the workspace policy requires passing checks before publication "
+                f"({', '.join(missing)}). Run them from the review pane."
+            )
 
     def _record(
         self, status: str, *, checkpoint_id: str | None = None, error: str | None = None

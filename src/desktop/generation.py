@@ -5,7 +5,7 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QTimer, Slot
 
-from ..approval_display import approval_display
+from ..approval_display import approval_display, bash_html
 from ..controllers import GenerationController
 from ..extensions import load_selected_skills
 from ..gateway_client import GatewayClient, GatewayConnection, GatewayError
@@ -20,6 +20,10 @@ from .host import BridgeHost
 MODES = ("chat", "plan", "agent")
 APPROVAL_DECISIONS = frozenset({"deny", "allow_once", "allow_run", "allow_rule"})
 TIER_UNAVAILABLE = "Select Agent mode with a ready, idle workspace and compatible gateway."
+# Set once the user has read what the Sandbox tier does; from then on it is the default for
+# new Agent sessions (plan 4.1).
+SANDBOX_EXPLAINED_KEY = "agent.sandbox_explained"
+MAX_LIVE_TEXT_CHARS = 64_000
 
 
 class GenerationService(QObject):
@@ -28,7 +32,11 @@ class GenerationService(QObject):
 
     The approval tier is session state that never outlives the workspace, the Agent mode, a
     resume, or the app: ``auto`` also stops on any run or publication failure, while
-    ``accept_edits`` only ever relaxes prompts for staged file edits.
+    ``sandbox`` only ever relaxes prompts for changes that stay inside the network-less staged
+    copy; every publication is still reviewed.
+
+    The service also follows the run: streamed text shown live (plan 3.1), the session plan
+    (3.2), and a run paused at its budget that can continue with another budget (3.3).
     """
 
     def __init__(self, host: BridgeHost, storage: Storage):
@@ -39,12 +47,19 @@ class GenerationService(QObject):
         self.worker: ChatWorker | AgentWorker | None = None
         self.mode = "chat"
         self.auto_mode = False
-        # Middle approval tier: staged file edits run without prompts, Bash still asks.
-        self.accept_edits = False
+        # Middle approval tier: staged mutations, Bash included, run without prompts while the
+        # runner has no network.
+        self.sandbox = False
         self.live_events: list[dict[str, object]] = []
         # Cost, cache hit rate, context, tool calls, and time for the active run (0.8).
         self.meter = RunMeter()
         self._pending_approvals: dict[str, dict[str, Any]] = {}
+        # Streamed text of the current model turn, and the session plan checklist.
+        self.live_text = ""
+        self._live_turn: object = None
+        self.plan: dict[str, Any] | None = None
+        # A run that stopped at its budget, offered as "Continue with another budget".
+        self.budget_paused_run: str | None = None
 
     @property
     def running(self) -> bool:
@@ -55,14 +70,18 @@ class GenerationService(QObject):
     def approval_policy(self) -> str:
         if self.auto_mode:
             return "auto"
-        return "accept_edits" if self.accept_edits else "prompt"
+        return "sandbox" if self.sandbox else "prompt"
+
+    def network_mode(self) -> str:
+        """The network mode an Agent request asks for; the runtime decides what it gets."""
+        return self.host.runtime.network_mode if self.mode == "agent" else "none"
 
     def stop_auto(self) -> None:
         self.auto_mode = False
 
     def _reset_tiers(self) -> None:
         self.auto_mode = False
-        self.accept_edits = False
+        self.sandbox = False
 
     def reset_for_workspace_change(self) -> None:
         self._reset_tiers()
@@ -73,10 +92,18 @@ class GenerationService(QObject):
             return
         if mode != "chat" and not self._workspace_mode_available(mode):
             return
-        self.mode = mode
+        previous, self.mode = self.mode, mode
         if mode != "agent":
             self._reset_tiers()
+        elif previous != "agent" and self._sandbox_default():
+            # After the one-time explanation, new Agent sessions start in Sandbox.
+            self.sandbox = True
         self.host.stateChanged.emit()
+
+    def _sandbox_default(self) -> bool:
+        return self.storage.get_setting(SANDBOX_EXPLAINED_KEY) == "1" and self._tier_available(
+            "agent_sandbox"
+        )
 
     def _workspace_mode_available(self, mode: str) -> bool:
         runtime = self.host.runtime
@@ -133,29 +160,70 @@ class GenerationService(QObject):
             self.host.stateChanged.emit,
         )
 
-    def request_accept_edits(self, enabled: bool) -> None:
+    def request_sandbox(self, enabled: bool) -> None:
         if not enabled:
-            self.accept_edits = False
-            self.host.set_status("Staged edits require approval again")
+            self.sandbox = False
+            self.host.set_status("Staged changes and commands require approval again")
             return
-        if not self._tier_available("agent_accept_edits"):
-            self.host.errorRequested.emit("Accept edits unavailable", TIER_UNAVAILABLE)
+        if not self._tier_available("agent_sandbox"):
+            self.host.errorRequested.emit("Sandbox unavailable", TIER_UNAVAILABLE)
+            return
+        if self.storage.get_setting(SANDBOX_EXPLAINED_KEY) == "1":
+            self._enable_sandbox()
             return
 
-        def enable() -> None:
-            self.accept_edits = True
-            self.host.set_status(
-                "Staged edits are accepted without prompts for this Agent session"
-            )
+        def explained() -> None:
+            self.storage.set_setting(SANDBOX_EXPLAINED_KEY, "1")
+            self._enable_sandbox()
 
         self.host.confirm(
-            f"enable-accept-edits:{self.host.runtime.workspace_path}",
-            "Accept staged edits for this Agent session?",
-            "write, edit, and apply_patch will change the private staged copy without asking. "
-            "Bash commands still require approval, and publishing to the host is still reviewed "
-            "separately. "
-            "This stops on resume, mode or workspace change, or app restart.",
-            enable,
+            f"enable-sandbox:{self.host.runtime.workspace_path}",
+            "Run staged work without prompts (Sandbox)?",
+            "write, edit, apply_patch, and bash run without asking while the runner has no "
+            "network. Every effect stays inside the private, checkpointed staged copy, which "
+            "has no credentials and no access to your files. Publishing to the host is still "
+            "reviewed batch by batch. With registry access on, Bash asks again unless a saved "
+            "rule matches. Deny rules still apply.\n\n"
+            "After you confirm, new Agent sessions start in Sandbox; turn it off any time.",
+            explained,
+            self.host.stateChanged.emit,
+        )
+
+    def _enable_sandbox(self) -> None:
+        self.sandbox = True
+        self.host.set_status("Sandbox: staged work runs without prompts for this session")
+        self.host.stateChanged.emit()
+
+    def request_registry_access(self, enabled: bool) -> None:
+        """Opt this Agent session into registry access (plan 5.3), restarting the runtime."""
+        runtime = self.host.runtime
+        if not enabled:
+            if runtime.network_mode != "none" and not self.running:
+                runtime.set_network_mode("none")
+                self.host.set_status("Registry access off; restarting the runtime…")
+            return
+        if not runtime.automatic or self.mode != "agent" or self.running:
+            self.host.errorRequested.emit(
+                "Registry access unavailable",
+                "Select Agent mode with an idle, app-managed workspace runtime.",
+            )
+            return
+        if not self.host.policy.allows_registries():
+            self.host.errorRequested.emit(
+                "Registry access not allowed",
+                'The workspace policy must set [network] mode = "registries" (and be '
+                "confirmed in Settings) before an Agent session can opt in.",
+            )
+            return
+        hosts = ", ".join(self.host.policy.effective().registry_hosts)
+        self.host.confirm(
+            f"registries:{runtime.workspace_path}",
+            "Allow registry access for this Agent session?",
+            f"The runner joins an internal network whose only exit is the audited proxy to: "
+            f"{hosts}. Every Bash command asks for approval again unless a saved rule "
+            "matches, and Sandbox does not skip those prompts. The runtime restarts; staged "
+            "work is kept. Registry access ends with the workspace or the app.",
+            lambda: runtime.set_network_mode("registries"),
             self.host.stateChanged.emit,
         )
 
@@ -312,6 +380,8 @@ class GenerationService(QObject):
         )
         self.controller.begin(conversation.id, parent_message_id, model, self.mode)
         self.live_events = []
+        self._reset_live()
+        self.budget_paused_run = None
         options = settings.request_options(model)
         privacy = {
             "data_collection": options.data_collection,
@@ -345,6 +415,7 @@ class GenerationService(QObject):
                 mode=self.mode,
                 workspace_id=identity,
                 approval_policy=self.approval_policy(),
+                network_mode=self.network_mode(),
                 session_id=conversation.id,
                 context_limit_tokens=prepared.context_limit,
                 skills=skills,
@@ -371,7 +442,7 @@ class GenerationService(QObject):
         worker.failed.connect(self.on_stream_error)
         worker.finished.connect(self.on_worker_finished)
 
-    def resume_run(self, run_id: str) -> None:
+    def resume_run(self, run_id: str, *, new_budget: bool = False) -> None:
         connection = self.host.runtime.connection()
         api_key = get_api_key()
         conversation = self.host.history.current()
@@ -379,14 +450,37 @@ class GenerationService(QObject):
             return
         # Session approval tiers never survive a resume; the gateway enforces this too.
         self._reset_tiers()
+        self._reset_live()
+        self.budget_paused_run = None
         self.controller.begin(
             conversation.id, conversation.active_leaf_id, conversation.model, "agent"
         )
-        worker = AgentWorker.for_resume(GatewayClient(connection), run_id, api_key)
+        worker = AgentWorker.for_resume(
+            GatewayClient(connection), run_id, api_key, new_budget=new_budget
+        )
         worker.eventReceived.connect(self.on_agent_event)
         self._attach(worker)
         self.host.stateChanged.emit()
         worker.start()
+
+    def continue_with_budget(self) -> None:
+        """Continue a run that paused at its budget with a fresh budget (plan 3.3). Profiles
+        above twice the standard budget still ask for approval in the gateway."""
+        run_id = self.budget_paused_run
+        if not run_id:
+            self.host.set_status("No run is waiting for another budget")
+            return
+        self.host.confirm(
+            f"continue-budget:{run_id}",
+            "Continue with another budget?",
+            "The agent continues from its summary and plan with a fresh budget of the same "
+            "profile. Staged work, the plan, and the handoff are kept.",
+            lambda: self.resume_run(run_id, new_budget=True),
+        )
+
+    def _reset_live(self) -> None:
+        self.live_text = ""
+        self._live_turn = None
 
     # -- run events --------------------------------------------------------------------
 
@@ -405,6 +499,15 @@ class GenerationService(QObject):
             self.host.meterChanged.emit()
         if event_type == "usage.updated":
             return
+        if event_type == "model.stream":
+            self._stream_text(payload)
+            return
+        if event_type in {"model.delta", "tool.requested"}:
+            self._reset_live()
+        if isinstance(payload.get("plan"), dict) or event_type == "plan.updated":
+            plan = payload.get("plan")
+            self.plan = plan if isinstance(plan, dict) and plan.get("steps") else None
+            self.host.stateChanged.emit()
         try:
             if event_type not in {"model.delta", "tool.output", "tool.completed"}:
                 self.controller.save_event(event)
@@ -436,32 +539,66 @@ class GenerationService(QObject):
         elif event_type == "publication.failed":
             self.auto_mode = False
             self.host.set_status("Agent completed; host publication is unavailable")
+        elif event_type == "run.paused":
+            self._reset_live()
+            if payload.get("reason") == "budget" and payload.get("resumable"):
+                self.budget_paused_run = str(event.run_id)
+                self.host.set_status(
+                    "Paused at the budget; the agent left a summary. "
+                    "Continue with another budget to go on."
+                )
+            self.host.stateChanged.emit()
         if compact is not None:
             self.host.history.schedule_transcript_refresh()
+
+    def _stream_text(self, payload: dict[str, Any]) -> None:
+        """Show the current turn's streamed text live; journaled at a bounded rate (3.1)."""
+        turn = payload.get("turn")
+        if turn != self._live_turn:
+            self._live_turn = turn
+            self.live_text = ""
+        self.live_text = (self.live_text + str(payload.get("text") or ""))[
+            -MAX_LIVE_TEXT_CHARS:
+        ]
+        self.host.history.schedule_transcript_refresh()
 
     def _request_approval(self, event: Any) -> None:
         payload = event.payload
         approval_id = str(payload.get("approval_id") or "")
         kind = str(payload.get("kind") or "tool")
+        tool = str(payload.get("tool") or "tool")
         detail = payload.get("manifest") if kind == "publish" else payload.get("arguments")
-        summary, full_detail = approval_display(
-            kind, str(payload.get("tool") or "tool"), detail
-        )
+        if kind == "url":
+            detail = {"url": payload.get("url"), "host": payload.get("host")}
+        summary, full_detail = approval_display(kind, tool, detail, context=dict(payload))
         key = f"{event.run_id}:{approval_id}"
         self._pending_approvals[key] = {
             "runId": event.run_id,
             "approvalId": approval_id,
             "kind": kind,
         }
+        arguments = (
+            payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
+        )
+        titles = {
+            "publish": "Publish staged changes?",
+            "url": "Fetch this URL?",
+            "budget": "Approve a larger budget?",
+        }
         self.host.approvalRequested.emit(
             {
                 "key": key,
-                "title": "Publish staged changes?"
-                if kind == "publish"
-                else "Approve isolated tool?",
+                "kind": kind,
+                "title": titles.get(kind, "Approve isolated tool?"),
                 "summary": summary,
                 "details": full_detail,
                 "allowRule": kind == "tool",
+                "allowRun": kind in {"tool", "budget"},
+                "allowOnce": kind != "budget",
+                "commandHtml": bash_html(str(arguments.get("command") or ""))
+                if tool == "bash" and kind == "tool"
+                else "",
+                "network": str(payload.get("network") or ""),
             }
         )
 
@@ -514,6 +651,7 @@ class GenerationService(QObject):
     def _end_stream(self, status: str) -> None:
         self.controller.state.clear_stream()
         self.live_events = []
+        self._reset_live()
         self.host.set_status(status)
         self.host.history.refresh_transcript()
         self.host.stateChanged.emit()

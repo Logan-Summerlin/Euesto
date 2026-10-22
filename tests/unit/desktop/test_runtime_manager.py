@@ -32,7 +32,8 @@ def write_manifest(
     gateway: str,
     executor: str,
     runners: dict[str, str] | None = None,
-    schema_version: int = 2,
+    schema_version: int = 3,
+    egress_proxy: str | None = f"ghcr.io/example/euesto-egress-proxy:v1.1.0@{DIGEST}",
 ) -> None:
     docker = root / "docker"
     docker.mkdir()
@@ -41,17 +42,15 @@ def write_manifest(
             target: f"ghcr.io/example/euesto-runner-{target}:v1.1.0@{DIGEST}"
             for target in RUNNER_TARGETS
         }
-    (docker / "release-images.json").write_text(
-        json.dumps(
-            {
-                "schema_version": schema_version,
-                "gateway": gateway,
-                "executor": executor,
-                "runners": runners,
-            }
-        ),
-        encoding="utf-8",
-    )
+    data = {
+        "schema_version": schema_version,
+        "gateway": gateway,
+        "executor": executor,
+        "runners": runners,
+    }
+    if egress_proxy is not None:
+        data["egress_proxy"] = egress_proxy
+    (docker / "release-images.json").write_text(json.dumps(data), encoding="utf-8")
 
 
 def test_source_bundle_defaults_to_buildable_developer_images(tmp_path: Path) -> None:
@@ -81,17 +80,20 @@ def test_release_manifest_requires_digest_pinned_images(tmp_path: Path) -> None:
     assert (
         images.runner("polyglot") == f"ghcr.io/example/euesto-runner-polyglot:v1.1.0@{DIGEST}"
     )
+    assert images.egress_proxy == f"ghcr.io/example/euesto-egress-proxy:v1.1.0@{DIGEST}"
 
 
 @pytest.mark.parametrize(
     "change",
     [
-        {"schema_version": 1},
+        {"schema_version": 2},
+        {"egress_proxy": None},
+        {"egress_proxy": "ghcr.io/example/euesto-egress-proxy:v1"},
         {"runners": {"base": f"ghcr.io/example/base@{DIGEST}"}},
         {"runners": {target: f"ghcr.io/example/{target}:v1" for target in RUNNER_TARGETS}},
     ],
 )
-def test_release_manifest_requires_schema_two_with_every_pinned_runner(
+def test_release_manifest_requires_schema_three_with_every_image_pinned(
     tmp_path: Path, change: dict
 ) -> None:
     write_manifest(

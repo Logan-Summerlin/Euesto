@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -22,8 +23,9 @@ except ImportError as exc:  # pragma: no cover - Qt unavailable
     pytest.skip(f"Qt unavailable: {exc}", allow_module_level=True)
 
 from shared.events import EventEnvelope
+from shared.policy import WorkspacePolicy, parse_policy
 from shared.responses import GatewayStatus
-from shared.tools import PublishManifest
+from shared.tools import PublishManifest, PublishOperation
 from src.connection import HealthResult, HealthState
 from src.desktop import (
     ConversationService,
@@ -76,6 +78,8 @@ class FakeHost(QObject):
         "meterChanged",
         "conflictsChanged",
         "leaveRequested",
+        "policyChanged",
+        "reviewChanged",
     )
 
     def __init__(self) -> None:
@@ -89,6 +93,7 @@ class FakeHost(QObject):
         self.permission_loads = 0
         self.runtime: Any = SimpleNamespace(
             workspace_path="",
+            network_mode="none",
             gateway_token="",
             connection=lambda: None,
             identity=lambda: "workspace",
@@ -115,12 +120,19 @@ class FakeHost(QObject):
         self.generation: Any = SimpleNamespace(
             running=False,
             live_events=[],
+            live_text="",
             auto_mode=False,
             stop_auto=lambda: None,
             reset_for_workspace_change=lambda: None,
             continue_queued_input=lambda: None,
         )
         self.staging: Any = SimpleNamespace(busy=False, publishing=False)
+        self.policy: Any = SimpleNamespace(
+            effective=lambda: WorkspacePolicy(),
+            refresh=noop,
+            allows_registries=lambda: False,
+            runtime_settings=lambda base, network_mode: base,
+        )
 
     def set_status(self, text: str) -> None:
         self.status_text = text
@@ -158,7 +170,7 @@ def _status(workspace: Path, **extra: Any) -> GatewayStatus:
         "executor_status": "ready",
         "active_workspace": workspace_id(workspace),
         "supported_modes": ("chat", "plan", "agent"),
-        "capabilities": ({"name": "agent_auto"}, {"name": "agent_accept_edits"}),
+        "capabilities": ({"name": "agent_auto"}, {"name": "agent_sandbox"}),
     }
     values.update(extra)
     return GatewayStatus(**values)
@@ -181,7 +193,7 @@ def test_runtime_workspace_readiness_and_capabilities(host, storage, tmp_path: P
     assert runtime.workspace_ready() is False  # no gateway status yet
     runtime.last_status = _status(workspace)
     assert runtime.workspace_ready() and runtime.mode_available("agent")
-    assert runtime.has_capability("agent_accept_edits") and not runtime.has_capability("other")
+    assert runtime.has_capability("agent_sandbox") and not runtime.has_capability("other")
     runtime.last_status = _status(workspace, active_workspace="someone-else")
     assert not runtime.workspace_ready() and not runtime.mode_available("agent")
 
@@ -442,13 +454,13 @@ def test_generation_approval_tiers_reset_with_workspace_and_mode(
 ) -> None:
     generation = _generation(host, storage, tmp_path)
     generation.select_mode("agent")
-    generation.request_accept_edits(True)
+    generation.request_sandbox(True)
     host.accept(next(iter(host.confirmations)))
     generation.request_auto_mode(True)
     host.accept(next(iter(host.confirmations)))
     assert generation.approval_policy() == "auto"
     generation.stop_auto()
-    assert generation.approval_policy() == "accept_edits"
+    assert generation.approval_policy() == "sandbox"
     generation.reset_for_workspace_change()
     assert generation.approval_policy() == "prompt" and generation.mode == "chat"
 
@@ -606,8 +618,11 @@ def _manifest(**overrides: Any) -> PublishManifest:
 class FakePublicationWorker:
     started: list[FakePublicationWorker] = []
 
-    def __init__(self, manifest, workspace_root, recovery_root, *, reseed_client=None) -> None:
+    def __init__(
+        self, manifest, workspace_root, recovery_root, *, reseed_client=None, **options
+    ) -> None:
         self.manifest = manifest
+        self.options = options
         self.continuation_client = None
         self.complete = self.failed = self.finished = Recorder()
 
@@ -751,9 +766,10 @@ class Hook:
 class FakeStagingWorker:
     started: list[FakeStagingWorker] = []
 
-    def __init__(self, client, workspace_id, action, resolutions=None) -> None:
+    def __init__(self, client, workspace_id, action, resolutions=None, **options) -> None:
         self.action = action
         self.resolutions = resolutions
+        self.options = options
         self.complete, self.failed, self.finished = Hook(), Hook(), Hook()
 
     def start(self) -> None:
@@ -1007,7 +1023,8 @@ def test_staging_worker_publish_and_rebase_actions_call_the_gateway() -> None:
     calls: list[tuple[str, object]] = []
     manifest = _manifest()
     client = SimpleNamespace(
-        staged_publication=lambda workspace: calls.append(("publish", workspace)) or manifest,
+        staged_publication=lambda workspace, paths: calls.append(("publish", workspace))
+        or manifest,
         rebase_staging=lambda workspace, **choices: calls.append(("rebase", choices))
         or {"ok": 1},
         inspect_staging=lambda workspace: calls.append(("inspect", workspace)) or {"data": {}},
@@ -1028,3 +1045,93 @@ def test_staging_worker_publish_and_rebase_actions_call_the_gateway() -> None:
         ("inspect", "ws"),
     ]
     assert results[0] == {"manifest": manifest.to_dict()}
+
+
+def _text_operation(path: str, text: str = "x\n") -> dict[str, Any]:
+    operation = PublishOperation(
+        path=path,
+        operation="create",
+        base_sha256=None,
+        staged_sha256=hashlib.sha256(text.encode()).hexdigest(),
+        content=text,
+    )
+    return asdict(operation)
+
+
+def test_auto_stops_for_confirmation_at_a_flagged_batch(host, staging) -> None:
+    """Plan 4.3 / D5: Auto never publishes a host-executable, dependency, or policy change
+    without explicit confirmation; it falls back to the reviewed prompt instead."""
+    service, _stopped = staging
+    host.generation.auto_mode = True
+    flagged = _manifest(operations=[_text_operation(".github/workflows/ci.yml")])
+    service.start_publication(flagged, auto=True, client=object())
+    assert FakePublicationWorker.started == []
+    title, body, _accept, _decline = host.confirmations["publish-flagged:pub:1"]
+    assert title == "Publish staged changes to the host?"
+    assert "Auto stopped here" in body and "runs on the host" in body
+    host.accept("publish-flagged:pub:1")
+    assert len(FakePublicationWorker.started) == 1
+    # Confirmed by the user: no auto-only check gate applies to the confirmed batch.
+    assert FakePublicationWorker.started[0].options["required_checks"] == ()
+
+    plain = _manifest(manifest_id="m2", operations=[_text_operation("src/app.py")])
+    service.publication_worker = None
+    service.start_publication(plain, auto=True, client=object())
+    assert len(FakePublicationWorker.started) == 2
+
+
+def test_required_checks_gate_only_auto_publication(host, staging) -> None:
+    service, _stopped = staging
+    policy = parse_policy(
+        'version = 1\n[checks]\ntests = "pytest"\n'
+        '[publication]\nverify_before_publish = ["tests"]\nnever_publish = ["secrets/**"]\n'
+    )
+    host.policy.effective = lambda: policy
+    service.start_publication(_manifest(), auto=True, client=object())
+    options = FakePublicationWorker.started[-1].options
+    assert options["required_checks"] == ("tests",)
+    assert options["never_publish"] == ("secrets/**",)
+    service.publication_worker = None
+    service.start_publication(_manifest(manifest_id="m2"), auto=False, client=object())
+    assert FakePublicationWorker.started[-1].options["required_checks"] == ()
+
+
+def test_review_selection_publishes_only_the_selected_paths(host, staging) -> None:
+    """Plan 4.4: the review pane keeps the user's choices and publishes a partial selection."""
+    service, _stopped = staging
+    calls: list[tuple[str, tuple[str, ...] | None]] = []
+    service._start_action = lambda action, *_args, paths=None, **_kwargs: calls.append(
+        (action, paths)
+    )
+    review = {
+        "summary": "2 changes",
+        "changes": [
+            {"path": "src/a.py", "operation": "update"},
+            {"path": "package.json", "operation": "update"},
+        ],
+        "diffs": [
+            {"path": "src/a.py", "kind": "text", "text": "@@ -1 +1 @@", "added_lines": 1}
+        ],
+        "checks": [],
+    }
+    service._on_reviewed(review)
+    view = service.review_view()
+    assert view["open"] and view["selectedCount"] == 2
+    # Flagged files are listed first and say why.
+    assert view["files"][0]["path"] == "package.json" and view["files"][0]["flags"]
+    service.publish_selection()
+    assert calls[-1] == ("publish", None)  # everything selected: a full publication
+
+    service.set_review_selected("package.json", False)
+    service.publish_selection()
+    assert calls[-1] == ("publish", ("src/a.py",))
+
+    # A refreshed review keeps the user's choices and selects only new files.
+    changes = [*review["changes"], {"path": "src/b.py", "operation": "create"}]
+    service._on_reviewed({**review, "changes": changes})
+    assert service.review_selection == {"src/a.py", "src/b.py"}
+    service.set_review_all(False)
+    service.publish_selection()
+    assert calls[-1] == ("publish", ("src/a.py",)) and host.statuses[-1].startswith("Select")
+    service.close_review()
+    assert service.review_view() == {"open": False}

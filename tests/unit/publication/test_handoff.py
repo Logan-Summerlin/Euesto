@@ -7,7 +7,7 @@ from src.workers import PublicationWorker
 
 
 class FakeBroker:
-    def __init__(self, _workspace_root: Path, _recovery_root: Path) -> None:
+    def __init__(self, _workspace_root: Path, _recovery_root: Path, **_options) -> None:
         pass
 
     def publish(self, _manifest, paths):

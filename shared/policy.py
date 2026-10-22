@@ -14,11 +14,11 @@ Example::
     image = "python"                 # auto, base, python, node, or polyglot
 
     [network]
-    mode = "none"                    # none or registries (a per-session opt-in)
+    mode = "none"                    # none, or registries to allow the per-session opt-in
     allow_hosts = ["crates.io"]      # public registries from REGISTRY_ADDITIONS only
 
     [setup]
-    command = "uv sync --frozen"     # run in the runner with registry access, after approval
+    command = "uv sync --frozen --no-install-project"  # run with registry access, after approval
     isolated = true                  # the setup runner sees only manifests and lockfiles
 
     [checks]
@@ -408,7 +408,7 @@ def detect_setup_command(workspace: Path) -> str | None:
         return None
     commands: list[str] = []
     if "uv.lock" in names:
-        commands.append("uv sync --frozen")
+        commands.append("uv sync --frozen --no-install-project")
     elif "poetry.lock" in names:
         commands.append("POETRY_VIRTUALENVS_IN_PROJECT=true poetry install --no-root")
     elif "requirements.txt" in names:

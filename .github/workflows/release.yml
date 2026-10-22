@@ -14,6 +14,7 @@ env:
   GHCR_OWNER: ${{ github.repository_owner }}
   GATEWAY_IMAGE_NAME: euesto-gateway
   EXECUTOR_IMAGE_NAME: euesto-executor
+  EGRESS_PROXY_IMAGE_NAME: euesto-egress-proxy
   RUNNER_IMAGE_PREFIX: euesto-runner
 
 jobs:
@@ -59,6 +60,15 @@ jobs:
           file: docker/Dockerfile.executor
           push: true
           tags: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.EXECUTOR_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
+
+      - name: Build and publish egress proxy image
+        id: egress
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.egress-proxy
+          push: true
+          tags: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.EGRESS_PROXY_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
 
       - uses: docker/setup-buildx-action@v3
 
@@ -111,9 +121,12 @@ jobs:
           GATEWAY_DIGEST: ${{ steps.gateway.outputs.digest }}
           EXECUTOR_IMAGE: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.EXECUTOR_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
           EXECUTOR_DIGEST: ${{ steps.executor.outputs.digest }}
+          EGRESS_IMAGE: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.EGRESS_PROXY_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
+          EGRESS_DIGEST: ${{ steps.egress.outputs.digest }}
         run: |
           docker pull "${GATEWAY_IMAGE}@${GATEWAY_DIGEST}"
           docker pull "${EXECUTOR_IMAGE}@${EXECUTOR_DIGEST}"
+          docker pull "${EGRESS_IMAGE}@${EGRESS_DIGEST}"
           for reference in ${{ steps.runners.outputs.base }} ${{ steps.runners.outputs.python }} \
             ${{ steps.runners.outputs.node }} ${{ steps.runners.outputs.polyglot }}; do
             docker pull "$reference"
@@ -127,10 +140,13 @@ jobs:
           GATEWAY_DIGEST: ${{ steps.gateway.outputs.digest }}
           EXECUTOR_IMAGE: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.EXECUTOR_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
           EXECUTOR_DIGEST: ${{ steps.executor.outputs.digest }}
+          EGRESS_IMAGE: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.EGRESS_PROXY_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
+          EGRESS_DIGEST: ${{ steps.egress.outputs.digest }}
         run: |
           docker logout ghcr.io || true
           docker pull "${GATEWAY_IMAGE}@${GATEWAY_DIGEST}"
           docker pull "${EXECUTOR_IMAGE}@${EXECUTOR_DIGEST}"
+          docker pull "${EGRESS_IMAGE}@${EGRESS_DIGEST}"
           for reference in ${{ steps.runners.outputs.base }} ${{ steps.runners.outputs.python }} \
             ${{ steps.runners.outputs.node }} ${{ steps.runners.outputs.polyglot }}; do
             docker pull "$reference"
@@ -144,15 +160,20 @@ jobs:
           GATEWAY_DIGEST: ${{ steps.gateway.outputs.digest }}
           EXECUTOR_IMAGE: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.EXECUTOR_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
           EXECUTOR_DIGEST: ${{ steps.executor.outputs.digest }}
+          EGRESS_IMAGE: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.EGRESS_PROXY_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
+          EGRESS_DIGEST: ${{ steps.egress.outputs.digest }}
         run: |
+          [[ "${EGRESS_DIGEST}" == sha256:* ]]
           jq -n \
             --arg gateway "${GATEWAY_IMAGE}@${GATEWAY_DIGEST}" \
             --arg executor "${EXECUTOR_IMAGE}@${EXECUTOR_DIGEST}" \
+            --arg egress "${EGRESS_IMAGE}@${EGRESS_DIGEST}" \
             --arg base "${{ steps.runners.outputs.base }}" \
             --arg python "${{ steps.runners.outputs.python }}" \
             --arg node "${{ steps.runners.outputs.node }}" \
             --arg polyglot "${{ steps.runners.outputs.polyglot }}" \
-            '{schema_version: 2, gateway: $gateway, executor: $executor,
+            '{schema_version: 3, gateway: $gateway, executor: $executor,
+              egress_proxy: $egress,
               runners: {base: $base, python: $python, node: $node, polyglot: $polyglot}}' \
             > docker/release-images.json
           echo "path=docker/release-images.json" >> "$GITHUB_OUTPUT"

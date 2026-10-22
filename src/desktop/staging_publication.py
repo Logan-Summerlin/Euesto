@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import stat
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QObject, QTimer, Slot
 
+from shared.publication_risk import (
+    FLAG_LABELS,
+    classify_manifest,
+    needs_confirmation,
+    review_order,
+)
 from shared.tools import PublishManifest
 
+from ..approval_display import publication_summary
 from ..gateway_client import GatewayClient
 from ..settings import app_data_dir
 from ..workers import PublicationWorker, StagingWorker
@@ -25,6 +33,12 @@ class StagingPublicationService(QObject):
     Staging persists across sessions (plan 2.4), so this service also publishes staged work
     kept from an earlier session, rebases staging onto host changes, resolves conflicts, and
     guards closing the app or switching workspace so staged work is never lost silently (0.6).
+
+    The review pane (4.4) lists each staged change with its diff and risk flags (4.3); the
+    user publishes all of it or a selected subset, and the rest stays staged. Declared checks
+    (3.4) run from the pane against the current staged snapshot. Auto never publishes a batch
+    that changes host-executable files, dependencies, or the workspace policy without explicit
+    confirmation, nor before the policy's required checks pass.
     """
 
     def __init__(self, host: BridgeHost, *, recovery_root: Callable[[], Path] | None = None):
@@ -43,6 +57,14 @@ class StagingPublicationService(QObject):
         self.active_publication: tuple[PublishManifest, bool] | None = None
         self.next_publication: tuple[PublishManifest, bool, GatewayClient | None] | None = None
         self._continuation_clients: dict[str, GatewayClient] = {}
+        # The review pane: the latest review, the selected paths, and the running check.
+        self.review_data: dict[str, Any] | None = None
+        self.review_selection: set[str] = set()
+        self.review_worker: StagingWorker | None = None
+        self.check_worker: StagingWorker | None = None
+        self.running_check = ""
+        # The path selection of the partial publication in flight; later batches keep it.
+        self.publication_paths: tuple[str, ...] | None = None
 
     @property
     def busy(self) -> bool:
@@ -52,6 +74,7 @@ class StagingPublicationService(QObject):
                 self.inspect_worker,
                 self.publication_worker,
                 self.action_worker,
+                self.check_worker,
             )
         )
 
@@ -99,8 +122,28 @@ class StagingPublicationService(QObject):
                 client = GatewayClient(connection) if connection else None
             if auto and client is None:
                 raise BrokerError("Auto publication requires the local gateway")
+            if auto and needs_confirmation(self.risk_flags(manifest)):
+                # D5: Auto stops at host-executable, dependency, and policy changes.
+                self.host.set_status(
+                    "Auto paused: this batch changes files that need your confirmation"
+                )
+                self.confirm_publication(
+                    manifest,
+                    f"publish-flagged:{manifest.publication_id}:{manifest.batch_index}",
+                    detail="Auto stopped here because this batch changes files the host runs, "
+                    "dependencies, or the workspace policy. ",
+                    client=client,
+                )
+                return
+            policy = self.host.policy.effective()
             worker = PublicationWorker(
-                manifest, Path(workspace), self._recovery_root(), reseed_client=client
+                manifest,
+                Path(workspace),
+                self._recovery_root(),
+                reseed_client=client,
+                paths=self.publication_paths,
+                required_checks=policy.verify_before_publish if auto else (),
+                never_publish=policy.never_publish,
             )
             self.publication_worker = worker
             self.active_publication = (manifest, auto)
@@ -121,8 +164,15 @@ class StagingPublicationService(QObject):
             self.host.errorRequested.emit("Publication blocked", str(exc))
 
     def confirm_publication(
-        self, manifest: PublishManifest, token: str, *, detail: str = ""
+        self,
+        manifest: PublishManifest,
+        token: str,
+        *,
+        detail: str = "",
+        client: GatewayClient | None = None,
     ) -> None:
+        if client is not None:
+            self._continuation_clients[manifest.manifest_id] = client
         if manifest.batch_count > 1:
             title = f"Publish batch {manifest.batch_index} of {manifest.batch_count}?"
             body = (
@@ -132,8 +182,16 @@ class StagingPublicationService(QObject):
         else:
             title = "Publish staged changes to the host?"
             body = (
-                f"The approved staging checkpoint contains {len(manifest.operations)} file operation(s). "
+                f"{detail}The approved staging checkpoint contains {len(manifest.operations)} file operation(s). "
                 "Confirm to write the exact, hash-checked manifest to the selected workspace."
+            )
+        body += "\n\n" + publication_summary(manifest.to_dict(), base_reader=self.base_reader())
+        required = self.host.policy.effective().verify_before_publish
+        if required:
+            body += (
+                "\n\nThe workspace policy requires these checks before publishing: "
+                + ", ".join(required)
+                + ". Run them from the review pane; Auto does not publish until they pass."
             )
 
         def accept() -> None:
@@ -214,6 +272,12 @@ class StagingPublicationService(QObject):
         self.active_publication = None
         self.host.stateChanged.emit()
         queued, self.next_publication = self.next_publication, None
+        if queued is None:
+            self.publication_paths = None
+            # A published policy change only takes effect once confirmed (4.6).
+            self.host.policy.refresh()
+            if self.review_data is not None:
+                QTimer.singleShot(0, self.open_review)
         if queued is not None:
             manifest, auto, client = queued
             if auto:
@@ -336,6 +400,8 @@ class StagingPublicationService(QObject):
         on_complete: Callable[[dict[str, Any]], None],
         on_failed: Callable[[str], None],
         resolutions: dict[str, list[str]] | None = None,
+        *,
+        paths: tuple[str, ...] | None = None,
     ) -> bool:
         if self.host.generation.running or self.busy:
             self.host.set_status("Wait for the active run or staging request to finish…")
@@ -343,7 +409,9 @@ class StagingPublicationService(QObject):
         client = self._client()
         if client is None:
             return False
-        worker = StagingWorker(client, self.host.runtime.identity(), action, resolutions)
+        worker = StagingWorker(
+            client, self.host.runtime.identity(), action, resolutions, paths=paths
+        )
         self.action_worker = worker
         worker.complete.connect(on_complete)
         worker.failed.connect(on_failed)
@@ -360,8 +428,9 @@ class StagingPublicationService(QObject):
         self.action_worker = None
         self.host.stateChanged.emit()
 
-    def publish_staged(self) -> None:
-        """Review and publish staged work kept from an earlier session."""
+    def publish_staged(self, paths: tuple[str, ...] | None = None) -> None:
+        """Review and publish staged work, or only ``paths`` (partial publication, 4.4)."""
+        self.publication_paths = tuple(paths) if paths else None
         self._start_action(
             "publish",
             "Preparing staged changes for review…",
@@ -369,6 +438,7 @@ class StagingPublicationService(QObject):
             lambda message: self.host.errorRequested.emit(
                 "Could not prepare publication", message
             ),
+            paths=self.publication_paths,
         )
 
     def _on_staged_publication(self, result: dict[str, Any]) -> None:
@@ -415,6 +485,206 @@ class StagingPublicationService(QObject):
         if conflicts != self.conflicts:
             self.conflicts = conflicts
             self.host.conflictsChanged.emit()
+
+    # -- review pane, partial publication, and declared checks (plan 4.4, 3.4) ---------
+
+    def base_reader(self) -> Callable[[str], str | None]:
+        """Read a host file's current text (bounded, never through a link) so risk flags can
+        tell a dependency change from a package-script change."""
+        root = Path(self.host.runtime.workspace_path or ".")
+
+        def read(path: str) -> str | None:
+            target = root / path
+            try:
+                info = target.lstat()
+                if not stat.S_ISREG(info.st_mode) or info.st_size > 1_000_000:
+                    return None
+                return target.read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                return None
+
+        return read
+
+    def risk_flags(self, manifest: PublishManifest) -> dict[str, tuple[str, ...]]:
+        return classify_manifest(
+            manifest.to_dict()["operations"], base_reader=self.base_reader()
+        )
+
+    def open_review(self) -> None:
+        """Load the staged changes with per-file diffs and declared check results."""
+        if self.review_worker or not self.host.runtime.workspace_path:
+            return
+        client = self._client()
+        if client is None:
+            return
+        worker = StagingWorker(client, self.host.runtime.identity(), "review")
+        self.review_worker = worker
+        worker.complete.connect(self._on_reviewed)
+        worker.failed.connect(
+            lambda message: self.host.errorRequested.emit("Could not review staging", message)
+        )
+        worker.finished.connect(self._on_review_finished)
+        self.host.set_status("Loading staged changes for review…")
+        worker.start()
+
+    @Slot(dict)
+    def _on_reviewed(self, result: dict[str, Any]) -> None:
+        previous = self.review_data
+        self.review_data = result
+        paths = {str(item.get("path")) for item in result.get("changes") or () if item}
+        if previous is None:
+            self.review_selection = set(paths)
+        else:
+            # Keep the user's choices; select files that are new since the last review.
+            known = {str(item.get("path")) for item in previous.get("changes") or () if item}
+            self.review_selection = (self.review_selection & paths) | (paths - known)
+        self.host.set_status(str(result.get("summary") or "Staged changes loaded"))
+        self.host.reviewChanged.emit()
+
+    @Slot()
+    def _on_review_finished(self) -> None:
+        if self.review_worker:
+            self.review_worker.deleteLater()
+        self.review_worker = None
+
+    def close_review(self) -> None:
+        self.review_data = None
+        self.review_selection = set()
+        self.host.reviewChanged.emit()
+
+    def set_review_selected(self, path: str, selected: bool) -> None:
+        if selected:
+            self.review_selection.add(path)
+        else:
+            self.review_selection.discard(path)
+        self.host.reviewChanged.emit()
+
+    def set_review_all(self, selected: bool) -> None:
+        changes = (self.review_data or {}).get("changes") or ()
+        self.review_selection = (
+            {str(item.get("path")) for item in changes if isinstance(item, dict)}
+            if selected
+            else set()
+        )
+        self.host.reviewChanged.emit()
+
+    def publish_selection(self) -> None:
+        """Publish the selected files only; unselected changes stay staged (4.4)."""
+        changes = (self.review_data or {}).get("changes") or ()
+        all_paths = {str(item.get("path")) for item in changes if isinstance(item, dict)}
+        selected = tuple(sorted(self.review_selection & all_paths))
+        if not selected:
+            self.host.set_status("Select at least one file to publish")
+            return
+        partial = set(selected) != all_paths or bool((self.review_data or {}).get("truncated"))
+        self.publish_staged(selected if partial else None)
+
+    def run_check(self, name: str) -> None:
+        """Run one declared check in the runner against the current staged snapshot (3.4)."""
+        if self.check_worker or self.host.generation.running or self.publishing:
+            self.host.set_status("Wait for the active run or check to finish…")
+            return
+        client = self._client()
+        if client is None:
+            return
+        worker = StagingWorker(client, self.host.runtime.identity(), "check", check=name)
+        self.check_worker = worker
+        self.running_check = name
+        worker.complete.connect(self._on_check_complete)
+        worker.failed.connect(
+            lambda message: self.host.errorRequested.emit(
+                f"Check {name} failed to run", message
+            )
+        )
+        worker.finished.connect(self._on_check_finished)
+        self.host.set_status(f"Running check {name} against the staged snapshot…")
+        self.host.stateChanged.emit()
+        self.host.reviewChanged.emit()
+        worker.start()
+
+    @Slot(dict)
+    def _on_check_complete(self, result: dict[str, Any]) -> None:
+        self.host.set_status(f"Check {result.get('name', '')}: {result.get('outcome', 'done')}")
+
+    @Slot()
+    def _on_check_finished(self) -> None:
+        if self.check_worker:
+            self.check_worker.deleteLater()
+        self.check_worker = None
+        self.running_check = ""
+        self.host.stateChanged.emit()
+        self.host.reviewChanged.emit()
+        if self.review_data is not None:
+            QTimer.singleShot(0, self.open_review)
+
+    def review_view(self) -> dict[str, Any]:
+        """The review pane for QML: flagged files first, each with its diff and selection."""
+        data = self.review_data
+        if data is None:
+            return {"open": False}
+        changes = [item for item in data.get("changes") or () if isinstance(item, dict)]
+        operations = [
+            {
+                "path": item.get("path"),
+                "operation": item.get("operation"),
+                "base_mode": _mode(item.get("base_mode")),
+                "staged_mode": _mode(item.get("staged_mode")),
+                "content": None,
+            }
+            for item in changes
+        ]
+        flags = classify_manifest(operations)
+        diffs = {
+            str(item.get("path")): item
+            for item in data.get("diffs") or ()
+            if isinstance(item, dict)
+        }
+        by_path = {str(item.get("path")): item for item in changes}
+        files = []
+        for path in review_order(flags):
+            item = by_path[path]
+            diff = diffs.get(path, {})
+            text = str(diff.get("text") or "")
+            if not text and diff.get("kind") and diff.get("kind") != "text":
+                text = f"({diff.get('kind')})"
+            files.append(
+                {
+                    "path": path,
+                    "operation": str(item.get("operation") or ""),
+                    "flags": [FLAG_LABELS[flag] for flag in flags.get(path, ())],
+                    "confirm": needs_confirmation({path: flags.get(path, ())}),
+                    "selected": path in self.review_selection,
+                    "diff": text[:20_000],
+                    "added": int(diff.get("added_lines") or 0),
+                    "removed": int(diff.get("removed_lines") or 0),
+                }
+            )
+        required = set(self.host.policy.effective().verify_before_publish)
+        checks = [
+            {
+                "name": str(item.get("name") or ""),
+                "command": str(item.get("command") or ""),
+                "status": str(item.get("status") or "not_run"),
+                "current": bool(item.get("current")),
+                "required": str(item.get("name") or "") in required,
+                "running": item.get("name") == self.running_check,
+                "output": str((item.get("result") or {}).get("output") or "")[-4_000:]
+                if isinstance(item.get("result"), dict)
+                else "",
+            }
+            for item in data.get("checks") or ()
+            if isinstance(item, dict)
+        ]
+        return {
+            "open": True,
+            "summary": str(data.get("summary") or ""),
+            "files": files,
+            "selectedCount": len(self.review_selection & set(by_path)),
+            "truncated": bool(data.get("truncated")),
+            "neverPublish": [str(item) for item in data.get("never_publish") or ()][:50],
+            "checks": checks,
+            "fingerprint": str(data.get("fingerprint") or "")[:12],
+        }
 
     # -- leaving a workspace (plan 0.6) ------------------------------------------------
 
@@ -527,3 +797,13 @@ def describe_staged_changes(result: dict[str, Any]) -> str:
             "They are held back from publication until you keep the staged or take the host version."
         )
     return "\n".join(lines)
+
+
+def _mode(value: object) -> int | None:
+    """A file mode from the status tool's octal text."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    try:
+        return int(str(value), 8) if value is not None else None
+    except ValueError:
+        return None

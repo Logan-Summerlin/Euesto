@@ -1,0 +1,53 @@
+# Approved setup phase (harness plan 5.1; docs/EGRESS.md, "Setup phase"). Never loaded by
+# default. The desktop loads it, together with compose.egress.yaml and a generated mount
+# overlay, for one approved setup run, then stops the proxy again:
+#
+#   docker compose --file docker/compose.yaml --file docker/compose.egress.yaml \
+#     --file docker/compose.setup.yaml --file <setup-mounts.json> \
+#     --profile agent --profile setup run --rm setup
+#
+# The setup container uses the workspace's runner image and identity but runs one dependency
+# install command (runner/setup.py) instead of the command server. Like the runner in the
+# egress profile, it has no route out except the allowlisted proxy on the internal network.
+# It holds no secrets and mounts neither /source, the state volume, nor any socket. Its /work
+# comes from the generated overlay: the whole staging volume (full setup) or only the
+# dependency manifests plus the .venv and node_modules directories (isolated setup).
+services:
+  setup:
+    profiles: ["setup"]
+    image: ${LOCAL_CHAT_RUNNER_IMAGE:-local-openrouter-chat-runner-python:1.1.0}
+    init: true
+    restart: "no"
+    read_only: true
+    user: "10002:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    entrypoint: ["python3", "-E", "-s", "-m", "runner.setup"]
+    working_dir: /opt/euesto
+    environment:
+      LOCAL_CHAT_EGRESS_PROXY: http://172.31.250.2:3128
+      LOCAL_CHAT_SETUP_COMMAND: ${LOCAL_CHAT_SETUP_COMMAND:-}
+      LOCAL_CHAT_SETUP_TIMEOUT: ${LOCAL_CHAT_SETUP_TIMEOUT:-900}
+    networks:
+      egress-internal:
+        ipv4_address: 172.31.250.20
+    dns:
+      - 127.0.0.1
+    volumes:
+      - cache:/cache
+    tmpfs:
+      - /tmp:size=${LOCAL_CHAT_RUNNER_TMP_SIZE:-1g},mode=1777,nosuid,nodev,exec
+    depends_on:
+      egress-proxy:
+        condition: service_healthy
+    pids_limit: ${LOCAL_CHAT_RUNNER_PIDS:-1024}
+    mem_limit: ${LOCAL_CHAT_RUNNER_MEMORY:-4g}
+    cpus: ${LOCAL_CHAT_RUNNER_CPUS:-2}
+    stop_grace_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"

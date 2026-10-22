@@ -1,4 +1,5 @@
-"""Desktop selection of the Agent approval tier (prompt / accept_edits / auto)."""
+"""Desktop selection of the Agent approval tier (prompt / sandbox / auto) and the session
+network mode (harness plan 4.1, 5.3)."""
 
 from __future__ import annotations
 
@@ -16,7 +17,9 @@ try:
 except ImportError as exc:  # pragma: no cover - Qt unavailable
     pytest.skip(f"Desktop Qt bridge unavailable: {exc}", allow_module_level=True)
 
+from shared.policy import parse_policy
 from shared.responses import GatewayStatus
+from src.desktop.generation import SANDBOX_EXPLAINED_KEY
 from src.storage import Storage
 from src.workspace_broker import workspace_id
 
@@ -36,7 +39,7 @@ def bridge(tmp_path: Path):
         executor_status="ready",
         active_workspace=workspace_id(workspace),
         supported_modes=("chat", "plan", "agent"),
-        capabilities=({"name": "agent_accept_edits"}, {"name": "agent_auto"}),
+        capabilities=({"name": "agent_sandbox"}, {"name": "agent_auto"}),
     )
     confirmations: list[str] = []
     errors: list[str] = []
@@ -50,59 +53,107 @@ def bridge(tmp_path: Path):
     storage.close()
 
 
-def test_accept_edits_requires_confirmation_and_selects_the_middle_tier(bridge) -> None:
+def test_sandbox_is_explained_once_then_selects_the_middle_tier(bridge) -> None:
     backend, confirmations, errors = bridge
     assert backend.generation.approval_policy() == "prompt"
-    assert backend.acceptEditsAvailable is True
+    assert backend.sandboxAvailable is True
 
-    backend.requestAcceptEdits(True)
+    backend.requestSandbox(True)
     assert errors == [] and len(confirmations) == 1
-    assert backend.acceptEditsEnabled is False  # not until the user confirms
+    assert backend.sandboxEnabled is False  # not until the user has read the explanation
     backend.resolveConfirmation(confirmations[0], True)
-    assert backend.acceptEditsEnabled is True
-    assert backend.generation.approval_policy() == "accept_edits"
+    assert backend.sandboxEnabled is True
+    assert backend.generation.approval_policy() == "sandbox"
 
     # Auto supersedes the middle tier while enabled; turning Auto off falls back to it.
     backend.requestAutoMode(True)
     backend.resolveConfirmation(confirmations[-1], True)
     assert backend.generation.approval_policy() == "auto"
     backend.requestAutoMode(False)
-    assert backend.generation.approval_policy() == "accept_edits"
+    assert backend.generation.approval_policy() == "sandbox"
 
-    backend.requestAcceptEdits(False)
+    backend.requestSandbox(False)
     assert backend.generation.approval_policy() == "prompt"
+    # The explanation is not repeated.
+    count = len(confirmations)
+    backend.requestSandbox(True)
+    assert len(confirmations) == count and backend.sandboxEnabled is True
 
 
-def test_declined_confirmation_keeps_prompting(bridge) -> None:
+def test_sandbox_becomes_the_default_for_new_agent_sessions_after_the_explanation(
+    bridge,
+) -> None:
     backend, confirmations, _errors = bridge
-    backend.requestAcceptEdits(True)
+    backend.selectMode("chat")
+    backend.selectMode("agent")
+    assert backend.generation.approval_policy() == "prompt"  # not before the explanation
+    backend.requestSandbox(True)
+    backend.resolveConfirmation(confirmations[0], True)
+    assert backend.storage.get_setting(SANDBOX_EXPLAINED_KEY) == "1"
+    backend.selectMode("plan")
+    assert backend.generation.approval_policy() == "prompt"
+    backend.selectMode("agent")
+    assert backend.generation.approval_policy() == "sandbox"
+
+
+def test_declined_explanation_keeps_prompting(bridge) -> None:
+    backend, confirmations, _errors = bridge
+    backend.requestSandbox(True)
     backend.resolveConfirmation(confirmations[0], False)
     assert backend.generation.approval_policy() == "prompt"
+    assert backend.storage.get_setting(SANDBOX_EXPLAINED_KEY) is None
 
 
-def test_accept_edits_resets_on_mode_change(bridge) -> None:
+def test_sandbox_resets_on_mode_change(bridge) -> None:
     backend, confirmations, _errors = bridge
-    backend.requestAcceptEdits(True)
+    backend.requestSandbox(True)
     backend.resolveConfirmation(confirmations[0], True)
     backend.selectMode("plan")
-    assert (
-        backend.generation.approval_policy() == "prompt" and backend.acceptEditsEnabled is False
-    )
+    assert backend.generation.approval_policy() == "prompt" and backend.sandboxEnabled is False
 
 
-def test_accept_edits_unavailable_without_gateway_capability(bridge) -> None:
+def test_sandbox_unavailable_without_gateway_capability(bridge) -> None:
     backend, confirmations, errors = bridge
     backend.runtime.last_status = replace(
         backend.runtime.last_status, capabilities=({"name": "agent_auto"},)
     )
-    assert backend.acceptEditsAvailable is False
-    backend.requestAcceptEdits(True)
-    assert confirmations == [] and errors == ["Accept edits unavailable"]
+    assert backend.sandboxAvailable is False
+    backend.requestSandbox(True)
+    assert confirmations == [] and errors == ["Sandbox unavailable"]
+
+
+def test_registry_access_needs_the_policy_and_a_confirmation(bridge, monkeypatch) -> None:
+    backend, confirmations, errors = bridge
+    backend.runtime.automatic = True
+    restarts: list[str] = []
+    monkeypatch.setattr(
+        backend.runtime, "retry", lambda: restarts.append(backend.runtime.network_mode)
+    )
+    backend.requestRegistryAccess(True)
+    assert errors == ["Registry access not allowed"] and confirmations == []
+    assert backend.registriesAllowed is False
+
+    identity = backend.runtime.identity()
+    policy = parse_policy('version = 1\n[network]\nmode = "registries"\n')
+    backend.storage.save_workspace_config(
+        identity, backend.runtime.workspace_path, {"policy": policy.to_config()}
+    )
+    assert backend.registriesAllowed is True
+    backend.requestRegistryAccess(True)
+    assert len(confirmations) == 1 and backend.networkMode == "none"
+    backend.resolveConfirmation(confirmations[0], True)
+    assert backend.networkMode == "registries" and restarts == ["registries"]
+    assert backend.generation.network_mode() == "registries"
+    backend.selectMode("plan")
+    assert backend.generation.network_mode() == "none"
+    backend.selectMode("agent")
+    backend.requestRegistryAccess(False)
+    assert backend.networkMode == "none" and restarts == ["registries", "none"]
 
 
 def test_agent_run_request_carries_the_selected_policy(bridge, monkeypatch) -> None:
     backend, confirmations, _errors = bridge
-    backend.requestAcceptEdits(True)
+    backend.requestSandbox(True)
     backend.resolveConfirmation(confirmations[0], True)
     captured: dict[str, object] = {}
 
@@ -124,5 +175,6 @@ def test_agent_run_request_carries_the_selected_policy(bridge, monkeypatch) -> N
     monkeypatch.setattr("src.desktop.generation.get_api_key", lambda: "key")
     backend.runtime.gateway_token = "t" * 43
     backend.sendMessage("change the file", False)
-    assert captured["approval_policy"] == "accept_edits"
+    assert captured["approval_policy"] == "sandbox"
+    assert captured["network_mode"] == "none"
     assert captured["started"] is True

@@ -209,8 +209,11 @@ class BatchGateway:
         self.receipts.append(manifest)
         return {"snapshot_id": "next"}
 
-    def next_publication_batch(self, manifest: PublishManifest) -> PublishManifest:
+    def next_publication_batch(
+        self, manifest: PublishManifest, paths: tuple[str, ...] | None = None
+    ) -> PublishManifest:
         self.requested.append(manifest)
+        self.paths = paths
         assert self.following is not None
         return self.following
 

@@ -1,4 +1,6 @@
-# Opt-in, install-capable executor profile (see docs/EGRESS.md). Never loaded by default.
+# Registry access for the agent phase (see docs/EGRESS.md). Never loaded by default: the
+# desktop loads it only for an Agent session that opted into the `registries` network mode,
+# and together with compose.setup.yaml for one approved dependency setup run.
 #
 #   docker compose --file docker/compose.yaml --file docker/compose.egress.yaml --profile agent up --detach --build
 #

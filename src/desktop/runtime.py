@@ -67,6 +67,9 @@ class RuntimeService(QObject):
             else "The developer runtime is managed by scripts."
         )
         self.target_identity: str | None = None
+        # The agent phase's network mode (plan 5.3): ``registries`` only for an Agent session
+        # that opted in; it never outlives the workspace or the app.
+        self.network_mode = "none"
         self.health_worker: GatewayHealthWorker | None = None
         self.gateway_token = get_gateway_session_token() or get_gateway_token() or ""
         self.closing = False
@@ -169,6 +172,7 @@ class RuntimeService(QObject):
             self.host.errorRequested.emit("Unsafe workspace", str(exc))
             return
         self.workspace_path = str(path)
+        self.network_mode = "none"
         self.host.generation.reset_for_workspace_change()
         self.storage.set_setting("workspace_path", self.workspace_path)
         self.target_identity = workspace_id(path)
@@ -181,6 +185,7 @@ class RuntimeService(QObject):
         self.last_status = None
         self.host.settings.catalog_autorefresh_attempted = False
         self.host.settings.reload_skills()
+        self.host.policy.refresh()
         self.host.stateChanged.emit()
         self.host.set_status(
             "Preparing workspace…"
@@ -207,6 +212,29 @@ class RuntimeService(QObject):
             self._runtime_failed(str(exc))
             return
         self._ensure_runtime(workspace)
+
+    def set_network_mode(self, mode: str) -> None:
+        """Restart the workspace runtime with or without registry access (staging is kept)."""
+        if mode not in {"none", "registries"} or mode == self.network_mode:
+            return
+        self.network_mode = mode
+        self.host.stateChanged.emit()
+        self.retry()
+
+    def restart_for_policy(self) -> None:
+        """Apply a confirmed policy that changes the runtime (image, hosts, secret names,
+        withheld paths) now, or say when it applies if work is in flight."""
+        if not self.automatic:
+            self.host.set_status(
+                "Workspace policy confirmed; restart the developer runtime to apply it"
+            )
+        elif self.host.generation.running or self.host.staging.busy:
+            self.host.set_status(
+                "Workspace policy confirmed; it applies when the runtime next restarts"
+            )
+        else:
+            self.host.set_status("Workspace policy confirmed; restarting the runtime…")
+            self.retry()
 
     def save_gateway(self, url: str, token: str) -> bool:
         try:
@@ -326,7 +354,11 @@ class RuntimeService(QObject):
     def _ensure_runtime(self, workspace: Path | None) -> None:
         self.target_identity = workspace_id(workspace) if workspace else None
         try:
-            self.manager.ensure(workspace, settings=self.host.settings.runtime_settings())
+            settings = self.host.policy.runtime_settings(
+                self.host.settings.runtime_settings(),
+                network_mode=self.network_mode if workspace else "none",
+            )
+            self.manager.ensure(workspace, settings=settings)
         except (OSError, RuntimeError, ValueError) as exc:
             self._runtime_failed(str(exc))
 
@@ -356,6 +388,7 @@ class RuntimeService(QObject):
             "Gateway: checking",
         )
         self.host.settingsChanged.emit()
+        self.host.policy.refresh()
         self.host.stateChanged.emit()
         if self.health_worker:
             self._recheck_requested = True

@@ -143,7 +143,7 @@ def test_setup_commands_are_detected_from_lockfiles(tmp_path: Path) -> None:
     (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
     (tmp_path / "go.mod").write_text("", encoding="utf-8")
     assert detect_setup_command(tmp_path) == (
-        "uv sync --frozen && pnpm install --frozen-lockfile && go mod download"
+        "uv sync --frozen --no-install-project && pnpm install --frozen-lockfile && go mod download"
     )
 
 

@@ -76,6 +76,10 @@ services:
       LOCAL_CHAT_RUNNER_SOCKET: /run/runner/runner.sock
       LOCAL_CHAT_RUNNER_IMAGE: ${LOCAL_CHAT_RUNNER_IMAGE:-local-openrouter-chat-runner-python:1.1.0}
       LOCAL_CHAT_GIT_HISTORY_DEPTH: ${LOCAL_CHAT_GIT_HISTORY_DEPTH:-200}
+      # From the confirmed workspace policy (docs/PUBLICATION.md, "Workspace policy"): JSON
+      # lists of extra secret-name globs and of paths that are never published.
+      LOCAL_CHAT_SECRET_PATTERNS: ${LOCAL_CHAT_SECRET_PATTERNS:-[]}
+      LOCAL_CHAT_NEVER_PUBLISH: ${LOCAL_CHAT_NEVER_PUBLISH:-[]}
     secrets:
       - executor_token
     volumes:
