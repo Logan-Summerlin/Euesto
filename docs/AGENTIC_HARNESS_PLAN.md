@@ -1,6 +1,6 @@
 # Agentic Harness Plan
 
-**Status:** Phases 0–2 implemented; Phases 3–7 proposed. The decisions in §9 are recorded: every recommendation is accepted except the headless CLI (D11), which is rejected. Each item records its own status; update it in place as work lands, and move this file to `archived-doc/` once the plan is complete or superseded (see [README.md](README.md#plans)).
+**Status:** Phases 0–5 implemented; Phases 6–7 proposed. Each item records its own status and any deviation from its proposal; the container-tier checks for Phase 5 (`tests/docker/test_egress_profile.py`) were written but not run in the authoring environment, which has no Docker daemon. Update each item in place as work lands, and move this file to `archived-doc/` once the plan is complete or superseded (see [README.md](README.md#plans)).
 
 **Goal:** make Euesto an excellent agentic harness for software engineering and long-running projects that is simple to set up and cheap to run.
 
@@ -773,7 +773,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 3.1 Streaming turns and configurable timeouts (C4), size M *(Roadmap)*
 
-- **Status:** proposed.
+- **Status:** implemented. Agent turns stream and tool calls are assembled from the deltas. An idle timeout (120 seconds) and a per-profile turn ceiling (600 seconds) replace the fixed request timeout. Deltas are journaled as `model.stream` at a bounded rate (every 0.5 seconds or 4,000 characters, at most 64,000 characters per turn) and shown live; they are not saved as the answer.
 - **Change:**
   - Stream agent turns, assembling tool calls from the streamed deltas.
   - Replace the fixed 90-second timeout with an idle timeout (default 120 seconds) plus a per-profile ceiling per turn (default 600 seconds).
@@ -782,7 +782,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 3.2 Add an `update_plan` tool, size M (D1)
 
-- **Status:** proposed; accepted by D1.
+- **Status:** implemented. `update_plan` is gateway-local, offered in Plan and Agent mode, stored per session (`plan_loader` in `server/agent/runtime.py`), shown as a live checklist (`plan.updated`), and carried into handoffs and wind-down summaries. The result is one line.
 - **Change:**
   - **Tool:** gateway-local, available in Plan and Agent mode. It never reaches the executor and never prompts.
   - **Arguments, shaped to save output tokens:**
@@ -807,7 +807,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 3.3 Budget wind-down and continuation (C8), size M *(Roadmap)*
 
-- **Status:** proposed.
+- **Status:** implemented. A note at 85% of any budget asks the agent to wrap up. A tool-free summary turn runs from a reserved slice (5% of each budget, at most 60 seconds). The run pauses with reason `budget`, and *Continue with another budget* resumes it with a fresh budget of the same profile; profiles above twice the standard budget still need approval.
 - **Change:**
   - **Warning:** at 85% of any budget, append a note once, asking the agent to wrap up and leave staging consistent.
   - **Summary at exhaustion:** run a tool-free summary turn funded from a reserved slice of the budget, as the investigation loop already does. It uses the same model and tool list, so it is a cache hit, as in 1.3.
@@ -817,13 +817,13 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 3.4 Declared checks and verification before publication, size M
 
-- **Status:** proposed.
+- **Status:** implemented. Declared checks live in the policy's `[checks]` table and run in the runner against staging, which is restored afterwards. Each result is tied to the staged fingerprint and goes stale after any change. Deviation: the required-check gate (`verify_before_publish`) applies to Auto publication; a confirmed manual publication shows which required checks are not current and lets the user decide.
 - **Change:** the policy file (4.6) declares named check commands such as `test`, `lint`, and `typecheck`, and the workspace snapshot (1.7) names them. Before offering publication, the desktop can run them in the runner. The review then shows their result, tied to the hash of the staged snapshot.
 - **Tests:** a later mutation invalidates results tied to an earlier snapshot.
 
 #### 3.5 Loop resilience for smaller models, size S
 
-- **Status:** proposed.
+- **Status:** implemented. Malformed or schema-violating arguments and unknown tool names get one-line corrective results. A call that fails the same way three times gets a note to change approach. An empty or reasoning-only reply is re-prompted once, then the run pauses (`empty_reply`). Four turns without progress start the wind-down (`no_progress`).
 - **Change:**
   - **Bad arguments:** malformed tool-call JSON, or arguments that violate the schema, return a one-line corrective result naming the field and the expected type.
   - **Unknown tool:** an unknown tool name returns the valid tool names for the mode.
@@ -834,7 +834,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 3.6 Broaden read-only delegation, size S (D2)
 
-- **Status:** proposed; accepted by D2.
+- **Status:** implemented. `investigate_repository` is offered in Plan and Agent mode. Its nested loop may also call `status` to review a staged diff. The four-calls-per-turn cap and the budget rules are unchanged.
 - **Change:** allow `investigate_repository` in Plan mode, since it is read-only. Let the nested loop call `status`, so it can review a staged diff before publication. The cap of four calls per turn and the budget rules stay the same.
 - **Touches:** `shared/tools.py`, `server/agent/investigation.py`, `docs/TOOLS.md`, `AGENTS.md`.
 
@@ -842,7 +842,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 4.1 Add a Sandbox approval tier (C17), size M (D3)
 
-- **Status:** proposed; accepted by D3, to ship once 2.1 and its Docker-tier tests pass.
+- **Status:** implemented. The Sandbox tier (`sandbox`) replaces `accept_edits`, with no alias. It is the default for new Agent sessions after a one-time explanation. Bash still prompts whenever registry access is on, every publication is still reviewed, and deny rules still win. The `description` argument is offered only where Bash can prompt.
 - **Change:**
   - **Behavior:** a session tier that runs `write`, `edit`, `apply_patch`, and `bash` without prompts **while the runner has no network**. Every publication batch still needs approval.
   - **With egress:** when the runtime has egress enabled, Bash prompts again unless a saved rule matches.
@@ -854,12 +854,12 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 4.2 Command rules that mean what they say, size S
 
-- **Status:** proposed.
+- **Status:** implemented. Saved rules are managed in Settings → Agent → Saved permissions: add, enable, disable, and delete, by tool, decision, path prefix, and Bash command prefix. A Bash allow or ask rule matches only a single simple command, so a compound command never matches one.
 - **Change:** add a rules screen to view, add, enable, and delete saved rules by tool, path prefix, and command prefix (for example `pytest` or `npm test`). This builds on 0.5.
 
 #### 4.3 Risk flags in publication review (S4), size M (D5)
 
-- **Status:** proposed.
+- **Status:** implemented. `shared/publication_risk.py` classifies each operation as host-executable, dependency, policy, binary, or large deletion. Flagged files lead the review, and Auto stops for confirmation at host-executable, dependency, and policy batches. Deviation: `package.json` and `pyproject.toml` count as host-executable only when their scripts or build backend changed; when the host file cannot be read, any change to either counts.
 - **Change:** classify each manifest operation:
   - **host-executable:**
     - CI workflows; git hook directories; editor task and run configurations;
@@ -876,7 +876,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 4.4 Diff review and partial publication (U3), size M
 
-- **Status:** proposed.
+- **Status:** implemented. The review pane lists staged files with their flags, diffs, and checkboxes. `paths` selects a subset for the manifest and for later batches. Broker validation is unchanged, and only the selected files advance the baseline.
 - **Change:**
   - Add a review pane with a file tree, per-file unified diffs, and checkboxes.
   - The manifest endpoint accepts an optional `paths` filter, so the executor builds a manifest for the selected subset only. Unselected changes stay staged.
@@ -886,7 +886,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 4.5 Secret hygiene for provider-bound data (S3), size M
 
-- **Status:** proposed.
+- **Status:** implemented. Secret-like names are refused in staging, including the extensions and names in this item. Tool results are redacted before they enter the history, and `secret.redacted` records only kinds and counts. Manifests are scanned and the publication prompt warns. Up to 50 files may be listed as unredacted exceptions. Deviation: a workspace policy may add secret patterns but never remove the built-in names.
 - **Change:**
   - **Blocked names:** extend the blocked names and extensions with `*.pem`, `*.key`, `*.p12`, `*.pfx`, `.netrc`, `.git-credentials`, `kubeconfig`, `*.tfstate`, `.dockercfg`, and `secrets.*`. Workspaces may add patterns but not remove them.
   - **Redaction:** in the gateway, scan every tool result before it reaches the model for high-confidence secret formats:
@@ -906,7 +906,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 4.6 Workspace policy file, size M (D6)
 
-- **Status:** proposed; accepted by D6.
+- **Status:** implemented. `.euesto/policy.toml` is read from the host workspace only. Confirmation applies the exact reviewed file (checked by digest), and any change needs confirming again. An invalid file fails closed. A policy file in staging has no effect; a staged change to it is flagged `policy`, so Auto stops for it.
 - **Change:**
   - **Location:** the desktop reads `.euesto/policy.toml` from the **host** workspace, never from staging, validates it against a schema, and shows it in Settings.
   - **Contents:** the toolchain image, the network tier and allowlist additions, setup and check commands, extra secret patterns, and paths that must never be published.
@@ -915,7 +915,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 4.7 Better approval prompts, size S (D8)
 
-- **Status:** proposed; accepted by D8.
+- **Status:** implemented. Bash prompts show the command with syntax highlighting, the purpose, the working directory, the timeout, and the network status. URL prompts show the full URL and the reason. Publication prompts list flagged files first and warn about likely secrets.
 - **Change:**
   - **Prompt content:** show the Bash command with syntax highlighting, together with its working directory, timeout, and network status.
   - **`description` argument:** add an optional `description` argument to `bash`, so the model can supply a one-line explanation for the prompt.
@@ -925,7 +925,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 5.1 An approved setup phase for dependencies (C11), size M
 
-- **Status:** proposed.
+- **Status:** implemented, with these deviations: setup is detected from the lockfiles and confirmed by the user, not always taken from the policy; isolated setup uses a tmpfs `/work` with read-only manifest binds and `.venv`/`node_modules` subpaths; full setup is a separate, warned choice. Setup is offered when the runtime first becomes ready and after a manifest changes, and every run needs approval.
 - **Change:**
   - **Command:** each workspace has a setup command. It is declared in the policy file, or auto-detected and confirmed by the user. Examples: `uv sync`, `poetry install`, `pip install -r …` into `.venv`, `npm ci`, `pnpm install --frozen-lockfile`, `yarn install --frozen-lockfile`, `cargo fetch`, `go mod download`.
   - **When it runs:** in the runner, attached to the egress network, after explicit approval. It runs at first start and again whenever a dependency manifest or lockfile changes.
@@ -944,7 +944,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 5.2 Productize egress, size M
 
-- **Status:** proposed.
+- **Status:** implemented. The pinned egress image is published with each release, and the release manifest (schema 3) pins its digest. The audit log is viewable in Settings. Workspace additions are limited to a fixed list of public registries; broad hosts are refused and the reason is documented in `docs/EGRESS.md`. Deviation: `LOCAL_CHAT_EXECUTOR_EGRESS` was removed; the setup phase and the `registries` mode are the only ways to reach a registry.
 - **Change:**
   - Publish the pinned egress image with each release, and enable the setup phase in installed builds.
   - Add a viewer for the audit log.
@@ -954,14 +954,14 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 5.3 Network modes for the agent phase, size S (D9)
 
-- **Status:** proposed; accepted by D9.
+- **Status:** implemented. `network_mode` is `none` or `registries`. `registries` requires a confirmed policy that allows it and a runtime started with the overlay. Bash asks under every tier while the runner has network, so the Sandbox tier's unprompted Bash does not apply in that mode. The gateway checks the requested mode against the executor's reported egress status.
 - **Change:** the agent phase runs in one of two modes:
   - `none`: the default;
   - `registries`: a per-session opt-in for installing packages mid-run. In this mode Bash always prompts unless a saved rule matches, and the Sandbox tier does not apply.
 
 #### 5.4 Documentation access for the model, size M (D1, D10)
 
-- **Status:** proposed. The tools need their D1 decision when Phase 5 starts; the default allowlist is settled by D10.
+- **Status:** implemented. `web_search` and `fetch_url` run in the gateway, are Agent-only, and are off by default per workspace. `fetch_url` fetches documentation hosts without asking when the URL has no query string; any other URL needs a per-URL approval. Redirects are re-checked, and results are bounded and labelled untrusted (`tests/unit/gateway/test_redaction_and_web.py`).
 - **Change:** add two gateway-side tools that never touch the executor:
   - `web_search` uses OpenRouter's search plugin. Each query is journaled and shown to the user.
   - `fetch_url` makes an HTTPS GET to an allowlisted documentation host and returns the page as bounded text, labelled untrusted.

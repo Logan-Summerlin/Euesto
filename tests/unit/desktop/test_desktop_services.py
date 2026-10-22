@@ -132,6 +132,7 @@ class FakeHost(QObject):
             refresh=noop,
             allows_registries=lambda: False,
             runtime_settings=lambda base, network_mode: base,
+            offer_setup=noop,
         )
 
     def set_status(self, text: str) -> None:

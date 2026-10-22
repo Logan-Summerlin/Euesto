@@ -74,13 +74,16 @@ class PermissionRule:
         if self.executable is not None:
             if request.tool != "bash":
                 return False
-            executable, arguments = bash_command_tokens(
-                str(request.arguments.get("command") or "")
-            )
+            command = str(request.arguments.get("command") or "")
+            executable, arguments = bash_command_tokens(command)
             if (
                 executable != self.executable
                 or arguments[: len(self.argument_prefix)] != self.argument_prefix
             ):
+                return False
+            if self.decision != PermissionDecision.DENY and not simple_command(command):
+                # `pytest && curl ...` is not `pytest`: an allow or ask rule covers only a
+                # single simple command, never a list, pipeline, redirection, or substitution.
                 return False
         return True
 
@@ -155,6 +158,26 @@ def bash_command_tokens(command: str) -> tuple[str | None, tuple[str, ...]]:
     if not tokens:
         return None, ()
     return tokens[0], tuple(tokens[1:])
+
+
+_SHELL_OPERATOR_CHARS = frozenset(";&|<>()")
+
+
+def simple_command(command: str) -> bool:
+    """Whether ``command`` is one simple command: no command lists, pipelines, redirections,
+    subshells, background jobs, or line breaks outside quotes, and no command substitution
+    anywhere (it expands inside double quotes too)."""
+    if "\n" in command or "\r" in command or "`" in command or "$(" in command:
+        return False
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return False
+    return bool(tokens) and not any(
+        token and set(token) <= _SHELL_OPERATOR_CHARS for token in tokens
+    )
 
 
 def request_paths(request: ToolRequest) -> list[str]:

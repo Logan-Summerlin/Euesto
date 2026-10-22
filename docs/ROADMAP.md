@@ -4,7 +4,7 @@ This document is a status-oriented roadmap. It is not the authoritative architec
 
 ## Completed
 
-- Ten-tool model-facing API: `read`, `write`, `edit`, `apply_patch`, `bash`, `grep`, `find`, `ls`, `status`, and scoped read-only `investigate_repository` delegation.
+- Thirteen-tool model-facing API: the nine executor tools (`read`, `write`, `edit`, `apply_patch`, `bash`, `grep`, `find`, `ls`, `status`), scoped read-only `investigate_repository` delegation, gateway-local `update_plan`, and the opt-in documentation tools `web_search` and `fetch_url`.
 - Plan/Agent capability separation with Plan mutation denial enforced in code.
 - Incremental file inspection and localized editing for larger files.
 - Bounded Bash execution, output, stdin, command time, process cleanup, and rollback.
@@ -21,10 +21,14 @@ This document is a status-oriented roadmap. It is not the authoritative architec
   - a gateway-owned static prompt, per-result bounds, provider retries with resumable pause, steering, narration, a live run meter, and a staged-work guard on close and workspace change;
   - cache-stable context, per-turn usage and cache accounting, planned compaction with a model-written handoff, lean results, full command output as artifacts, structured test and compiler output reduction, and output-token discipline;
   - a separate runner container with digest-pinned toolchain images, an executable `/work`, durable per-workspace staging, sandbox git history, and runner resource settings.
+- Agentic harness Phases 3–5 ([AGENTIC_HARNESS_PLAN.md](AGENTIC_HARNESS_PLAN.md)):
+  - long runs: streamed turns with idle and ceiling timeouts, the session plan, budget wind-down with *Continue with another budget*, and loop resilience for smaller models;
+  - risk-proportional approvals: the Sandbox tier, command rules that match only simple commands, publication risk flags, partial publication from a review pane, secret redaction, declared checks, and the host-side workspace policy;
+  - controlled connectivity: an approved one-shot dependency setup container, the allowlisted registry proxy with a pinned release image and audit log, the `registries` network mode for the runner, and the documentation tools.
 
 ## Active
 
-- Keep schemas, dispatch, permissions, limits, tests, and documentation synchronized as the ten-tool API evolves.
+- Keep schemas, dispatch, permissions, limits, tests, and documentation synchronized as the thirteen-tool API evolves.
 - Maintain container and QML checks alongside the Python test/lint/compile checks.
 - Continue release/runtime validation for Windows packaging and digest-pinned container images.
 
@@ -33,7 +37,7 @@ This document is a status-oriented roadmap. It is not the authoritative architec
 - Improve observability and recovery UX without expanding executor authority.
 - Add narrowly scoped usability improvements that preserve the current security and publication model.
 - Keep resource defaults evidence-based as real workloads reveal bottlenecks.
-- Turn the harness into a capable, long-running software-engineering agent without weakening the boundary: see [AGENTIC_HARNESS_PLAN.md](AGENTIC_HARNESS_PLAN.md) (Phases 0–2 implemented, 3–7 proposed; it states which open items below it covers).
+- Turn the harness into a capable, long-running software-engineering agent without weakening the boundary: see [AGENTIC_HARNESS_PLAN.md](AGENTIC_HARNESS_PLAN.md) (Phases 0–5 implemented, 6–7 proposed, Phase 6 covering missions and background processes; it states which open items below it covers).
 
 ### Open items carried from archived plans
 
@@ -43,9 +47,9 @@ From [the harness fix plan](../archived-doc/harness-fix-plan.md):
 - **P3 product-scope decisions**, each sequenced on its own timeline and informed by demand:
   - a second provider adapter (local models or direct provider access) behind the existing agent-turn and tool-schema interface, rather than a generic multi-provider layer;
   - Linux-native desktop support, the lowest-risk step if cross-platform support becomes a goal (sandboxing is already Linux-container based);
-  - streaming provider responses with a configurable, per-model or per-profile timeout instead of the agent turn's fixed 90-second non-streaming request;
+  - ~~streaming provider responses with a configurable, per-model or per-profile timeout instead of the agent turn's fixed 90-second non-streaming request~~: done in harness plan 3.1;
   - lightweight symbol and reference navigation (for example `symbols(path)` and `references(symbol)` from an index built at staging time), not full LSP integration;
-  - a graceful budget wind-down that summarizes staged progress and offers to continue in a fresh run instead of failing with `run.failed`;
+  - ~~a graceful budget wind-down that summarizes staged progress and offers to continue in a fresh run instead of failing with `run.failed`~~: done in harness plan 3.3;
   - ~~structured reduction of large tool output for the highest-value formats (test runners, compilers, linters) before head+tail truncation~~: done in harness plan 1.6;
   - ~~a small agent-efficacy benchmark suite~~: declined; loop and prompt changes are validated by the credential-free test suite, including scripted-provider scenario tests (see [AGENTIC_HARNESS_PLAN.md](AGENTIC_HARNESS_PLAN.md)).
 
@@ -80,4 +84,4 @@ The project does not seek to become an unrestricted remote-control agent, a brow
 
 ## Acceptance baseline
 
-The current baseline is considered complete only when the ten-tool API remains stable, Plan is read-only, Agent mutations remain staged, the executor and runner cannot publish, the executor cannot reach the network, and the runner reaches only the allowlisted proxy under the opt-in egress overlay, source mounts remain read-only, failed mutations roll back, publication remains approved and hash-validated, effective limits are internally consistent, and the documented pytest/ruff/compile/QML/container checks pass.
+The current baseline is considered complete only when the thirteen-tool API remains stable, Plan is read-only, Agent mutations remain staged, the executor and runner cannot publish, the executor cannot reach the network, and the runner reaches only the allowlisted proxy under the opt-in egress overlay, source mounts remain read-only, failed mutations roll back, publication remains approved and hash-validated, effective limits are internally consistent, and the documented pytest/ruff/compile/QML/container checks pass.

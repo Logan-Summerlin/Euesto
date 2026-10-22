@@ -21,8 +21,11 @@ def test_public_tool_documentation_matches_registry() -> None:
         "ls",
         "status",
         "investigate_repository",
+        "update_plan",
+        "web_search",
+        "fetch_url",
     }
-    assert "ten model-facing tools" in docs
+    assert "thirteen model-facing tools" in docs
 
 
 def test_documentation_index_and_ownership_map_exist() -> None:

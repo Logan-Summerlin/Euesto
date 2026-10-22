@@ -177,3 +177,31 @@ def test_narration_steering_and_retries_appear_as_activity_rows() -> None:
         ("Provider error; retrying (attempt 2 of 3)", False),
         ("Context compacted (handoff written)", False),
     ]
+
+
+def test_harness_events_have_readable_activity_rows() -> None:
+    from src.transcript import _activity_items
+
+    events = [
+        {"type": "plan.updated", "payload": {"summary": "plan: 1/3 done"}},
+        {
+            "type": "loop.note",
+            "payload": {"kind": "budget_warning", "budget": "Cost", "percent": 85},
+        },
+        {"type": "loop.note", "payload": {"kind": "repeated_failure"}},
+        {"type": "secret.redacted", "payload": {"kinds": {"github_token": 2}}},
+        {
+            "type": "web.requested",
+            "payload": {"tool": "web_search", "query": "pytest fixtures"},
+        },
+    ]
+    rows = _activity_items(events)  # type: ignore[arg-type]
+    assert [row["title"] for row in rows] == [
+        "Plan: 1/3 done",
+        "Cost at 85%; asked the agent to wrap up",
+        "Repeated failure; asked the model to change approach",
+        "Redacted secrets before they reached the model: github_token ×2",
+        "web_search: pytest fixtures",
+    ]
+    # A redaction always draws attention; the others are routine progress.
+    assert [row["attention"] for row in rows] == [False, False, False, True, False]

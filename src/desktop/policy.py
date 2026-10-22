@@ -58,6 +58,9 @@ class PolicyService(QObject):
         self.audit: list[dict[str, object]] = []
         self.audit_worker: CallWorker | None = None
         self._connected = False
+        # (workspace, manifests digest) pairs already offered this app session, so a declined
+        # offer is not repeated until a manifest or lockfile changes again.
+        self._offered: set[tuple[str, str]] = set()
 
     # -- reading and confirming the policy ---------------------------------------------
 
@@ -210,6 +213,7 @@ class PolicyService(QObject):
         digest = manifests_digest(workspace) if command else ""
         return {
             "command": command,
+            "digest": digest,
             "source": source,
             "isolated": policy.setup_isolated,
             "timeoutSeconds": policy.setup_timeout_seconds,
@@ -218,6 +222,28 @@ class PolicyService(QObject):
             "needed": bool(command) and digest != config.get(SETUP_DIGEST_KEY),
             "lastRun": "never" if not config.get(SETUP_DIGEST_KEY) else "done",
         }
+
+    def offer_setup(self) -> None:
+        """Offer dependency setup at the first start and again whenever a dependency manifest
+        or lockfile changed since the last successful run (5.1). Every run is still approved;
+        nothing is offered while the workspace is busy or the policy is unreadable."""
+        runtime = self.host.runtime
+        if (
+            not runtime.automatic
+            or self.status == "invalid"
+            or self.host.generation.running
+            or self.host.staging.busy
+            or runtime.manager.setup_running
+        ):
+            return
+        plan = self.setup_plan()
+        if not plan["needed"]:
+            return
+        key = (runtime.identity(), str(plan["digest"]))
+        if key in self._offered:
+            return
+        self._offered.add(key)
+        self.request_setup()
 
     def request_setup(self, full: bool = False) -> None:
         """Ask to run dependency setup once with registry access; runs only after approval."""

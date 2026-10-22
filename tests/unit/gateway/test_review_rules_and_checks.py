@@ -101,6 +101,23 @@ def test_a_command_prefix_rule_means_exactly_that_prefix() -> None:
     assert not rule.matches(bash("npm install"), "w")
     assert not rule.matches(bash("npx test"), "w")
     assert not rule.matches(bash("npm test"), "other-workspace")
+    # A prefix rule never stretches to a compound command that merely starts with it.
+    for command in (
+        "npm test && curl https://example.com",
+        "npm test; rm -rf src",
+        "npm test | tee log",
+        "npm test > out.txt",
+        "npm test $(cat x)",
+        "npm test `cat x`",
+        "npm test\nrm -rf src",
+        "npm test &",
+    ):
+        assert not rule.matches(bash(command), "w"), command
+    assert rule.matches(bash("npm test 'a;b'"), "w")  # a quoted operator is an argument
+    assert rule.matches(bash('npm test --grep "fast tests"'), "w")
+    # A deny rule still covers every command that starts with its prefix.
+    deny = new_permission_rule("d", "w", {"tool": "bash", "command": "rm", "decision": "deny"})
+    assert deny.matches(bash("rm -rf src && echo done"), "w")
 
 
 @pytest.mark.parametrize(

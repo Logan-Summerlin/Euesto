@@ -1,6 +1,37 @@
 # Changelog
 
-## Unreleased — Agentic harness Phases 0–2
+## Unreleased — Agentic harness Phases 3–5
+
+Implements Phases 3–5 of [docs/AGENTIC_HARNESS_PLAN.md](docs/AGENTIC_HARNESS_PLAN.md). The public surface grows to thirteen model-facing tools: `update_plan` (Plan and Agent), `web_search` and `fetch_url` (Agent, off by default per workspace). The `accept_edits` approval tier is replaced by `sandbox` with no alias. The security boundary is unchanged for the executor and runner; a container gains network only through an approved setup run or a `registries` session, and the workspace policy file is read from the host only.
+
+**Long runs (Phase 3)**
+
+- Agent turns stream; tool calls are assembled from the deltas, with an idle timeout and a per-turn ceiling instead of a fixed request timeout. Live text is shown while a turn runs and is not saved as the answer.
+- `update_plan` keeps a per-session checklist (up to 20 steps) shown above the composer and carried into handoffs and wind-downs.
+- At 85% of a budget the agent is asked to wrap up; a run that exhausts its budget (or stops making progress) gets a tool-free summary and pauses resumably. *Continue with another budget* resumes it.
+- Loop resilience: corrective results for bad arguments and unknown tools, a change-approach note after repeated failures, one re-prompt for an empty reply, and a wind-down after four turns without progress.
+- Declared checks (`[checks]` in the workspace policy) run in the runner from the review pane, tied to the staged snapshot. Auto publication waits for the checks named in `verify_before_publish`.
+- `investigate_repository` is available in Plan too, and its nested loop can review a staged diff with `status`.
+
+**Approvals in proportion to risk (Phase 4)**
+
+- The Sandbox tier runs `write`, `edit`, `apply_patch`, and `bash` without prompts while the runner has no network. It is the default for new Agent sessions after a one-time explanation; every publication is still reviewed.
+- Saved command rules match a single simple command by executable and argument prefix; compound commands never match an allow or ask rule. A rules screen manages them.
+- Publication review flags host-executable, dependency, policy, binary, and large-deletion changes. Auto stops for confirmation at a flagged batch.
+- The review pane publishes a selected subset of staged files; unselected changes stay staged.
+- Secret-like files are refused in staging. High-confidence secrets are redacted from every tool result before the provider sees it, and publication warns about secrets it would write.
+- `.euesto/policy.toml` in the host workspace declares the runner image, network mode, setup command, checks, extra secret patterns, and never-published paths. It takes effect only after confirmation; invalid files fail closed.
+- Approval prompts show highlighted Bash commands with their purpose, directory, timeout, and network status, and URL prompts show the full URL.
+
+**Controlled connectivity (Phase 5)**
+
+- Dependencies install in an approved, one-shot setup container attached only to the allowlisted registry proxy. Isolated setup sees only the manifests and lockfiles; the agent's runner stays offline afterwards.
+- The release manifest is schema 3 and pins the egress proxy image by digest; the proxy's audit log is viewable in Settings.
+- A session can opt into `registries` network mode for its runner when the workspace policy allows it. Bash asks before every command in that mode.
+- `web_search` and `fetch_url` give the model documentation access through the gateway, never through the executor or runner. `fetch_url` fetches allowlisted documentation hosts and asks for any other URL.
+- `LOCAL_CHAT_EXECUTOR_EGRESS` is removed.
+
+## Agentic harness Phases 0–2
 
 Implements Phases 0–2 of [docs/AGENTIC_HARNESS_PLAN.md](docs/AGENTIC_HARNESS_PLAN.md). The ten-tool contract and the manifest, approval, and hash-validation protocol are unchanged. The security boundary is narrower: commands no longer run where the source mount is.
 

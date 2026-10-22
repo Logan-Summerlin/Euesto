@@ -31,7 +31,7 @@ Every living plan and the roadmap live in this directory, one authoritative copy
 | Document | Scope |
 |---|---|
 | [ROADMAP.md](ROADMAP.md) | Completed, active, planned, deferred, and non-goal status for the product, including the open items carried from archived plans. |
-| [AGENTIC_HARNESS_PLAN.md](AGENTIC_HARNESS_PLAN.md) | Phased plan to widen agent capability inside the Docker sandbox while narrowing exits. Phases 0–2 are implemented (loop fixes, token and cache efficiency for low-cost models, a separate runner workbench, durable staging); Phases 3–7 (long-run support, risk-proportional approvals, controlled connectivity, missions, and setup) are proposed. |
+| [AGENTIC_HARNESS_PLAN.md](AGENTIC_HARNESS_PLAN.md) | Phased plan to widen agent capability inside the Docker sandbox while narrowing exits. Phases 0–5 are implemented (loop fixes, token and cache efficiency, a separate runner workbench, durable staging, long-run support, risk-proportional approvals, and controlled connectivity); Phases 6–7 (long-running projects and simple setup) are proposed. |
 
 Documentation file names are predictable: `UPPER_SNAKE_CASE.md` in `docs/`, lowercase-hyphenated names in `archived-doc/`, and no spaces or embedded dates anywhere (dates belong in commit history or `CHANGELOG.md`). The repository root keeps only `README.md`, `AGENTS.md`, and `CHANGELOG.md`. `tests/structural/test_documentation_layout.py` enforces this.
 

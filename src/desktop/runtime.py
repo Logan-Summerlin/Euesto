@@ -316,6 +316,8 @@ class RuntimeService(QObject):
         if result.state in {HealthState.READY, HealthState.DEGRADED}:
             self.host.settings.refresh_catalog_if_stale()
             self._show_notices(result.status)
+        if result.state == HealthState.READY and self.workspace_ready(result.status):
+            self.host.policy.offer_setup()
 
     def _show_notices(self, status: GatewayStatus | None) -> None:
         """Show each unacknowledged gateway notice once, then acknowledge it."""

@@ -276,6 +276,8 @@ class StagingPublicationService(QObject):
             self.publication_paths = None
             # A published policy change only takes effect once confirmed (4.6).
             self.host.policy.refresh()
+            # A published manifest or lockfile change offers setup again (5.1).
+            self.host.policy.offer_setup()
             if self.review_data is not None:
                 QTimer.singleShot(0, self.open_review)
         if queued is not None:

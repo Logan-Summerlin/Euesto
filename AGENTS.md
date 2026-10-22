@@ -20,12 +20,14 @@ Desktop -> authenticated gateway -> Unix-socket executor -> runner (commands) ->
 
 ## Public tools
 
-The model-facing local tools are `read`, `write`, `edit`, `apply_patch`, `bash`, `grep`, `find`, `ls`, `status`, and `investigate_repository`.
+The model-facing tools are the nine executor tools `read`, `write`, `edit`, `apply_patch`, `bash`, `grep`, `find`, `ls`, and `status`, and the four gateway tools `investigate_repository`, `update_plan`, `web_search`, and `fetch_url` (thirteen in all).
 
-- Plan: `read`, `grep`, `find`, `ls` only.
-- Agent: all ten; mutations (`write`, `edit`, `apply_patch`, `bash`) remain in staging; `status` is read-only staged-change review.
-- Consecutive read-only calls in one turn may run concurrently; mutations stay serialized in call order.
-- `investigate_repository` is Agent-only, read-only, capped at four calls per turn, and restricted to the Plan tool set inside its nested loop.
+- Plan: `read`, `grep`, `find`, `ls`, `investigate_repository`, and `update_plan` only.
+- Agent: all thirteen, with `web_search` and `fetch_url` offered only when the workspace opts in; mutations (`write`, `edit`, `apply_patch`, `bash`) remain in staging; `status` is read-only staged-change review.
+- Consecutive read-only executor calls in one turn may run concurrently; mutations and gateway tools stay serialized in call order.
+- `investigate_repository` is read-only, capped at four calls per turn, and restricted to `read`, `grep`, `find`, `ls`, and `status` inside its nested loop.
+- `update_plan` is gateway-local session state and never prompts; the web tools never reach the executor or runner, return untrusted bounded text, and `fetch_url` asks per URL off its documentation allowlist.
+- Agent approval tiers are `prompt`, `sandbox`, and `auto`; with registry access on, Bash asks under every tier unless a saved rule matches.
 - Do not add aliases, legacy compatibility tools, hidden capabilities, or alternate public vocabularies.
 
 See `docs/TOOLS.md` for the contract and `docs/LIMITS.md` for limits.
@@ -34,11 +36,13 @@ See `docs/TOOLS.md` for the contract and `docs/LIMITS.md` for limits.
 
 - Normalize and contain paths beneath the selected workspace.
 - Preserve link/device/reparse-point protections and UTF-8 text semantics.
-- Keep executor and runner non-root, network-disabled, capability-restricted, and without host publication authority. The only exception is the opt-in allowlisted-egress overlay (`docs/EGRESS.md`): it attaches the runner (never the executor) to an internal-only network with a CONNECT proxy that allows named registries; the default profile keeps `network_mode: none` for both.
+- Keep executor and runner non-root, network-disabled, capability-restricted, and without host publication authority. The only exceptions use the allowlisted-egress overlay (`docs/EGRESS.md`), which attaches a container (never the executor) to an internal-only network with a CONNECT proxy that allows named registries: the approved one-shot dependency setup container, and the runner in a session that opted into the `registries` network mode. The default keeps `network_mode: none` for both executor and runner.
 - Keep the source mount read-only and mounted only in the executor; keep mutations in persistent, disposable per-workspace staging that is removed only by an explicit discard, and never destroy staged work silently.
 - Checkpoint mutations and roll them back on failure, cancellation, or timeout; Bash may explicitly retain partial progress on a non-zero exit only when `rollback_on_failure: false` is requested, while timeouts and cancellation always roll back.
 - Keep Bash non-interactive and bounded (fixed base environment; user env is filtered and bounded).
 - Require approved, path-bounded, hash-validated publication through the desktop broker; larger changesets publish as separately approved, all-or-nothing batches, and binary files travel byte-exact as `content_base64`.
+- Read the workspace policy (`.euesto/policy.toml`) from the host only, apply it only after the user confirms exactly what was reviewed, and fail closed when it is invalid; Auto never publishes a host-executable, dependency, or policy change without explicit confirmation.
+- Redact high-confidence secrets from every tool result before it enters the provider-bound history.
 
 ## Change discipline
 

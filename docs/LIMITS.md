@@ -89,6 +89,45 @@ Separate from executor limits, each Agent run is bounded by a budget profile (`s
 
 A profile that exceeds twice the standard `coding` value on tool calls, wall time, or cost requires explicit user approval before the session runs. Investigation delegation adds its own caps of up to four calls per turn and 36 iterations / 36 tool calls / 300 seconds of wall time per nested loop, debited against the parent run's remaining budget.
 
+## Long runs
+
+| Bound | Value | Notes |
+|---|---:|---|
+| Streamed turn idle timeout | 120 s | Longest wait between streamed chunks (`turn_idle_seconds`), every profile. |
+| Streamed turn ceiling | 600 s | One model turn (`turn_ceiling_seconds`), never longer than the run's remaining wall time. |
+| Live text journaling | every 0.5 s or 4,000 characters | `model.stream` events; at most 64,000 characters per turn, shown live and not saved as the answer. |
+| Wind-down warning | 85% of any budget | One `loop.note` (kind `budget_warning`) asking the agent to wrap up. |
+| Wind-down reserve | 5% of each budget, at most 60 s, plus 1 iteration | Funds the tool-free summary turn; the run then pauses with reason `budget`. |
+| Repeated failures | 3 | The same call failing the same way three times adds a note to change approach. |
+| No-progress turns | 4 | Turns with no new tool output and no new staged change before the wind-down starts. |
+| Empty replies | 1 re-prompt | A second empty or reasoning-only reply pauses the run. |
+| `update_plan` | 20 steps; `id` 40, `title` 120, `note` 200 characters | Stored per session; the result is one line. |
+
+*Continue with another budget* resumes a run paused at its budget with a fresh budget of the same profile; profiles above twice the standard budget still need approval.
+
+## Workspace policy, checks, and setup
+
+| Bound | Value | Notes |
+|---|---:|---|
+| Policy file | 64,000 bytes | `.euesto/policy.toml` in the host workspace; larger files are invalid. |
+| Declared checks | 12 | Names are lowercase identifiers of at most 32 characters; commands at most 1,000 characters. |
+| Check timeout | 300 s default, 900 s maximum | Runs in the runner like Bash and always restores staging; the result keeps the last 16,000 characters of output. |
+| Setup command | 1,000 characters | Declared or detected; the user approves each run. |
+| Setup timeout | 900 s default, 1,800 s maximum | The setup container is killed at the timeout. |
+| Extra secret patterns | 50 of at most 100 characters | Added to the built-in secret names; never removing any. |
+| Never-publish globs | 50 of at most 100 characters | Enforced by the desktop broker. |
+| Redaction exceptions | 50 paths | Per-workspace files whose `read` results reach the model unredacted. |
+| Egress audit log | 2,000 entries | Newest kept, in the desktop data directory. |
+
+## Documentation tools
+
+| Bound | Value | Notes |
+|---|---:|---|
+| `web_search` results | 8 | Snippets of at most 400 characters; 60-second request timeout; charged to the run's cost budget. |
+| `fetch_url` URL | 2,000 characters | HTTPS only; hosts must resolve to public addresses. |
+| `fetch_url` download | 2,000,000 bytes | 20-second timeout; up to 5 redirects, each re-checked against the allowlist. |
+| `fetch_url` page text | 24,000 characters | After scripts, styles, navigation, and markup are removed. |
+
 ## Profiles
 
 The `small` profile reduces file/output/search limits. `coding` is the default. `large-workspace` raises selected limits while remaining below hard ceilings. Environment variables named `LOCAL_CHAT_<LIMIT>` can override profile values, but `ExecutorConfig` rejects values above hard ceilings or resource-model capacity.

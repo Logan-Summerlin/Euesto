@@ -7,7 +7,7 @@ import pytest
 from executor.app import ExecutorService
 from executor.config import ExecutorConfig
 from executor.staging import seed_staging, workspace_changes
-from src.workspace_broker import WorkspaceBroker
+from src.workspace_broker import BrokerError, WorkspaceBroker
 from tests.helpers import executor_config
 
 
@@ -268,3 +268,21 @@ def test_read_rejects_paths_hidden_from_find_grep_and_ls(tmp_path: Path) -> None
             )
             assert not result.ok, (mode, path)
             assert result.error_code == "path.missing", (mode, path, result.error_code)
+
+
+def test_broker_refuses_paths_the_workspace_policy_never_publishes(tmp_path: Path) -> None:
+    """Plan 4.6: ``never_publish`` is enforced by the desktop broker itself, so no manifest,
+    selection, or Auto session can write those paths to the host."""
+    workspace = tmp_path / "projects" / "new-project"
+    workspace.mkdir(parents=True)
+    config = executor_config(workspace, work_root=tmp_path / "work")
+    service = ExecutorService(config)
+    (config.work_root / "deploy").mkdir()
+    (config.work_root / "deploy" / "prod.yml").write_text("replicas: 3\n", encoding="utf-8")
+    (config.work_root / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    manifest = service.manifest("run", "approval")
+    broker = WorkspaceBroker(workspace, tmp_path / "recovery", never_publish=("deploy/**",))
+
+    with pytest.raises(BrokerError, match="never publishes"):
+        broker.publish(manifest, {item.path for item in manifest.operations})
+    assert not (workspace / "app.py").exists() and not (workspace / "deploy").exists()
