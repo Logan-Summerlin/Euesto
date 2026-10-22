@@ -1,6 +1,6 @@
 # Agentic Harness Plan
 
-**Status:** Proposed. The decisions in §9 are recorded: every recommendation is accepted except the headless CLI (D11), which is rejected. Nothing in this plan is implemented yet. Each item records its own status; update it in place as work lands, and move this file to `archived-doc/` once the plan is complete or superseded (see [README.md](README.md#plans)).
+**Status:** Phases 0–2 implemented; Phases 3–7 proposed. The decisions in §9 are recorded: every recommendation is accepted except the headless CLI (D11), which is rejected. Each item records its own status; update it in place as work lands, and move this file to `archived-doc/` once the plan is complete or superseded (see [README.md](README.md#plans)).
 
 **Goal:** make Euesto an excellent agentic harness for software engineering and long-running projects that is simple to set up and cheap to run.
 
@@ -294,7 +294,7 @@ Small, high-leverage fixes that need no architectural decision.
 
 #### 0.1 Bound each tool result, not the whole run (C1), size M
 
-- **Status:** proposed.
+- **Status:** implemented. Per-result caps by budget profile (24,000 / 32,000 / 48,000 bytes; `read` 32,000 / 48,000 / 64,000; Bash 8,000 / 12,000 / 16,000 characters), each never above 40% of the working set rather than the proposed 10%, so a single default `read` fits; `tool.result_bounded` records the original size.
 - **Change:**
   - Remove the cumulative per-run allowance.
   - Bound each model-facing result with a per-tool cap sized for flash-tier budgets:
@@ -313,7 +313,7 @@ Small, high-leverage fixes that need no architectural decision.
 
 #### 0.2 Add a gateway-owned agent system prompt for flash-tier models (C2), size M
 
-- **Status:** proposed.
+- **Status:** implemented (`server/agent/prompts.py`, version `2026-10.1`, bounded to 4,800 bytes; `run.started` records the version). The workflow omits the `update_plan` step until 3.2 adds that tool, as the contract test requires.
 - **Change:**
   - **Placement:** keep one versioned prompt per mode in `server/agent/prompts.py`, placed first in the message list. The conversation's own system prompt follows it as a user preference (1.2).
   - **Cacheable:** the prompt contains no dynamic values, so it is cached across turns, runs, and sessions.
@@ -352,13 +352,13 @@ Small, high-leverage fixes that need no architectural decision.
 
 #### 0.3 Render or remove workspace instructions (C3), size S
 
-- **Status:** proposed.
+- **Status:** implemented: rendered in the session context as `USER WORKSPACE CONFIGURATION (user-authored)`, bounded to 32,000 characters.
 - **Change (recommended):** render the instructions in the session context (1.2) as `USER WORKSPACE CONFIGURATION (user-authored)`, bounded to 32,000 characters. Unlike `AGENTS.md`, they are trusted, because the user typed them.
 - **Tests:** a gateway test that saved instructions reach the model's messages, and a structural check that the Settings help text describes them.
 
 #### 0.4 Retry provider errors in the parent loop (C5), size S
 
-- **Status:** proposed.
+- **Status:** implemented.
 - **Change:**
   - **Policy:** reuse the investigation loop's retry policy: up to three attempts with jittered backoff.
   - **What is retried:** timeouts, connection errors, HTTP 408/409/425/429, 5xx, and error bodies returned with a 200 status.
@@ -370,7 +370,7 @@ Small, high-leverage fixes that need no architectural decision.
 
 #### 0.5 Close the decided roadmap findings (S5, S6, C21), size S *(Roadmap)*
 
-- **Status:** proposed.
+- **Status:** implemented; the migration notice is shown once in the desktop and then acknowledged.
 - **Changes:**
   - Saved Bash rules store the tokenized executable and argument prefix, exactly as per-run rules do. A migration disables existing broad saved Bash rules and shows a one-time notice.
   - The clean-staging check for Auto mode tests `approval_policy == "auto"`, whatever the investigation model.
@@ -380,7 +380,7 @@ Small, high-leverage fixes that need no architectural decision.
 
 #### 0.6 Never destroy staged work silently (C13), size S
 
-- **Status:** proposed.
+- **Status:** implemented. With 2.4 in place, *Keep for later* leaves the work on its persistent volumes rather than keeping containers running.
 - **Change:**
   - Before the window closes or the workspace changes, check staging for changes.
   - If there are any, offer *Review and publish*, *Discard*, *Keep for later*, or *Cancel*.
@@ -390,7 +390,7 @@ Small, high-leverage fixes that need no architectural decision.
 
 #### 0.7 Unwedge staging after a symlink (C23), size S
 
-- **Status:** proposed.
+- **Status:** implemented.
 - **Change:** a symlink in staging becomes an *unpublishable entry* instead of a fatal error.
   - `visible_files` skips and records it.
   - `status` lists it under `unpublishable_links`.
@@ -403,7 +403,7 @@ Small, high-leverage fixes that need no architectural decision.
 
 #### 0.8 Show progress and accept steering (C4 narration, C22, U4), size M
 
-- **Status:** proposed.
+- **Status:** implemented. Steering uses the existing `input.steered` journal path; the composer falls back to queuing the message if the endpoint refuses it.
 - **Change:**
   - Journal the text the model writes alongside tool calls as `model.narration`, and show it in the transcript.
   - Show a meter with cost, cache hit rate, context size against the working-set cap, tool calls, and time (from 1.1).
@@ -414,7 +414,7 @@ Small, high-leverage fixes that need no architectural decision.
 
 #### 0.9 Default to agent-capable, cache-capable models (C19), size S
 
-- **Status:** proposed.
+- **Status:** implemented.
 - **Change:**
   - **Filter:** for Plan and Agent, the model picker shows only models whose catalog `supported_parameters` include `tools`.
   - **Window warning:** it warns when a model's context window is under 64,000 tokens.
@@ -425,7 +425,7 @@ Small, high-leverage fixes that need no architectural decision.
 
 #### 0.10 Document S1–S3 accurately now, size S
 
-- **Status:** proposed.
+- **Status:** implemented, and superseded by 2.1: Bash now runs in the runner, which has no `/source` mount, and secret-like files are never copied into staging, so the documentation states the stronger boundary instead of the interim caveat.
 - **Change:** until 2.1 lands, `docs/ARCHITECTURE.md` and `docs/TOOLS.md` state that secret-path blocking applies to the file tools but not to Bash, which can read the read-only source mount.
 
 ### Phase 1: Efficiency for flash-tier models
@@ -434,7 +434,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 1.1 Usage and cache accounting (E9), size S
 
-- **Status:** proposed.
+- **Status:** implemented.
 - **Change:**
   - **Per turn, journal:**
     - prompt, cached, cache-write, output, and reasoning tokens;
@@ -457,7 +457,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 1.2 Cache-stable context (E3, E4, E5), size M
 
-- **Status:** proposed.
+- **Status:** implemented. Breakpoints are added for model prefixes `anthropic/` and `qwen/`.
 - **Change:**
   - **Layout, most stable first.** Nothing above the history changes during a session except at the expected events below.
     1. **The agent prompt (0.2):** the only content of the first system message.
@@ -504,7 +504,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 1.3 Compaction as rare, planned events (C6, E1, E2), size M
 
-- **Status:** proposed.
+- **Status:** implemented (working sets 96,000 / 160,000 / 256,000 tokens; 2,500-token handoff).
 - **Change:**
   - **High-water mark:** compact when the context reaches the smaller of 60% of the window and the profile's working-set cap. The window limit stays a hard ceiling.
     - Proposed caps: 96,000 tokens for `coding`, larger for `extended-coding` and `large-coding`.
@@ -538,7 +538,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 1.4 Lean model-facing results (E6, E7), size M
 
-- **Status:** proposed.
+- **Status:** implemented.
 - **Change:**
   - **Format.** Each result is plain text: one header line plus the body.
     - There is no JSON envelope, request ID, timing, null field, constant string, or JSON escaping of file text.
@@ -584,7 +584,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 1.5 Keep full output as artifacts, size S
 
-- **Status:** proposed.
+- **Status:** implemented. The runner writes the logs (at most 16,000,000 bytes each, 64,000,000 bytes and 200 files per directory, 24-hour retention); they are reachable only through `bash`.
 - **Change:**
   - **Capture:** Bash writes complete stdout and stderr to `.euesto-output/<request_id>.log` in staging. Today the executor writes it; after 2.1 the runner does.
   - **Excluded directory:** this new directory is never published, never checkpointed, and never shown to the file tools.
@@ -594,7 +594,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 1.6 Structured reduction of test and compiler output (C20), size M *(Roadmap)*
 
-- **Status:** proposed.
+- **Status:** implemented.
 - **Change:**
   - **Parsers:** pure, bounded parsers for pytest, unittest, Jest, Vitest, `go test`, `cargo test`, tsc, ESLint, Ruff, mypy, gcc, and clang. They run on the full captured output, before excerpting.
   - **Result:** a Bash result's body leads with the reduction: totals, then the first N failures with file, line, and message. A failing test run typically shrinks from tens of kilobytes to a few hundred bytes. Excerpts follow only if space remains, and the raw log remains as an artifact (1.5).
@@ -602,7 +602,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 1.7 Fewer model turns, size M
 
-- **Status:** proposed.
+- **Status:** implemented.
 - **Change:** every model turn re-sends the whole context, so turns, not tool calls, are the unit of cost.
   - **Parallel calls.**
     - Send `parallel_tool_calls: true`.
@@ -622,7 +622,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 1.8 Output-token and reasoning discipline (E8), size S
 
-- **Status:** proposed.
+- **Status:** implemented. The payload carries the request's reasoning effort and a 16,000-token output cap; summary turns use `low`. Per-preset defaults arrive with 7.4.
 - **Change:**
   - **Reasoning effort:**
     - Each model preset (7.4) sets `reasoning.effort` where the model supports it.
@@ -637,7 +637,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 1.9 Compact tool contract and a prefix budget, size S
 
-- **Status:** proposed.
+- **Status:** implemented (`tests/structural/test_prompt_prefix.py`: 12,000 bytes for Agent, 6,000 for Plan).
 - **Change:**
   - **Keep schemas compact as tools are added:**
     - one-sentence descriptions, with a usage hint only where it changes behavior (for example, "search before reading");
@@ -656,7 +656,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 2.1 Split the executor into a control plane and a runner (S1, S2), size L
 
-- **Status:** proposed.
+- **Status:** implemented, with these deviations: the runner uses the executor's identity (UID 10002, group 10001) instead of a separate UID 10005, so the executor can always hash, checkpoint, and restore whatever a command writes; isolation comes from mounts (no `/source`, state volume, secrets, or executor socket), not from the UID. The runner server accepts *run* and *cancel* and returns at most 512,000 bytes of output.
 - **Change:**
   - **Control plane (the executor):** keeps today's minimal image.
     - It mounts `/source` read-only, `work-<id>`, and `state-<id>`.
@@ -695,7 +695,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 2.2 Curated toolchain images, size M (D4)
 
-- **Status:** proposed.
+- **Status:** implemented. Until the policy file (4.6) lands, the desktop auto-detects the image from project files and Settings can override it. The rebuild cadence is documented in `docs/CONTRIBUTING.md`. Bring-your-own images remain for later.
 - **Change:** one `docker/Dockerfile.runner` with four build targets, digest-pinned and published with each release. Schema 2 of `release-images.json` adds the runner images.
   - `runner-base`: bash, coreutils, git, ripgrep, fd, jq, make, patch, diffutils, procps, tree, unzip, sqlite3, universal-ctags, build-essential;
   - `runner-python`: `runner-base` plus CPython 3.12 and 3.13, uv, and pip;
@@ -709,14 +709,14 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 2.3 Make `/work` executable (C10), size S
 
-- **Status:** proposed.
+- **Status:** implemented. The runner's `/tmp` also allows exec, because compilers and test runners build binaries in `TMPDIR`. Named volumes cannot carry `nosuid` or `nodev` mount options; `no-new-privileges` and the absence of `CAP_MKNOD` give the same protection.
 - **Change:** drop `noexec` from the default `/work` mount and keep `nosuid` and `nodev`, as the egress profile already does.
 - **Security:** the runner is non-root, has no capabilities, runs with `no-new-privileges`, and could already run arbitrary interpreted code. `exec` adds native binaries that the agent built or installed; it grants no new privilege.
 - **Tests:** Docker tier: a compiled binary in staging runs, and a setuid binary gains no privilege.
 
 #### 2.4 Durable per-workspace staging (C12, C13, C15), size L
 
-- **Status:** proposed.
+- **Status:** implemented. A third per-workspace volume, `cache-<id12>`, holds package caches. Rebase runs automatically when a session resumes, and conflicts are resolved per file by keeping the staged copy or taking the host copy. Staged sessions unused past the retention period are flagged in Settings, never removed automatically.
 - **Change:**
   - **Volumes:** replace the tmpfs with named volumes `work-<id12>` and `state-<id12>`. `compose down` keeps them, and only an explicit *Discard session* removes them.
   - **Resume:** each state volume holds an identity file. On start, if `state-<id>` holds a baseline and its identity file matches `LOCAL_CHAT_WORKSPACE_ID`, the executor resumes instead of reseeding.
@@ -740,12 +740,12 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 2.5 Seed staging incrementally, size M *(Roadmap: copy-on-write staging)*
 
-- **Status:** proposed.
+- **Status:** implemented by 2.4: the full copy happens once per workspace and later starts copy only drifted files. Reflink seeding stays open in `docs/ROADMAP.md`.
 - **Change:** with persistent volumes, the full copy happens once per workspace, and later starts copy only the files that drifted (2.4). Seeding with reflinks, where the filesystem supports them, remains an optimization on top.
 
 #### 2.6 Git history in the sandbox (C14), size M (D7)
 
-- **Status:** proposed.
+- **Status:** implemented, with one deviation: the index points at the `refs/euesto/base` tree rather than HEAD, so `git status` and `git diff` show exactly the agent's changes; `git diff HEAD` still adds the user's uncommitted work. After seeding, the executor writes git's object, ref, and index formats itself and never runs `git` on a volume the runner has touched.
 - **Change:**
   - **Seeding:** the control plane already has `/source` and gains git. At seed time it runs `git clone --no-checkout --no-hardlinks --single-branch --depth <N> file:///source` into the work volume's `.git`.
   - **Clean configuration:** it removes the remote, sets `core.hooksPath=/dev/null`, and points the index at HEAD.
@@ -765,7 +765,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 2.7 Runner resources, size S
 
-- **Status:** proposed.
+- **Status:** implemented (2–8 CPUs, default Docker's count minus one; 2–16 GB, default half of Docker's; 256–4,096 processes, default 1,024; out-of-range values fail closed). The control plane keeps 1 CPU, 1 GB, and 128 processes.
 - **Change:** CPU, memory, and PID limits become settings within ceilings, for example 2–8 CPUs and 2–16 GB of memory. The PID limit rises from 128 to 1,024 so that `make -j`, Jest, and Cargo builds fit. Defaults come from Docker Desktop's allocation, and the control plane keeps small fixed limits.
 - **Tests:** compose rendering respects the ceilings, and out-of-range values fail closed.
 

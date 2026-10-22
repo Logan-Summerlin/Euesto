@@ -4,7 +4,7 @@ Limits below describe the current `coding` executor profile. `executor/config.py
 
 | Area | Coding default | Hard maximum | Notes |
 |---|---:|---:|---|
-| `read` bytes | 1,000,000 | 8,000,000 | Exact byte values: 1,000,000 / 8,000,000. Requested value is clamped to effective limit. The `read` tool additionally clamps every call to 256,000 bytes (64,000 default) regardless of profile. |
+| `read` bytes | 1,000,000 | 8,000,000 | Exact byte values: 1,000,000 / 8,000,000. Requested value is clamped to effective limit. Each call returns 32,000 bytes unless `max_bytes` asks for more, up to the profile value. |
 | `write` bytes | 1,000,000 | 8,000,000 | Exact byte values: 1,000,000 / 8,000,000. UTF-8 text content. |
 | `edit` target | 2,000,000 | 16,000,000 | Exact byte values: 2,000,000 / 16,000,000. Target file size. |
 | `edit` result | 2,000,000 | 16,000,000 | Exact byte values: 2,000,000 / 16,000,000. Resulting file size. |
@@ -24,10 +24,54 @@ Limits below describe the current `coding` executor profile. `executor/config.py
 | Parallel read-only calls | 8 | 8 | Consecutive `read`/`grep`/`find`/`ls`/`status` calls in one turn run concurrently, at most 8 at a time (`MAX_PARALLEL_TOOL_CALLS`). |
 | Tool arguments (protocol) | 17,000,000 bytes | 17,000,000 bytes | `MAX_TOOL_ARGUMENT_BYTES` in `shared/tools.py`, measured as unescaped UTF-8 JSON. Derived as the largest argument-carrying hard ceiling (16,000,000 bytes: the `edit` result, which also bounds `old_str` + `new_str` together, and `apply_patch` content; `write` needs 8,000,000 and `bash` command + stdin + env about 10,050,000) plus a 1,000,000-byte envelope, so it never binds below a per-tool limit in any profile. |
 | Staged files | 300,000 | 1,000,000 | Exact counts: 300,000 / 1,000,000. Shared staging resource. |
-| Staging bytes | 2.5 GB (2,500,000,000 bytes) | 4 GB (4,000,000,000 bytes) | Exact decimal byte values: 2,500,000,000 / 4,000,000,000. Must fit the work-volume resource model. |
-| Checkpoint bytes | 2.5 GB (2,500,000,000 bytes) | 3.5 GB (3,500,000,000 bytes) | Exact decimal byte values: 2,500,000,000 / 3,500,000,000. Shares work-volume capacity with staging/temp headroom. |
+| Staging bytes | 2.5 GB (2,500,000,000 bytes) | 4 GB (4,000,000,000 bytes) | Exact decimal byte values: 2,500,000,000 / 4,000,000,000. Seeding also requires that much free space on the work volume. |
+| Checkpoint bytes | 2.5 GB (2,500,000,000 bytes) | 3.5 GB (3,500,000,000 bytes) | Exact decimal byte values: 2,500,000,000 / 3,500,000,000. Each checkpoint also requires free space on the state volume beyond its size plus the 1 GB temp headroom. |
 | Work capacity | 8 GB (8,000,000,000 bytes) | 8 GB (8,000,000,000 bytes) | Exact configured/ceiling value: 8,000,000,000 bytes. Actual container capacity must be greater than configured capacity and required headroom. |
 | Required temp headroom | 1 GB (1,000,000,000 bytes) | 1 GB (1,000,000,000 bytes) | Fixed resource-model constant; staging + checkpoint + headroom must fit strictly below work capacity. |
+
+Staging, state, and caches live on persistent named volumes (`docs/ARCHITECTURE.md`), so capacity checks use the free space the volume reports rather than a fixed tmpfs size; the staging and checkpoint budgets above still apply.
+
+## Model-facing result bounds
+
+The gateway bounds each tool result it gives the model, independently of the executor limits above (`BudgetProfile.result_cap` in `server/agent/budgets.py`). There is no cumulative per-run allowance: compaction governs the total. A shortened result emits `tool.result_bounded` with its original size.
+
+| Result | `coding` | `extended-coding` | `large-coding` |
+|---|---:|---:|---:|
+| `read` | 32,000 bytes | 48,000 bytes | 64,000 bytes |
+| Every other tool | 24,000 bytes | 32,000 bytes | 48,000 bytes |
+| `bash` output shown | 8,000 characters | 12,000 characters | 16,000 characters |
+| Ceiling for any result | 10% of the working set (38,400 bytes) | 64,000 bytes | 102,400 bytes |
+
+The ceiling counts four bytes per token. `investigate_repository` keeps its own, separate allowance (below).
+
+## Context, output, and steering
+
+| Bound | Value | Notes |
+|---|---:|---|
+| Working set (compaction high-water) | 96,000 tokens (`coding`), 160,000 (`extended-coding`), 256,000 (`large-coding`) | The smaller of this and 60% of the model's window applies; compaction returns to a third of it, and never leaves more than 90% of the window. |
+| Handoff summary | 2,500 tokens | One tool-free turn at low reasoning effort. |
+| Output per model turn (`max_tokens`) | 16,000 tokens | Per profile; a cut-off turn gets a note to write large files in parts. |
+| Static system prompt | 4,800 bytes | Per mode; no dynamic values. |
+| Session context | 48,000 characters | Workspace instructions 32,000 characters, `AGENTS.md` 24,000 bytes, skills 16,000 characters, conversation prompt 8,000 characters, executor facts 2,000 characters, workspace snapshot 6,000 bytes. |
+| Steering message | 8,000 characters | At most 16 queued per run. |
+| Provider attempts | 3 per model turn | Jittered backoff; a final retryable failure pauses the run. |
+
+## Runner resources
+
+Commands run in the runner container. Its limits are settings (Settings → Agent → Runner) within ceilings; a value outside its ceiling fails closed instead of being clamped.
+
+| Setting | Default | Range |
+|---|---:|---:|
+| CPUs | Docker's CPU count minus one, within the range | 2–8 |
+| Memory | Half of Docker's memory, within the range | 2–16 GB |
+| Process limit (PIDs) | 1,024 | 256–4,096 |
+| Git history depth | 200 commits | 0 (full history) – 100,000 |
+
+The control plane keeps small fixed limits (1 CPU, 1 GB of memory, 128 PIDs). Staged sessions unused for 30 days (a setting, 1–365) are flagged in Settings for removal; nothing is removed without confirmation.
+
+## Command output artifacts
+
+Each command's complete output is written to `.euesto-output/` in staging. Later commands can read it; the file tools, checkpoints, and publication never include it. A log is cut at 16,000,000 bytes; the directory keeps at most 200 logs, 64,000,000 bytes, and 24 hours of history, pruning the oldest first. The runner returns at most 512,000 bytes of output to the executor per command (a head and tail preview), and the reduction of test and compiler output that leads a result is at most 3,000 characters.
 
 ## Publication batches
 
@@ -56,7 +100,7 @@ The `small` profile reduces file/output/search limits. `coding` is the default. 
 3. Executor `effective_limit()` applies the requested value, configured profile value, and hard ceiling; the minimum wins.
 4. Tool-specific filesystem/path/security rules can reject an operation independently of byte/count limits.
 5. Staging/checkpoint and work-volume resource limits apply to mutations and may reject an otherwise valid operation.
-6. Docker CPU, memory, PID, disk, and network isolation are outer containment controls; they never expand application limits.
+6. Docker CPU, memory, PID, disk, and network isolation (the runner's settings above, the control plane's fixed limits) are outer containment controls; they never expand application limits.
 
 The effective limits reported by `/v1/status` are intended to make the active profile and source of each configured value inspectable.
 

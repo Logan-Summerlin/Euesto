@@ -1,6 +1,6 @@
 # Euesto
 
-Euesto is a local-first Windows desktop chatbot with a contained OpenRouter agent. The desktop, gateway, executor, staging, and publication broker are separated so the agent can do useful coding work without receiving unrestricted host authority.
+Euesto is a local-first Windows desktop chatbot with a contained OpenRouter agent. The desktop, gateway, executor, runner, staging, and publication broker are separated so the agent can do useful coding work without receiving unrestricted host authority.
 
 ## Quick start — installed users
 
@@ -19,10 +19,10 @@ A portable ZIP is also supported. Docker Desktop is the required external runtim
 
 - **Chat** is a normal model conversation with no local workspace tools.
 - **Plan** can inspect one selected workspace with read-only tools.
-- **Agent** can inspect and modify an ephemeral staging copy, then request publication through the trusted desktop broker.
+- **Agent** can inspect and modify a persistent, disposable staging copy of the workspace, then request publication through the trusted desktop broker. Unpublished staging survives restarts and is removed only by an explicit discard.
 - Local SQLite stores conversation/settings data; credentials use the Windows credential store where supported.
 - The gateway is loopback-authenticated and can reach OpenRouter but has no workspace mount.
-- The executor is network-disabled, non-root, and has a read-only source mount plus bounded writable staging. An opt-in developer profile can route package installs through an allowlisted egress proxy ([docs/EGRESS.md](docs/EGRESS.md)); the default stays network-free.
+- The executor (the control plane) is network-disabled, non-root, and has a read-only source mount plus bounded writable staging. Agent Bash commands run in a separate network-disabled, non-root runner container that sees only staging and its cache: no source mount, no secrets, and no executor state. An opt-in developer profile can route the runner's package installs through an allowlisted egress proxy ([docs/EGRESS.md](docs/EGRESS.md)); the default stays network-free.
 
 ## Modes and permissions
 
@@ -32,7 +32,7 @@ A portable ZIP is also supported. Docker Desktop is the required external runtim
 | Plan | `read`, `grep`, `find`, `ls` | no | no |
 | Agent | all ten | staging only | desktop broker, after approval/validation |
 
-The ten-tool public API is `read`, `write`, `edit`, `apply_patch`, `bash`, `grep`, `find`, `ls`, `status`, and `investigate_repository`. `apply_patch` applies a multi-file change atomically and `status` reviews everything staged (with bounded diffs) before publication. Mode restrictions are enforced in code, not only in prompts. Agent mode offers three approval tiers — prompt for every change, accept staged edits (`write`/`edit`/`apply_patch` run without prompts while Bash still asks), or Auto — none of which grants network, host-path, shell, or publication authority to the executor.
+The ten-tool public API is `read`, `write`, `edit`, `apply_patch`, `bash`, `grep`, `find`, `ls`, `status`, and `investigate_repository`. `apply_patch` applies a multi-file change atomically and `status` reviews everything staged (with bounded diffs) before publication. Mode restrictions are enforced in code, not only in prompts. Agent mode offers three approval tiers — prompt for every change, accept staged edits (`write`/`edit`/`apply_patch` run without prompts while Bash still asks), or Auto — none of which grants network, host-path, shell, or publication authority to the executor or runner.
 
 `investigate_repository` delegates a bounded, read-only repository investigation to a separately configured cheaper model. The nested loop can use only the Plan tools through the same executor session, debits the parent run's budget, and is capped at four calls per turn.
 
@@ -46,7 +46,7 @@ For large files, use bounded/incremental reads and localized edits instead of as
 
 ```text
 workspace snapshot
-  -> ephemeral staging
+  -> persistent, disposable staging (rebased onto host edits on resume)
   -> checkpointed mutations
   -> manifest + approval
   -> path/hash validation
@@ -58,9 +58,9 @@ The executor cannot publish. Manifests are tied to a workspace and source snapsh
 
 ## Security and privacy
 
-Euesto is **local-first, not offline**. The desktop, gateway, executor, staging, history, and publication broker run locally, but prompts and any workspace context or command output selected for an agent request can leave the computer through OpenRouter. Provider routing defaults to denying data collection and can request ZDR where the selected provider supports it.
+Euesto is **local-first, not offline**. The desktop, gateway, executor, runner, staging, history, and publication broker run locally, but prompts and any workspace context or command output selected for an agent request can leave the computer through OpenRouter. Provider routing defaults to denying data collection and can request ZDR where the selected provider supports it.
 
-The executor cannot access the network or publish to the host. The gateway cannot read the workspace. The selected source mount is read-only. Bash runs inside the isolated executor and is bounded by command, stdin/output, time, process, and environment controls.
+The executor and runner cannot access the network or publish to the host. The gateway cannot read the workspace. The selected source mount is read-only and mounted only in the executor; secret-like files are never copied into staging. Bash runs inside the isolated runner and is bounded by command, stdin/output, time, process, and environment controls.
 
 Local SQLite data is not application-encrypted. Protect the Windows account and disk. Treat workspace contents, prompts, logs, and recovery files as local user data.
 

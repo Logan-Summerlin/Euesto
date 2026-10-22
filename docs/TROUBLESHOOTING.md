@@ -28,9 +28,13 @@ Check that the loopback gateway is healthy and that the desktop is using the cur
 
 Check `/v1/status` and its reported workspace identity, snapshot identity, tool list, and effective limits. Executor authentication requires the current credential plus a fresh nonce. A Plan request for `write`, `edit`, `apply_patch`, `bash`, or `status` is intentionally rejected.
 
+## Runner failures
+
+Bash commands run in the runner container, not the executor. If every `bash` call fails while the file tools work, check that the runner is `Up (healthy)` and read its logs (`docker compose --profile agent logs runner`). A missing executable usually means the selected runner image lacks that toolchain: choose another image under **Settings → Runner** (`/v1/status` reports what is installed). Builds killed for memory or processes need higher runner limits in the same place, within the documented ceilings; never add a network, capabilities, or a source mount to the runner.
+
 ## Staging failures
 
-A failed mutation should roll back its checkpoint. If staging is inconsistent, discard staging and reseed from the current workspace. Resource failures can occur when staged bytes, checkpoint bytes, file count, or work-volume headroom are exhausted.
+A failed mutation should roll back its checkpoint. Staging persists per workspace across restarts and is rebased onto host edits automatically when a session resumes. A file changed both on the host and in staging is a conflict: `status` lists it with its base, host, and staged hashes, and it stays unpublishable until you keep the staged copy or take the host copy. If staging is inconsistent, discard staging and reseed from the current workspace. Resource failures can occur when staged bytes, checkpoint bytes, file count, or work-volume free space are exhausted. Symbolic links that commands create in staging are listed as unpublishable links and never block other tools or publication.
 
 ## Hard-linked files
 
@@ -42,7 +46,7 @@ Publication requires the correct workspace, current source snapshot, approval, v
 
 ## Stale-manifest errors
 
-A stale manifest means the publication baseline changed. Discard/reseed staging against the current workspace, repeat the needed agent work, and create a new manifest. Stale manifests are rejected by design.
+A stale manifest means the publication baseline changed. Bring in the host changes (the rebase action, which resolves conflicts per file) and create a new manifest; discard and reseed only when the staged work is no longer wanted. Stale manifests are rejected by design.
 
 ## Investigation failures
 
@@ -58,7 +62,7 @@ The effective value is the minimum of the request, configured profile, and hard 
 
 ## Recovery/reset
 
-To abandon unpublished Agent work, use the staging discard/recovery controls. To recover from a publication interruption, use the recovery state maintained by the desktop broker. Resetting local application data is a last resort because it can remove local history, settings, and credentials; preserve recovery data first when investigating a publication incident.
+To abandon unpublished Agent work, use the staging discard/recovery controls; kept staging for workspaces you no longer use is listed, with its size and age, under **Settings → Staged sessions**. To recover from a publication interruption, use the recovery state maintained by the desktop broker. Resetting local application data is a last resort because it can remove local history, settings, and credentials; preserve recovery data first when investigating a publication incident.
 
 ## Disappearing transcript text (Windows)
 

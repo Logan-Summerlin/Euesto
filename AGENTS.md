@@ -9,12 +9,13 @@ Euesto is a local-first Windows chatbot with a network-disabled executor. Prefer
 ## System boundary
 
 ```text
-Desktop -> authenticated gateway -> Unix-socket executor -> ephemeral staging -> reviewed publication
+Desktop -> authenticated gateway -> Unix-socket executor -> runner (commands) -> persistent, disposable staging -> reviewed publication
 ```
 
 - Desktop owns UI, history, approvals, runtime management, and host publication.
 - Gateway owns provider calls, agent loops, budgets, sessions, journals, skills, and events; it has no workspace mount.
-- Executor owns bounded workspace access and staging; it has no network and never publishes to the host.
+- Executor is the control plane: bounded workspace access, file tools, staging, checkpoints, baselines, and manifests; it has no network, runs no commands, and never publishes to the host.
+- Runner runs Bash commands against staging only; it has no network, source mount, state volume, secrets, or executor credential, and never publishes to the host.
 - `shared/` owns framework-neutral protocol structures.
 
 ## Public tools
@@ -33,8 +34,8 @@ See `docs/TOOLS.md` for the contract and `docs/LIMITS.md` for limits.
 
 - Normalize and contain paths beneath the selected workspace.
 - Preserve link/device/reparse-point protections and UTF-8 text semantics.
-- Keep executor non-root, network-disabled, capability-restricted, and without host publication authority. The only exception is the opt-in allowlisted-egress overlay (`docs/EGRESS.md`): an internal-only network to a CONNECT proxy that allows named registries; the default profile keeps `network_mode: none`.
-- Keep the source mount read-only and mutations in ephemeral staging.
+- Keep executor and runner non-root, network-disabled, capability-restricted, and without host publication authority. The only exception is the opt-in allowlisted-egress overlay (`docs/EGRESS.md`): it attaches the runner (never the executor) to an internal-only network with a CONNECT proxy that allows named registries; the default profile keeps `network_mode: none` for both.
+- Keep the source mount read-only and mounted only in the executor; keep mutations in persistent, disposable per-workspace staging that is removed only by an explicit discard, and never destroy staged work silently.
 - Checkpoint mutations and roll them back on failure, cancellation, or timeout; Bash may explicitly retain partial progress on a non-zero exit only when `rollback_on_failure: false` is requested, while timeouts and cancellation always roll back.
 - Keep Bash non-interactive and bounded (fixed base environment; user env is filtered and bounded).
 - Require approved, path-bounded, hash-validated publication through the desktop broker; larger changesets publish as separately approved, all-or-nothing batches, and binary files travel byte-exact as `content_base64`.
@@ -72,9 +73,10 @@ Concise guide to each top-level folder:
 | `docker/` | Gateway/executor images, Compose topology, secrets wiring, and the container operator guide (`README.container.md`). |
 | `docs/` | Authoritative architecture, tools, limits, publication, contributor, and troubleshooting references, plus the roadmap and every living plan (indexed in `docs/README.md`). |
 | `egress/` | Opt-in allowlisted HTTPS egress proxy (standard library only) for the install-capable executor profile. |
-| `executor/` | The sandboxed tool service: dispatch, path safety, staging, checkpoints, resource limits. |
+| `executor/` | The sandboxed control plane: tool dispatch, path safety, staging, checkpoints, drift rebase, sandbox git, resource limits. |
 | `installer/` | Inno Setup script for the Windows installer. |
 | `qml/` | Qt Quick UI (main window, sidebar, transcript, composer). |
+| `runner/` | Standard-library command server the runner container uses to run Bash against staging. |
 | `scripts/` | Developer helpers: locked bootstrap, the validation harness, dev up/down, QML smoke check, and Docker test fixtures. |
 | `server/` | Loopback gateway: HTTP API, auth, agent runtime, budgets, journal store, OpenRouter client, skills/capabilities extensions. |
 | `shared/` | Framework-neutral protocol: tool registry, requests/responses, permissions, events, publish manifests. |

@@ -37,17 +37,21 @@ if ($Workspace) {
     try {
         $env:LOCAL_CHAT_WORKSPACE_ID = ([BitConverter]::ToString($Sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Normalized)))).Replace("-", "").ToLowerInvariant()
     } finally { $Sha.Dispose() }
+    # Staging volumes are per workspace (euesto-{work,state,cache}-<key>), so a dev session never
+    # sees another workspace's kept staging.
+    $env:LOCAL_CHAT_WORKSPACE_KEY = $env:LOCAL_CHAT_WORKSPACE_ID.Substring(0, 12)
     if ($AllowlistedEgress) {
         $EgressOverlay = Join-Path $ProjectRoot "docker\compose.egress.yaml"
         docker compose --file $Compose --file $EgressOverlay --profile agent up --detach --build
-        Write-Host "Gateway and executor with allowlisted package egress started for: $Resolved"
+        Write-Host "Gateway, executor, and runner with allowlisted package egress started for: $Resolved"
     } else {
         docker compose --file $Compose --profile agent up --detach --build
-        Write-Host "Gateway and no-network executor started for: $Resolved"
+        Write-Host "Gateway, no-network executor, and no-network runner started for: $Resolved"
     }
 } else {
     Remove-Item Env:LOCAL_CHAT_WORKSPACE -ErrorAction SilentlyContinue
     Remove-Item Env:LOCAL_CHAT_WORKSPACE_ID -ErrorAction SilentlyContinue
+    Remove-Item Env:LOCAL_CHAT_WORKSPACE_KEY -ErrorAction SilentlyContinue
     docker compose --file $Compose up --detach --build
     Write-Host "Chat-only gateway started."
 }

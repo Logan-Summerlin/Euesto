@@ -8,9 +8,11 @@ Every executor request contains `request_id`, `run_id`, `tool`, `mode`, and an o
 
 Every result contains `request_id`, `ok`, `output`, `data`, `error_code`, `truncated`, `elapsed_seconds`, `returned`, `total_known`, `limit`, and `next_cursor`. Optional counts are non-negative integers. Errors are classified and returned rather than exposing arbitrary exception details to the model. A failed result may carry bounded, JSON-serializable diagnostics in `data` (for example why an exact edit did not match, or which `apply_patch` operation failed).
 
+**Model-facing results.** The gateway turns each result into lean plain text before the model sees it (`server/agent/results.py`): a one-line summary, the content, and for errors the code with a short hint. Each result is bounded on its own (`docs/LIMITS.md`, "Model-facing result bounds"); a shortened result says so and emits `tool.result_bounded`. When `write` or `edit` omits `expected_sha256`, the gateway fills in the hash the agent last saw for that path (for `write`, only after the agent saw the whole file), so a stale edit fails clearly instead of overwriting newer content. Re-reading an unchanged range that is still in context returns a one-line note pointing at the earlier result.
+
 All tools operate on relative POSIX paths that are normalized and contained beneath the workspace root. Absolute, drive, UNC, traversal (`..`), Windows-alias, reserved-DOS-name, non-canonical-Unicode, and secret-like paths are rejected, as are symlinks and hard-linked files. Only UTF-8 text is readable and writable; binary content is refused.
 
-Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `venv`, `.tox`, `.nox`, `node_modules`, `__pycache__`, and tool caches) plus executor `.local-chat-*` metadata are excluded from staging and are invisible to every read-oriented tool: `find`, `grep`, and `ls` omit them and `read` reports them as missing, in both Plan and Agent mode. A directory named `env/` is ordinary source and is staged, searched, and published like any other directory; name virtual environments `.venv` or `venv` to keep them out of staging.
+Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `venv`, `.tox`, `.nox`, `node_modules`, `__pycache__`, and tool caches), command output logs (`.euesto-output/`), plus executor `.local-chat-*` metadata are excluded from staging and are invisible to every read-oriented tool: `find`, `grep`, and `ls` omit them and `read` reports them as missing, in both Plan and Agent mode. A directory named `env/` is ordinary source and is staged, searched, and published like any other directory; name virtual environments `.venv` or `venv` to keep them out of staging.
 
 ## `read`
 
@@ -18,10 +20,10 @@ Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `ve
 - **Arguments:** `path` (required); optional `start_line`, `end_line`, `offset`, and `max_bytes`.
 - **Modes:** Plan and Agent.
 - **Permission:** read-only.
-- **Defaults:** each call returns at most 64,000 bytes unless `max_bytes` raises it; the tool clamps any request to 256,000 bytes per call regardless of the configured profile limit.
-- **Hard maximum:** 8,000,000 bytes at the protocol/config layer; the 256,000-byte per-call tool ceiling applies on top.
+- **Defaults:** each call returns at most 32,000 bytes unless `max_bytes` asks for more, up to the profile's `max_read_bytes` (1,000,000 in `coding`).
+- **Hard maximum:** 8,000,000 bytes. The model-facing result is bounded separately (32,000 bytes in `coding`).
 - **Semantics:** Plan reads the read-only source snapshot; Agent reads staged workspace content. Excluded metadata/dependency/cache paths fail as missing files, exactly as they are absent from `find`/`grep`/`ls`. Line ranges and byte offsets cannot be combined. An end-line past the end of the file is clipped to the final available line and reported as `range_clipped`; invalid start lines and offsets remain rejected, and byte offsets must land on UTF-8 character boundaries.
-- **Truncation/cursors:** results report `truncated`, `byte_offset`, `next_offset`, and `next_start_line`; continue with the next line range or offset instead of assuming a whole file fits in one response.
+- **Truncation/cursors:** results report `line_count`, `truncated`, `byte_offset`, `next_offset`, and `next_start_line`; continue with the next line range or offset instead of assuming a whole file fits in one response. A truncated read also carries an `outline` of up to 40 top-level definitions in the unshown remainder, with line numbers, so the next read can target the right range.
 - **Errors:** invalid path, invalid range, invalid offset, non-UTF-8 or binary content, missing file, and resource-limit failures are classified.
 
 ## `write`
@@ -67,15 +69,16 @@ Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `ve
 
 ## `bash`
 
-- **Purpose:** run a non-interactive Bash command in the staged workspace.
+- **Purpose:** run a non-interactive Bash command in the staged workspace, inside the runner container.
 - **Arguments:** `command` required; optional `working_directory`, `timeout_seconds` (1–900), `env`, `stdin` (maximum 8,000,000 characters at schema level), and `rollback_on_failure` (default true).
 - **Modes:** Agent only.
 - **Permission:** mutation-capable; checkpointed and staged.
 - **Defaults:** 60 seconds when `timeout_seconds` is omitted; the `coding` profile caps commands at 300 seconds and 1,000,000 bytes of command text, stdin, and output.
 - **Hard maximums:** 900 seconds; 1,000,000 command bytes; 8,000,000 stdin/output bytes.
-- **Execution:** `/bin/bash -lc`, non-interactive (a new session with no controlling terminal; stdin is `/dev/null` unless `stdin` is supplied), no network, restricted environment, process-group cleanup. Under the opt-in allowlisted-egress profile (`docs/EGRESS.md`) the base environment also carries `HTTPS_PROXY`/`HTTP_PROXY` for the allowlisted registry proxy; nothing else becomes reachable.
+- **Execution:** the executor checkpoints, then sends the command to the runner over its Unix socket. The runner runs `/bin/bash -lc` non-interactively (a new session with no controlling terminal; stdin is `/dev/null` unless `stdin` is supplied), one command at a time, in its own process group, which is killed when the command ends, times out, or is cancelled. The runner sees only staging at `/work` (exec allowed, so compiled binaries and installed console scripts run), a package cache at `/cache`, and no network, source mount, state volume, or secrets. Toolchains depend on the runner image (`docs/ARCHITECTURE.md`); the session context lists the executables actually installed. Package managers' caches (pip, uv, npm, Yarn, Corepack, Go, Cargo, Gradle) default to `/cache`, so downloads survive between commands and sessions. The command's timeout is never longer than the run's remaining wall time. Under the opt-in allowlisted-egress profile (`docs/EGRESS.md`) the base environment also carries `HTTPS_PROXY`/`HTTP_PROXY` for the allowlisted registry proxy; nothing else becomes reachable.
 - **Environment:** a fixed base environment (`PATH`, `HOME`, locale, UTF-8 Python flags) is always applied. User-supplied `env` is limited to 64 variables with POSIX-identifier names and ≤16,384-byte values; `PATH`, `HOME`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, and `BASH_ENV*` are refused.
-- **Output:** stdout/stderr is bounded; oversized output is retained as a bounded head/tail preview with a truncation marker.
+- **Output:** stdout/stderr is bounded; oversized output is retained as a bounded head/tail preview with a truncation marker. The complete output is always written to `.euesto-output/<request_id>.log` in staging, and the result names that log so a later command can `grep` or `tail` it. When the output is from a recognized test, lint, or compiler run (pytest, unittest, Jest, Vitest, `go test`, `cargo test`, tsc, ESLint, Ruff, mypy, gcc/clang), the result leads with a structured reduction: totals and the first failures with file and line.
+- **Git:** staging holds a sandbox repository cloned from the host's history at seed time (no remotes, hooks, or credential helpers). `git diff refs/euesto/base` shows exactly the changes made in staging; `git log`, `git blame`, and `git diff HEAD` work as usual. Nothing in `.git` is ever published, and checkpoint rollback does not rewind git state.
 - **Failure:** timed-out and cancelled commands always roll staged filesystem changes back to their checkpoint. Non-zero-exit commands roll back by default; set `rollback_on_failure: false` when retaining partial progress is intentional. Results separate the process `exit_code` from checkpoint outcome with `rolled_back` and `rollback_reason` (`cancelled`, `nonzero_exit`, or `none`); `rollback_on_failure: false` never retains the changes of a cancelled command.
 
 ## `grep`
@@ -120,6 +123,7 @@ Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `ve
 - **Modes:** Agent only.
 - **Permission:** read-only; never prompts.
 - **Semantics:** compares the staged workspace against the publication baseline (the snapshot the next manifest is validated against), so it shows exactly what would be published: created, modified, deleted, and permission-changed files with base/staged hashes, sizes, and modes. Available for empty and non-empty staging. Secret-like paths, dependency/cache directories, and executor `.local-chat-*` metadata (snapshot and checkpoints) are never reported or diffed.
+- **Links and conflicts:** symlinks a command created in staging are listed under `unpublishable_links` (never followed or published), and files changed both on the host and in staging since the baseline are listed under `conflicts` with base, host, and staged hashes. A conflicting file is held back from publication until the user keeps the staged or takes the host version; other files still publish.
 - **Publication metadata:** `publication_batches` is how many sequential, separately approved publication batches the pending changes need (`null` if a single file exceeds one batch), with `publication_batch_limits`.
 - **Diffs:** with `include_diffs`, unified diffs against the baseline content (resolved by hash from the checkpoint object store or the read-only source) are returned for the current page, bounded to 64,000 bytes and 800 lines in aggregate; files over 1,000,000 bytes, binary files, mode-only changes, and unavailable baselines are reported by kind without text.
 - **Truncation/cursors:** `returned`, `total_known`, `truncated`, and `next_cursor` page through large change sets.

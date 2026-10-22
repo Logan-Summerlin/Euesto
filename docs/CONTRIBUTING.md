@@ -40,6 +40,10 @@ The nested investigation loop lives in `server/agent/investigation.py`; its Plan
 - If a limit changes, update the executor config, model schema where relevant, tests, and `docs/LIMITS.md` together.
 - If a publication invariant changes, update `docs/PUBLICATION.md` and its tests.
 
+## Runner images
+
+`docker/Dockerfile.runner` pins every base image by digest. Release CI builds the four runner targets with an SBOM and provenance, scans them for HIGH and CRITICAL vulnerabilities, and records their digests in `release-images.json`. Rebuild cadence: refresh the pinned digests and toolchain versions at least monthly and in every release, and immediately when a scan reports a fixable HIGH or CRITICAL vulnerability.
+
 ## Testing without credentials
 
 Unit tests should use fake provider responses or dependency injection. No test should require a live OpenRouter key. Container security tests should verify non-root execution, blocked egress, mount modes, resource limits, and executor/publication separation.

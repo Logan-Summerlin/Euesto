@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased — Agentic harness Phases 0–2
+
+Implements Phases 0–2 of [docs/AGENTIC_HARNESS_PLAN.md](docs/AGENTIC_HARNESS_PLAN.md). The ten-tool contract and the manifest, approval, and hash-validation protocol are unchanged. The security boundary is narrower: commands no longer run where the source mount is.
+
+**Agent loop (Phase 0)**
+
+- Each tool result is bounded on its own, sized by budget profile, instead of a cumulative 512,000-byte allowance that starved long runs; shortened results emit `tool.result_bounded`.
+- A gateway-owned, versioned static prompt per mode, written for low-cost models; saved workspace instructions now reach the model.
+- Provider errors are retried up to three times with backoff; a run that still fails pauses as resumable (`provider_error`) instead of failing.
+- Saved Bash rules are scoped to their tokenized command. A migration disables broad legacy rules and shows a one-time notice. The Auto-mode clean-staging check works over HTTP, `read` honors the configured limit, and the dev lock matches the gateway image's Starlette and uvicorn.
+- Closing the app or changing workspace with staged work offers *Review and publish*, *Discard*, *Keep for later*, or *Cancel*; staged work is never destroyed silently.
+- A symbolic link created in staging is listed as an unpublishable link instead of wedging `status`, `write`, `bash`, and publication.
+- Narration between tool calls appears in the transcript; a live meter shows cost, cache hit rate, context against the working set, tool calls, and time; *Steer* (Ctrl+Enter) sends guidance to the running agent before its next turn.
+- For Plan and Agent, the model picker lists only tool-capable models, shows input, cached-input, and output prices, and warns about small windows and missing cached prices. The offline defaults are tool- and cache-capable.
+
+**Efficiency for low-cost models (Phase 1)**
+
+- Per-turn usage and cache accounting with miss causes and a `cache.unexpected_miss` alarm; run summaries show the cache hit rate.
+- A cache-stable layout: static prompt, tool schemas, a once-per-session context (instructions, bounded `AGENTS.md`, skills, workspace snapshot), append-only history, and run notes. OpenRouter `session_id` for sticky routing, with cache breakpoints only for providers that need them.
+- Compaction is a rare, planned event: a model-written handoff at a high-water mark, then append-only again down from a low-water mark.
+- Lean plain-text results: `read` defaults to 32,000 bytes with an outline of the unshown remainder; mutations return short numbered snippets; the gateway fills in `expected_sha256` and replaces unchanged re-reads with a one-line note.
+- Full command output is kept as a log in `.euesto-output/` (searchable through `bash`, never published), and test, lint, and compiler output is reduced to totals and first failures (pytest, unittest, Jest, Vitest, Go, Cargo, tsc, ESLint, Ruff, mypy, gcc/clang).
+- Parallel tool calls, reasoning effort, a 16,000-token output cap with a corrective note on length truncation, and a structural test that bounds the static prefix.
+
+**The workbench (Phase 2)**
+
+- Bash runs in a separate runner container that has no network, no source mount, no secrets, no state volume, and no executor credential. The executor becomes the control plane: file tools, staging, checkpoints, baselines, and manifests, with 1 CPU, 1 GB, and 128 processes.
+- Four digest-pinned runner images (`runner-base`, `runner-python`, `runner-node`, `runner-polyglot`), auto-detected from project files or chosen in Settings, published with SBOMs, provenance, and a vulnerability report. `/work` allows exec.
+- Staging is persistent and disposable per workspace (`euesto-{work,state,cache}-<key>` volumes kept across restarts). Resuming rebases onto host edits; files changed on both sides are held as conflicts and resolved per file. Kept work can be published from a later session, and Settings lists staged sessions with their size and age.
+- Sandbox git: a credential-free, hook-free clone with configurable history depth (200 commits by default), so `git diff euesto/base` shows exactly the agent's changes.
+- Runner CPUs, memory, and process limits are settings within ceilings that fail closed.
+
+**Upgrade notes**
+
+- Staging that existed only in a running executor's memory-backed `/work` is not migrated; publish or discard it before upgrading.
+- The egress overlay now attaches the runner, not the executor.
+- Saved Bash rules created before this release are disabled; save them again from an approval prompt.
+
 ## Unreleased — Second simplification pass
 
 A further KISS/YAGNI pass over every layer, the tests, and the documentation. The ten-tool contract, model-facing prompts and result shapes, the publication protocol, and the security boundary are unchanged.

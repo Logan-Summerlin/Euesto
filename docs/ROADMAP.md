@@ -8,7 +8,7 @@ This document is a status-oriented roadmap. It is not the authoritative architec
 - Plan/Agent capability separation with Plan mutation denial enforced in code.
 - Incremental file inspection and localized editing for larger files.
 - Bounded Bash execution, output, stdin, command time, process cleanup, and rollback.
-- Ephemeral staging and checkpointed mutations.
+- Persistent, disposable per-workspace staging and checkpointed mutations, with host-drift rebase and per-file conflict resolution.
 - Desktop-only, approved, hash-validated publication.
 - Workspace containment and executor/container security boundaries.
 - Runtime profiles and hard ceilings for file, search, staging, checkpoint, command, and output resources.
@@ -17,6 +17,10 @@ This document is a status-oriented roadmap. It is not the authoritative architec
 - Configurable investigation model with a bounded, budget-debited nested loop.
 - Regression, security, and integration coverage for the executor/publication boundary.
 - Repository documentation rebuilt into separate user, operator, contributor, and agent-facing references.
+- Agentic harness Phases 0–2 ([AGENTIC_HARNESS_PLAN.md](AGENTIC_HARNESS_PLAN.md)):
+  - a gateway-owned static prompt, per-result bounds, provider retries with resumable pause, steering, narration, a live run meter, and a staged-work guard on close and workspace change;
+  - cache-stable context, per-turn usage and cache accounting, planned compaction with a model-written handoff, lean results, full command output as artifacts, structured test and compiler output reduction, and output-token discipline;
+  - a separate runner container with digest-pinned toolchain images, an executable `/work`, durable per-workspace staging, sandbox git history, and runner resource settings.
 
 ## Active
 
@@ -29,28 +33,28 @@ This document is a status-oriented roadmap. It is not the authoritative architec
 - Improve observability and recovery UX without expanding executor authority.
 - Add narrowly scoped usability improvements that preserve the current security and publication model.
 - Keep resource defaults evidence-based as real workloads reveal bottlenecks.
-- Turn the harness into a capable, long-running software-engineering agent without weakening the boundary: see [AGENTIC_HARNESS_PLAN.md](AGENTIC_HARNESS_PLAN.md) (proposed; it states which open items below it covers).
+- Turn the harness into a capable, long-running software-engineering agent without weakening the boundary: see [AGENTIC_HARNESS_PLAN.md](AGENTIC_HARNESS_PLAN.md) (Phases 0–2 implemented, 3–7 proposed; it states which open items below it covers).
 
 ### Open items carried from archived plans
 
 From [the harness fix plan](../archived-doc/harness-fix-plan.md):
 
-- **Copy-on-write staging** (P1-4 fix 3): seed staging with reflinks where the filesystem supports them instead of an eager full copy, falling back to today's copy elsewhere.
+- **Copy-on-write staging** (P1-4 fix 3): with persistent staging (harness plan 2.4, 2.5) the full copy happens once per workspace and later sessions copy only drifted files. Seeding with reflinks where the filesystem supports them remains open as an optimization.
 - **P3 product-scope decisions**, each sequenced on its own timeline and informed by demand:
   - a second provider adapter (local models or direct provider access) behind the existing agent-turn and tool-schema interface, rather than a generic multi-provider layer;
   - Linux-native desktop support, the lowest-risk step if cross-platform support becomes a goal (sandboxing is already Linux-container based);
   - streaming provider responses with a configurable, per-model or per-profile timeout instead of the agent turn's fixed 90-second non-streaming request;
   - lightweight symbol and reference navigation (for example `symbols(path)` and `references(symbol)` from an index built at staging time), not full LSP integration;
   - a graceful budget wind-down that summarizes staged progress and offers to continue in a fresh run instead of failing with `run.failed`;
-  - structured reduction of large tool output for the highest-value formats (test runners, compilers, linters) before head+tail truncation;
+  - ~~structured reduction of large tool output for the highest-value formats (test runners, compilers, linters) before head+tail truncation~~: done in harness plan 1.6;
   - ~~a small agent-efficacy benchmark suite~~: declined; loop and prompt changes are validated by the credential-free test suite, including scripted-provider scenario tests (see [AGENTIC_HARNESS_PLAN.md](AGENTIC_HARNESS_PLAN.md)).
 
 From [the code-simplification plan](../archived-doc/simplification-plan.md), findings that need a product or security decision:
 
-- **Saved bash rules are too broad:** `JournalStore.rule_for_request` keys on `executable`/`arguments` fields no tool sends, so one saved bash rule allows every bash command in that workspace and mode; the per-run rule tokenizes `command` correctly. Unifying them tightens existing saved rules.
-- **The auto-policy clean-staging preflight is unreachable over HTTP,** because `AgentRunRequest.from_dict` always fills `investigation_model_id`.
-- **`read` clamps to 256,000 bytes** regardless of a larger configured `max_read_bytes`.
-- **Starlette/uvicorn versions drift** between `requirements-dev.lock` (0.45.3/0.34.0) and the gateway image (0.52.1).
+- ~~**Saved bash rules are too broad**~~: done in harness plan 0.5. Saved Bash rules store the tokenized executable and argument prefix, a migration disabled broad legacy rules with a one-time notice, and a Bash allow rule without an executable never matches.
+- ~~**The auto-policy clean-staging preflight is unreachable over HTTP**~~: done in harness plan 0.5; the check tests `approval_policy == "auto"`.
+- ~~**`read` clamps to 256,000 bytes**~~: done in harness plan 0.5; `read` honors the profile's `max_read_bytes` up to the hard ceiling, with a 32,000-byte per-call default.
+- ~~**Starlette/uvicorn versions drift**~~: done in harness plan 0.5; the dev lock matches the gateway image, and a structural test keeps them equal.
 
 From [the harness validation plan](../archived-doc/harness-validation-plan.md):
 
@@ -76,4 +80,4 @@ The project does not seek to become an unrestricted remote-control agent, a brow
 
 ## Acceptance baseline
 
-The current baseline is considered complete only when the ten-tool API remains stable, Plan is read-only, Agent mutations remain staged, the executor cannot publish or reach the network (outside the opt-in allowlisted-egress overlay), source mounts remain read-only, failed mutations roll back, publication remains approved and hash-validated, effective limits are internally consistent, and the documented pytest/ruff/compile/QML/container checks pass.
+The current baseline is considered complete only when the ten-tool API remains stable, Plan is read-only, Agent mutations remain staged, the executor and runner cannot publish, the executor cannot reach the network, and the runner reaches only the allowlisted proxy under the opt-in egress overlay, source mounts remain read-only, failed mutations roll back, publication remains approved and hash-validated, effective limits are internally consistent, and the documented pytest/ruff/compile/QML/container checks pass.
