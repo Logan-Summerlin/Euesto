@@ -199,12 +199,30 @@ jobs:
         shell: bash
         timeout-minutes: 40
         run: |
-          python scripts/validate.py fast
-          python scripts/validate.py slow --allow-unavailable
-          python scripts/validate.py ruff
-          python scripts/validate.py compile
-          python scripts/validate.py qml
-          python scripts/qml_smoke.py
+          # Each command writes to a log file instead of the step's output pipe. A child that
+          # outlives its tier's kill (scripts/validate.py) then cannot keep the step open, and
+          # the log is printed as soon as its command ends and uploaded by the next step.
+          mkdir -p validation-logs
+          run_logged() {
+            local name="$1"
+            shift
+            local status=0
+            "$@" > "validation-logs/${name}.log" 2>&1 || status=$?
+            cat "validation-logs/${name}.log"
+            return "$status"
+          }
+          run_logged fast python scripts/validate.py fast
+          run_logged slow python scripts/validate.py slow --allow-unavailable
+          run_logged ruff python scripts/validate.py ruff
+          run_logged compile python scripts/validate.py compile
+          run_logged qml python scripts/validate.py qml
+          run_logged qml-smoke python scripts/qml_smoke.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-logs
+          path: validation-logs
+          if-no-files-found: ignore
       - name: Preflight validation report
         run: python scripts/validate.py preflight --json release-preflight.json
       - uses: actions/upload-artifact@v4
