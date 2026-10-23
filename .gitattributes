@@ -1,0 +1,8 @@
+# Scripts that run under Linux must be checked out with LF line endings. GitHub workflow steps
+# source them under `bash -e`, and the executor image executes its entrypoint directly: with CRLF
+# the kernel resolves the interpreter as "sh" plus a carriage return, so the entrypoint cannot
+# start and a sourced file fails at "set: pipefail" plus a carriage return before it creates any
+# fixture. Everything else in this Windows-first repository keeps its committed line endings;
+# tests/structural/test_line_endings.py enforces the rule on the files themselves.
+*.sh text eol=lf
+*.bash text eol=lf

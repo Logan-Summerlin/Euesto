@@ -13,7 +13,12 @@ COPY shared /app/shared
 COPY executor /app/executor
 COPY runner /app/runner
 COPY docker/executor-entrypoint.sh /usr/local/bin/executor-entrypoint
-RUN chmod 0555 /usr/local/bin/executor-entrypoint \
+# A CRLF entrypoint cannot start: the kernel reads the carriage return as part of the interpreter
+# path, so the container exits before uvicorn runs. The committed file is LF (and the structural
+# test enforces it); normalize here too, so the image does not depend on the line endings of
+# whatever checkout built it.
+RUN sed -i 's/\r$//' /usr/local/bin/executor-entrypoint \
+    && chmod 0555 /usr/local/bin/executor-entrypoint \
     && mkdir -p /run/ipc /run/runner /work /state \
     && chown 10002:10001 /run/ipc /run/runner /work /state \
     && chmod 2770 /work /run/runner \

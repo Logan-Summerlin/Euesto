@@ -43,6 +43,10 @@ The Bash tool's tests run twice: once in-process, which stays in the fast tier, 
 
 `tests/ui/conftest.py` is the one place that isolates the Qt tests from the host: it sets the offscreen platform, the software Quick backend, and the null keyring backend (so no test reaches the Windows credential store), stubs `locate_docker` to `None` and the staged-session listing to an empty list, refuses to start an automatic runtime, and fails a test that leaves a started `RuntimeService` un-shut-down. A UI test that reaches Docker, the credential store, or the app-controlled runtime blocks in a native call instead of failing, so keep new isolation there rather than in individual modules.
 
+## Line endings
+
+Most of this repository is checked out with CRLF because the product is Windows-first, and Python, YAML, TOML, Markdown, and Dockerfiles do not care. A script that runs under Linux does: the kernel takes everything after `#!` up to the newline as the interpreter path, so a CRLF `docker/executor-entrypoint.sh` makes it look for an interpreter named `sh` plus a carriage return, the executor container exits before uvicorn creates its socket, and `docker compose up --wait` fails for every container test that needs the whole agent profile. A script that a workflow sources under `bash -e` fails earlier still, at `set: pipefail` plus a carriage return, so the fixture step creates nothing. Shell scripts are therefore LF: `.gitattributes` checks `*.sh` and `*.bash` out with `eol=lf`, and `tests/structural/test_line_endings.py` fails on any such script, or any file with a POSIX-shell shebang, that contains a carriage return.
+
 ## Test ids
 
 A collected node id is echoed by every `-v` progress line, by each failure header, and by

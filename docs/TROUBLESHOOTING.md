@@ -10,7 +10,7 @@ be investigated. A full validation run does not silently convert either result i
 
 ## Docker failures
 
-Confirm Docker Desktop is running with Linux containers and that the required runtime images are available. Re-run the runtime setup after stopping stale containers. If a container starts but the app does not enable Plan/Agent, verify gateway health and exact executor/workspace identity.
+Confirm Docker Desktop is running with Linux containers and that the required runtime images are available. Re-run the runtime setup after stopping stale containers. If a container starts but the app does not enable Plan/Agent, verify gateway health and exact executor/workspace identity. If `docker compose up --wait` never becomes healthy and `docker compose logs executor` shows the container exiting immediately, check the entrypoint's line endings: a CRLF copy makes the kernel look for an interpreter named `sh` plus a carriage return (`exec /usr/local/bin/executor-entrypoint: no such file or directory`) or, run through `sh`, fails at `set: Illegal option -`. The file must be LF, which `.gitattributes` and `tests/structural/test_line_endings.py` enforce.
 
 ## Workspace failures
 

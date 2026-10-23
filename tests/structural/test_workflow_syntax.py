@@ -372,9 +372,7 @@ def test_every_workflow_can_be_run_by_hand() -> None:
         names = set(triggers) if isinstance(triggers, dict) else {triggers}
         if "workflow_dispatch" not in names:
             missing.append(path.name)
-    assert not missing, (
-        f"workflows without workflow_dispatch (not runnable by hand): {missing}"
-    )
+    assert not missing, f"workflows without workflow_dispatch (not runnable by hand): {missing}"
 
 
 def test_every_push_trigger_covers_the_default_branch() -> None:

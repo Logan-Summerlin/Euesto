@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # Shared, disposable fixtures for the container validation tier.
+#
+# This file is LF on purpose: the workflow sources it under `bash -e`, and a CRLF copy fails at
+# `set: pipefail<CR>: invalid option name` before any fixture exists, so the container tier then
+# runs without the throwaway directories and credentials it needs (tests/structural/
+# test_line_endings.py, docs/TESTING.md).
 set -euo pipefail
 
 setup_fixtures() {
