@@ -44,6 +44,8 @@ The nested investigation loop lives in `server/agent/investigation.py`; its Plan
 
 `docker/Dockerfile.runner` pins every base image by digest. Release CI builds the four runner targets with an SBOM and provenance, scans them for HIGH and CRITICAL vulnerabilities, and records their digests in `release-images.json`. Rebuild cadence: refresh the pinned digests and toolchain versions at least monthly and in every release, and immediately when a scan reports a fixable HIGH or CRITICAL vulnerability.
 
+The scheduled `.github/workflows/vulnerability-scan.yml` scans the references of the newest *successful* release manifest, which can be older than the schema this checkout accepts (schema 2 published no egress proxy, schema 3 does). The image keys each schema declares therefore live in `scripts/release_image_refs.py`: an older manifest is scanned for the images it does publish, and a manifest whose `schema_version` is newer than that script knows fails the scan by name instead of silently leaving an image unscanned. Add a schema's new key there — and to `src/runtime_manager.py` — when the manifest grows.
+
 ## Testing without credentials
 
 Unit tests should use fake provider responses or dependency injection. No test should require a live OpenRouter key. Container security tests should verify non-root execution, blocked egress, mount modes, resource limits, and executor/publication separation.

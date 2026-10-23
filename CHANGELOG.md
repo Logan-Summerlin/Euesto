@@ -35,6 +35,10 @@ Implements all four phases of [docs/CI_VALIDATION_REMEDIATION_PLAN.md](docs/CI_V
 - The validation workflow's `push` filter now names both `main` and `master`: a filter that misses the repository's default branch silently stops the workflow after every merge.
 - `tests/structural/test_workflow_budgets.py` enforces the workflow invariants: a step ceiling and the logging wrapper on every validator step, a collect step before the pytest tiers, an unconditional `validation-logs` upload, a concurrency group, the job-below-step-sum budget, the harness-to-ceiling margin, docker per-test ceilings, no security assertions in YAML, and one owner for the compile file list.
 
+**Follow-up: the scan failed on an older manifest schema**
+
+The first run of `Scan runtime images` failed in "Scan the digest-pinned images" with `KeyError: 'egress_proxy'`. The step read the manifest keys it expected to exist, but it scans the manifest of the newest *successful* `Build Windows release`, which is older than this checkout's schema (schema 2 shipped before the egress proxy image existed), so the key was simply absent and no image was scanned. The reference list now comes from `scripts/release_image_refs.py`: it reads the image keys from `schema_version` (schemas 1–3), scans an older release for the images it does declare, refuses a known schema that has lost a key it declares, and refuses a schema newer than it knows by name instead of skipping the new image. `tests/structural/test_release_image_refs.py` covers each schema and keeps the workflow from reading manifest keys inline again.
+
 ## Unreleased — Agentic harness Phases 3–5
 
 Implements Phases 3–5 of [docs/AGENTIC_HARNESS_PLAN.md](docs/AGENTIC_HARNESS_PLAN.md). The public surface grows to thirteen model-facing tools: `update_plan` (Plan and Agent), `web_search` and `fetch_url` (Agent, off by default per workspace). The `accept_edits` approval tier is replaced by `sandbox` with no alias. The security boundary is unchanged for the executor and runner; a container gains network only through an approved setup run or a `registries` session, and the workspace policy file is read from the host only.
