@@ -284,9 +284,7 @@ def audit(path: Path) -> list[str]:
     if unknown:
         problems.append(f"{path.name}: unknown top-level keys {sorted(unknown)}")
     if not isinstance(document.get("name"), str) or not document["name"].strip():
-        problems.append(
-            f"{path.name}: a workflow needs a name to be listed in the Actions tab"
-        )
+        problems.append(f"{path.name}: a workflow needs a name to be listed in the Actions tab")
     triggers = document.get("on")
     if isinstance(triggers, dict):
         unknown = set(triggers) - TRIGGERS
@@ -394,6 +392,26 @@ def test_every_push_trigger_covers_the_default_branch() -> None:
         if missing:
             problems.append(f"{path.name}: push filter misses {sorted(missing)}")
     assert not problems, problems
+
+
+SCAN_WORKFLOW = "vulnerability-scan.yml"
+
+
+def test_the_image_scan_runs_on_commits_and_not_only_on_a_schedule() -> None:
+    """A weekly-only scan reports a bad image days after the commit that shipped it."""
+    workflow = WORKFLOWS / SCAN_WORKFLOW
+    assert workflow.is_file(), f"{SCAN_WORKFLOW} is missing"
+    triggers = parse_workflow(workflow).get("on")
+    assert isinstance(triggers, dict), f"{SCAN_WORKFLOW}: on: must be a mapping"
+    assert "schedule" in triggers and "workflow_dispatch" in triggers, (
+        "keep the weekly drift scan and the manual run"
+    )
+    push = triggers.get("push")
+    assert isinstance(push, dict), f"{SCAN_WORKFLOW}: the scan must run on a pushed commit"
+    assert set(DEFAULT_BRANCHES) <= set(_as_list(push.get("branches"))), (
+        "a push filter that misses the default branch never scans a merge"
+    )
+    assert _as_list(push.get("tags")), "a release tag must run the scan too"
 
 
 if __name__ == "__main__":  # pragma: no cover - lets the file self-check without pytest

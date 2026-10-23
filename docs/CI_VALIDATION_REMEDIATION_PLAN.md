@@ -217,7 +217,7 @@ Acceptance: a deliberately wedged tier (see §7.5) produces a named `timed out a
 | 2.3 | `preflight` gains `--require` (or returns non-zero when a requested tier's tools are unavailable) and both jobs use it (W1) | Implemented |
 | 2.4 | Delete the duplicated `python -m compileall` from the QML step (W9) | Implemented |
 | 2.5 | `release.yml`: `timeout-minutes` on `runtime-images` (90); move `setup-buildx` before the first build; `cache-from/to: type=gha` (W5, W6) | Implemented |
-| 2.6 | Move the trivy scan out of the release job into a scheduled workflow pinned by digest (W7) | Implemented |
+| 2.6 | Move the trivy scan out of the release job into its own workflow (weekly, on default-branch pushes, and on release tags) pinned by digest (W7) | Implemented |
 | 2.7 | Move the compose assertions out of the workflow into `tests/docker/test_runner_split.py`, and have the workflow only render and upload the config (W10) | Implemented |
 | 2.8 | `if-no-files-found: ignore` on conditional artifacts; stop writing `compose.yaml` into the repository root (W11) | Implemented |
 | 2.9 | Reconcile the tier list in `AGENTS.md` with `validate.py` / `docs/TESTING.md` (`qml-smoke`) and correct the deadline paragraph in `docs/TESTING.md` to the §5 table (W12) | Implemented |
@@ -362,9 +362,9 @@ landed with the test that pins it, per `AGENTS.md` ("Change discipline").
 - `release.yml`: `runtime-images` has a 90-minute ceiling, `setup-buildx` runs before the first
   push, every image build shares a `type=gha` cache, and `build-windows` keeps 28 minutes of room
   below its 92 minutes of step ceilings.
-- The vulnerability scan moved to the scheduled `.github/workflows/vulnerability-scan.yml`,
-  which scans the digest-pinned references from the newest release manifest, needs no Docker
-  socket, and cannot block a release.
+- The vulnerability scan moved to its own `.github/workflows/vulnerability-scan.yml` (weekly,
+  and on every push to a default branch or `v*` tag), which scans the digest-pinned references
+  from the newest release manifest, needs no Docker socket, and cannot block a release.
 - The Compose assertions moved out of YAML into `tests/docker/test_runner_split.py`; the workflow
   only renders the configuration into `$RUNNER_TEMP` and uploads it. Conditional artifacts use
   `if-no-files-found: ignore`.

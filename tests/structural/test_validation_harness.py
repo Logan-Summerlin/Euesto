@@ -255,9 +255,7 @@ def test_a_posix_deadline_signals_the_whole_process_group(monkeypatch) -> None:
         def kill(self) -> None:
             raise AssertionError("the process group must be signalled, not just the child")
 
-    monkeypatch.setattr(
-        validate.subprocess, "Popen", lambda *args, **kwargs: GroupProcess()
-    )
+    monkeypatch.setattr(validate.subprocess, "Popen", lambda *args, **kwargs: GroupProcess())
     monkeypatch.setattr(validate.os, "name", "posix")
     monkeypatch.setattr(validate.os, "getpgid", lambda pid: pid)
     monkeypatch.setattr(
@@ -299,9 +297,7 @@ def test_a_deadline_that_cannot_reap_its_child_still_reports_the_timeout(monkeyp
     def record_kill(command, **kwargs):
         kills.append(list(command))
 
-    monkeypatch.setattr(
-        validate.subprocess, "Popen", lambda *args, **kwargs: StubbornProcess()
-    )
+    monkeypatch.setattr(validate.subprocess, "Popen", lambda *args, **kwargs: StubbornProcess())
     monkeypatch.setattr(validate.subprocess, "run", record_kill)
     monkeypatch.setattr(validate.os, "name", "nt")
     with pytest.raises(subprocess.TimeoutExpired):

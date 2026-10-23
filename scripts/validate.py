@@ -257,9 +257,7 @@ def required_tiers(values: Iterable[str]) -> list[str]:
     return list(dict.fromkeys(tiers))
 
 
-def missing_requirements(
-    report: dict[str, Any], tiers: Iterable[str]
-) -> list[dict[str, str]]:
+def missing_requirements(report: dict[str, Any], tiers: Iterable[str]) -> list[dict[str, str]]:
     """Records a required tier cannot run without that are not reported as available."""
     required = {name for tier in tiers for name in TIER_REQUIREMENTS.get(tier, ())}
     return [

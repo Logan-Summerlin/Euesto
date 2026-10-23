@@ -1,4 +1,4 @@
-"""The scheduled vulnerability scan must scan every image a release manifest publishes.
+"""The image scan must scan every image a release manifest publishes.
 
 The scan downloads the manifest of the newest *successful* `Build Windows release` run, so the
 manifest can come from a release older than this checkout's schema: schema 2 predates the egress

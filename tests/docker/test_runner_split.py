@@ -275,20 +275,26 @@ def test_bash_through_the_executor_runs_in_the_runner() -> None:
         "mode": "agent",
         "arguments": {"command": ISOLATION_SCRIPT},
     }
+    # The executor authenticates with the bearer credential *and* a fresh, never-replayed
+    # nonce (executor/app.py, docs/TROUBLESHOOTING.md), so each request builds its own
+    # headers; reusing one nonce is refused as a replay.
     script = (
-        "import json, os, sys, http.client, socket\n"
+        "import json, uuid, http.client, socket\n"
         "class C(http.client.HTTPConnection):\n"
         "    def connect(self):\n"
         "        self.sock = socket.socket(socket.AF_UNIX)\n"
         "        self.sock.connect('/run/ipc/executor.sock')\n"
         "token = open('/run/secrets/executor_token').read().strip()\n"
-        "headers = {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}\n"
+        "def headers():\n"
+        "    return {'Authorization': 'Bearer ' + token,\n"
+        "            'Content-Type': 'application/json',\n"
+        "            'X-Executor-Nonce': uuid.uuid4().hex}\n"
         "c = C('localhost', timeout=300)\n"
-        "c.request('GET', '/v1/status', headers=headers)\n"
+        "c.request('GET', '/v1/status', headers=headers())\n"
         "status = json.loads(c.getresponse().read())\n"
         "c = C('localhost', timeout=300)\n"
         f"c.request('POST', '/v1/tools', body={json.dumps(json.dumps(request))}, "
-        "headers=headers)\n"
+        "headers=headers())\n"
         "print(json.dumps({'status': status, 'result': json.loads(c.getresponse().read())}))\n"
     )
     try:
@@ -327,6 +333,15 @@ def _targets() -> list[str]:
     )
 
 
+def _buildx_available() -> bool:
+    """Whether the optional buildx cache path can be used at all on this host."""
+    try:
+        result = _run(["docker", "buildx", "version"], check=False, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
 def _build_target(target: str, tag: str) -> None:
     """Build one runner target, sharing the build cache across the four parametrized builds.
 
@@ -337,9 +352,18 @@ def _build_target(target: str, tag: str) -> None:
     layer cache are used, which is what a developer's machine has.
     """
     cache = os.environ.get("EUSTO_BUILDX_CACHE_DIR", "")
-    arguments = ["docker", "buildx", "build", "--load"] if cache else ["docker", "build"]
-    if cache:
-        arguments += [
+    arguments = ["docker", "build"]
+    if cache and _buildx_available():
+        # The cache exporter needs buildx and a builder that supports it. The validation child
+        # gets a disposable HOME, so the workflow's container-driver builder is not visible
+        # here; without the fallback every target build would fail before a toolchain is
+        # probed, which is a false red for an unavailable cache rather than a broken image.
+        Path(cache).mkdir(parents=True, exist_ok=True)
+        arguments = [
+            "docker",
+            "buildx",
+            "build",
+            "--load",
             "--cache-from",
             f"type=local,src={cache}",
             "--cache-to",

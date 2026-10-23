@@ -2,7 +2,7 @@
 
 `docker/release-images.json` is published by the release workflow and its schema grows with the
 image set: schema 2 added the four runner images and schema 3 added the egress proxy. The
-scheduled scan (`.github/workflows/vulnerability-scan.yml`) reads the manifest of the newest
+image scan (`.github/workflows/vulnerability-scan.yml`) reads the manifest of the newest
 *successful* release, which can predate the schema in this checkout, so a key that an older
 schema does not declare is not an error. A schema newer than this script understands is refused
 instead: an image key it does not know would be published and never scanned.
