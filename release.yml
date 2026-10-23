@@ -1,0 +1,306 @@
+# Publish the Windows release, and exercise the same pipeline before merge.
+#
+# Events:
+# - `v*` tag: build, publish the digest-pinned images, and attach the installer to the release.
+# - `workflow_dispatch`: the same, with a `build-<sha>` image tag.
+# - branch push / pull request: build every image and the Windows package without writing to
+#   GHCR and without creating a release, so the pipeline can be run before merge (a workflow
+#   only gains a *Run workflow* button once its file is on the default branch) and a fork's
+#   read-only token is enough. `PUBLISH` below is the single switch: every registry login, image
+#   push, and manifest step is guarded by it, so nothing binds to a publish event by accident.
+name: Build Windows release
+
+on:
+  pull_request:
+  push:
+    # Every branch: the repository records no default branch name, and a filter that misses it
+    # disables the workflow after every merge with no error anywhere.
+    branches:
+      - "**"
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  # A tag or a manual dispatch publishes; a branch push and a pull request only build, so an
+  # unreviewed commit never lands in the registry.
+  PUBLISH: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') }}
+  GHCR_OWNER: ${{ github.repository_owner }}
+  GATEWAY_IMAGE_NAME: euesto-gateway
+  EXECUTOR_IMAGE_NAME: euesto-executor
+  EGRESS_PROXY_IMAGE_NAME: euesto-egress-proxy
+  RUNNER_IMAGE_PREFIX: euesto-runner
+
+jobs:
+  runtime-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      manifest: ${{ steps.manifest.outputs.path }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Every build below runs through this builder, so its cache export works and the four
+      # runner targets share base layers instead of each creating an implicit builder.
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Set image version
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=build-${GITHUB_SHA:0:12}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "owner=$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish gateway image
+        id: gateway
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.gateway
+          push: ${{ env.PUBLISH == 'true' }}
+          cache-from: type=gha,scope=gateway
+          cache-to: type=gha,mode=max,scope=gateway
+          tags: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.GATEWAY_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
+
+      - name: Build and publish executor image
+        id: executor
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.executor
+          push: ${{ env.PUBLISH == 'true' }}
+          cache-from: type=gha,scope=executor
+          cache-to: type=gha,mode=max,scope=executor
+          tags: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.EXECUTOR_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
+
+      - name: Build and publish egress proxy image
+        id: egress
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.egress-proxy
+          push: ${{ env.PUBLISH == 'true' }}
+          cache-from: type=gha,scope=egress-proxy
+          cache-to: type=gha,mode=max,scope=egress-proxy
+          tags: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.EGRESS_PROXY_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
+
+      - name: Build and publish runner images with SBOM and provenance
+        id: runners
+        shell: bash
+        env:
+          REGISTRY: ghcr.io/${{ steps.version.outputs.owner }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # SBOM, provenance, and a recorded digest need an image output, so a build-only run
+          # validates the same target without a registry write.
+          if [[ "$PUBLISH" == "true" ]]; then
+            export_flags=(--push --sbom=true --provenance=true)
+          else
+            export_flags=()
+          fi
+          for target in base python node polyglot; do
+            image="${REGISTRY}/${RUNNER_IMAGE_PREFIX}-${target}:${TAG}"
+            docker buildx build --file docker/Dockerfile.runner --target "runner-${target}" \
+              "${export_flags[@]}" --tag "$image" \
+              --cache-from "type=gha,scope=runner-${target}" \
+              --cache-to "type=gha,mode=max,scope=runner-${target}" \
+              --metadata-file "runner-${target}.json" .
+            [[ "$PUBLISH" == "true" ]] || continue
+            digest=$(jq -r '."containerimage.digest"' "runner-${target}.json")
+            [[ "$digest" == sha256:* ]]
+            echo "${target}=${image}@${digest}" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Verify digest-pinned runtime image pulls
+        if: env.PUBLISH == 'true'
+        shell: bash
+        env:
+          GATEWAY_IMAGE: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.GATEWAY_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
+          GATEWAY_DIGEST: ${{ steps.gateway.outputs.digest }}
+          EXECUTOR_IMAGE: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.EXECUTOR_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
+          EXECUTOR_DIGEST: ${{ steps.executor.outputs.digest }}
+          EGRESS_IMAGE: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.EGRESS_PROXY_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
+          EGRESS_DIGEST: ${{ steps.egress.outputs.digest }}
+        run: |
+          docker pull "${GATEWAY_IMAGE}@${GATEWAY_DIGEST}"
+          docker pull "${EXECUTOR_IMAGE}@${EXECUTOR_DIGEST}"
+          docker pull "${EGRESS_IMAGE}@${EGRESS_DIGEST}"
+          for reference in ${{ steps.runners.outputs.base }} ${{ steps.runners.outputs.python }} \
+            ${{ steps.runners.outputs.node }} ${{ steps.runners.outputs.polyglot }}; do
+            docker pull "$reference"
+          done
+
+      - name: Verify anonymous runtime image pulls for tagged releases
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GATEWAY_IMAGE: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.GATEWAY_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
+          GATEWAY_DIGEST: ${{ steps.gateway.outputs.digest }}
+          EXECUTOR_IMAGE: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.EXECUTOR_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
+          EXECUTOR_DIGEST: ${{ steps.executor.outputs.digest }}
+          EGRESS_IMAGE: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.EGRESS_PROXY_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
+          EGRESS_DIGEST: ${{ steps.egress.outputs.digest }}
+        run: |
+          docker logout ghcr.io || true
+          docker pull "${GATEWAY_IMAGE}@${GATEWAY_DIGEST}"
+          docker pull "${EXECUTOR_IMAGE}@${EXECUTOR_DIGEST}"
+          docker pull "${EGRESS_IMAGE}@${EGRESS_DIGEST}"
+          for reference in ${{ steps.runners.outputs.base }} ${{ steps.runners.outputs.python }} \
+            ${{ steps.runners.outputs.node }} ${{ steps.runners.outputs.polyglot }}; do
+            docker pull "$reference"
+          done
+
+      - name: Write digest-pinned release manifest
+        id: manifest
+        if: env.PUBLISH == 'true'
+        shell: bash
+        env:
+          GATEWAY_IMAGE: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.GATEWAY_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
+          GATEWAY_DIGEST: ${{ steps.gateway.outputs.digest }}
+          EXECUTOR_IMAGE: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.EXECUTOR_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
+          EXECUTOR_DIGEST: ${{ steps.executor.outputs.digest }}
+          EGRESS_IMAGE: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.EGRESS_PROXY_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
+          EGRESS_DIGEST: ${{ steps.egress.outputs.digest }}
+        run: |
+          [[ "${EGRESS_DIGEST}" == sha256:* ]]
+          jq -n \
+            --arg gateway "${GATEWAY_IMAGE}@${GATEWAY_DIGEST}" \
+            --arg executor "${EXECUTOR_IMAGE}@${EXECUTOR_DIGEST}" \
+            --arg egress "${EGRESS_IMAGE}@${EGRESS_DIGEST}" \
+            --arg base "${{ steps.runners.outputs.base }}" \
+            --arg python "${{ steps.runners.outputs.python }}" \
+            --arg node "${{ steps.runners.outputs.node }}" \
+            --arg polyglot "${{ steps.runners.outputs.polyglot }}" \
+            '{schema_version: 3, gateway: $gateway, executor: $executor,
+              egress_proxy: $egress,
+              runners: {base: $base, python: $python, node: $node, polyglot: $polyglot}}' \
+            > docker/release-images.json
+          echo "path=docker/release-images.json" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        if: env.PUBLISH == 'true'
+        with:
+          name: runtime-image-manifest
+          path: docker/release-images.json
+
+  build-windows:
+    needs: runtime-images
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Bootstrap locked validation environment
+        run: python scripts/bootstrap.py
+      - name: Preflight validation report
+        shell: bash
+        timeout-minutes: 2
+        run: bash scripts/validation-step.sh preflight python scripts/validate.py preflight --require fast,slow,ruff,compile,qml,qml-smoke --json release-preflight.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-validation-preflight
+          path: release-preflight.json
+          if-no-files-found: ignore
+      - name: Collect tests without running them
+        shell: bash
+        # Collection imports every test module; a hang there is a Python import problem, not a
+        # test timeout, and this step names it in seconds instead of at the end of a tier.
+        timeout-minutes: 5
+        run: bash scripts/validation-step.sh collect python scripts/validate.py collect
+      - name: Validate: fast tests
+        shell: bash
+        timeout-minutes: 20
+        run: bash scripts/validation-step.sh fast python scripts/validate.py fast
+      - name: Validate: slow tests
+        shell: bash
+        timeout-minutes: 25
+        run: bash scripts/validation-step.sh slow python scripts/validate.py slow --allow-unavailable
+      - name: Validate: ruff
+        shell: bash
+        timeout-minutes: 10
+        run: bash scripts/validation-step.sh ruff python scripts/validate.py ruff
+      - name: Validate: compile
+        shell: bash
+        timeout-minutes: 10
+        run: bash scripts/validation-step.sh compile python scripts/validate.py compile
+      - name: Validate: QML lint
+        shell: bash
+        timeout-minutes: 10
+        run: bash scripts/validation-step.sh qml python scripts/validate.py qml
+      - name: Validate: QML smoke
+        shell: bash
+        timeout-minutes: 10
+        run: bash scripts/validation-step.sh qml-smoke python scripts/validate.py qml-smoke
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-logs
+          path: validation-logs
+          if-no-files-found: ignore
+      # A build-only run publishes no images, so there is no digest-pinned manifest to bundle;
+      # the package is a build check, and only a tag or a dispatch produces a releasable bundle.
+      - name: Add release image manifest to package
+        if: env.PUBLISH == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: runtime-image-manifest
+          path: docker
+      - name: Build application
+        run: pyinstaller --noconfirm --clean build/chatbot.spec
+      - name: Smoke-test packaged QML application
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $env:QT_QUICK_BACKEND = "software"
+          $process = Start-Process dist/LocalOpenRouterChat/LocalOpenRouterChat.exe -PassThru
+          Start-Sleep -Seconds 8
+          if ($process.HasExited) { throw "Packaged QML application exited during launch" }
+          Stop-Process -Id $process.Id -Force
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress --yes
+      - name: Build installer
+        shell: pwsh
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\LocalOpenRouterChat.iss'
+      - name: Create portable archive
+        shell: pwsh
+        run: Compress-Archive -Path dist/LocalOpenRouterChat/* -DestinationPath LocalOpenRouterChat-Windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LocalOpenRouterChat-Windows-x64
+          path: |
+            LocalOpenRouterChat-Windows-x64.zip
+            dist/installer/LocalOpenRouterChat-Windows-x64-Setup.exe
+      - name: Attach tagged build to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            LocalOpenRouterChat-Windows-x64.zip
+            dist/installer/LocalOpenRouterChat-Windows-x64-Setup.exe
+          generate_release_notes: true
