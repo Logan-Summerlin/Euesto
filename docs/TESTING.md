@@ -115,4 +115,13 @@ Every step that runs the validator also has a `timeout-minutes`, and each step c
 
 A stalled step therefore still leaves the tier name, the last test, the `[progress]` line, and the heartbeat trail behind. `tests/structural/test_workflow_budgets.py` enforces all of it — step ceilings, the logging wrapper, the collect step, the log artifact, the concurrency group, the job/step budget arithmetic, the harness-to-ceiling margin, the docker per-test ceilings, and the absence of security assertions in YAML — so a workflow cannot silently lose the hardening again.
 
+### Workflow visibility
+
+GitHub only lists a workflow in the Actions tab, and only offers it to `workflow_dispatch`, once the workflow file exists on the repository's **default branch**. A new workflow file therefore looks "missing" until it is merged; on a branch it can only be exercised by its `pull_request` trigger. Two further requirements fail *silently* — the workflow disappears from the list instead of failing — and `tests/structural/test_workflow_syntax.py` proves both before a push:
+
+- the file must be valid YAML and a valid workflow (known keys only, `runs-on` on every job, exactly one of `uses`/`run` per step, integer ceilings, `needs` naming real jobs), and it must have a `name` so the Actions tab can list it;
+- a `push` filter must name the default branch. This repository does not record which branch that is, so the filter lists both `main` and `master`; a filter that matches neither stops validation after every merge with no error anywhere.
+
+Every workflow also carries `workflow_dispatch`, so a maintainer can always start one by hand once it is on the default branch.
+
 On Windows (the release job), tests marked `posix` are skipped: they need the executor's Linux container, either its `/bin/bash`, POSIX permission bits (`chmod` only toggles read-only on Windows), or POSIX `st_ctime` (creation time on Windows). Mark any new test with the same dependency the same way.

@@ -31,6 +31,8 @@ Implements all four phases of [docs/CI_VALIDATION_REMEDIATION_PLAN.md](docs/CI_V
 
 **Prevention (Phase 4)**
 
+- `tests/structural/test_workflow_syntax.py` parses every workflow and checks the part of GitHub's schema that decides whether a workflow is listed and dispatchable: valid YAML, known keys, complete jobs and steps, a name, a `workflow_dispatch` trigger, and a `push` filter that covers the default branch.
+- The validation workflow's `push` filter now names both `main` and `master`: a filter that misses the repository's default branch silently stops the workflow after every merge.
 - `tests/structural/test_workflow_budgets.py` enforces the workflow invariants: a step ceiling and the logging wrapper on every validator step, a collect step before the pytest tiers, an unconditional `validation-logs` upload, a concurrency group, the job-below-step-sum budget, the harness-to-ceiling margin, docker per-test ceilings, no security assertions in YAML, and one owner for the compile file list.
 
 ## Unreleased — Agentic harness Phases 3–5

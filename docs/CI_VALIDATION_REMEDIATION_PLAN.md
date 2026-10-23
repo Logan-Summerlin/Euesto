@@ -399,6 +399,21 @@ environment), and the docker tier fails by name when the fixtures are missing.
 - `tests/structural/test_workflow_budgets.py` asserts all nine workflow invariants from §6, plus
   that the compile file list has one owner.
 
+**Follow-up: workflows that never appeared**
+
+Both workflows were reported missing from the Actions tab. The files themselves are valid YAML
+and valid workflows (`tests/structural/test_workflow_syntax.py` now proves it on every run), but
+two defects made them invisible or inert:
+
+- `test-containers.yml` filtered `push` to `main` alone. The repository records no default-branch
+  name, so on a repository whose default branch is `master` the workflow never ran after a merge,
+  with no error anywhere. The filter now lists `main` and `master`.
+- GitHub lists a workflow, and enables its *Run workflow* button, only once the file exists on the
+  default branch. `vulnerability-scan.yml` is new and `test-containers.yml` gained four new job
+  names, so both have to land on the default branch before they appear; until then a branch can
+  only exercise them through `pull_request`. This is a GitHub rule, not a repository setting, and
+  it is now documented in `docs/TESTING.md` ("Workflow visibility").
+
 **Still to do in CI**
 
 - Record the §7 confirmation runs (tier baseline, the forced wedge, the orphan check) once a

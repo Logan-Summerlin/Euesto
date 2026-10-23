@@ -9,8 +9,12 @@ name: Validate local gateway
 on:
   pull_request:
   push:
+    # The repository records no default-branch name, and a push filter that misses it disables
+    # this workflow after every merge with no error anywhere, so both conventional names are
+    # listed. A branch that matches neither is still validated through its pull request.
     branches:
       - main
+      - master
     tags:
       - "v*"
   workflow_dispatch:
