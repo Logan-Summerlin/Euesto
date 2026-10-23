@@ -50,6 +50,29 @@ def request(**overrides: object) -> bytes:
         request(max_output=0),
         b"x" * (MAX_REQUEST_BYTES + 1),
     ],
+    # Each request body stays a parameter instead of the node id: the oversized case would
+    # otherwise generate a four-million-character id, and the environment case a multi-kilobyte
+    # one, in every -v line, failure header, and --collect-only run (docs/TESTING.md,
+    # "Test ids").
+    ids=[
+        "empty",
+        "not-json",
+        "not-an-object",
+        "unknown-field",
+        "unknown-op",
+        "empty-request-id",
+        "blank-command",
+        "nul-in-command",
+        "absolute-cwd",
+        "non-string-env",
+        "too-many-env-vars",
+        "non-string-stdin",
+        "zero-timeout",
+        "timeout-too-large",
+        "boolean-timeout",
+        "zero-max-output",
+        "oversized-request",
+    ],
 )
 def test_malformed_or_unbounded_requests_are_refused(line: bytes) -> None:
     with pytest.raises(RequestError):

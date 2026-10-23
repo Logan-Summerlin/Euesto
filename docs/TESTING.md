@@ -43,6 +43,18 @@ The Bash tool's tests run twice: once in-process, which stays in the fast tier, 
 
 `tests/ui/conftest.py` is the one place that isolates the Qt tests from the host: it sets the offscreen platform, the software Quick backend, and the null keyring backend (so no test reaches the Windows credential store), stubs `locate_docker` to `None` and the staged-session listing to an empty list, refuses to start an automatic runtime, and fails a test that leaves a started `RuntimeService` un-shut-down. A UI test that reaches Docker, the credential store, or the app-controlled runtime blocks in a native call instead of failing, so keep new isolation there rather than in individual modules.
 
+## Test ids
+
+A collected node id is echoed by every `-v` progress line, by each failure header, and by
+`validate.py collect`, so it must stay short: `tests/conftest.py` refuses a collected id longer
+than 200 characters and names the parametrization to fix. Keep the payload in the parameters and
+give the case an explicit `ids=`, as `tests/unit/executor/test_runner_protocol.py` and
+`tests/unit/executor/test_output_reduction.py` do. A parametrization over a captured transcript
+or a request body otherwise writes that whole payload into the tier's log, so the fast and slow
+logs show parameters instead of the failure, and one oversized case (a four-megabyte request
+body) is enough to bury the report and to repeat it in `--collect-only`.
+`tests/structural/test_test_id_bounds.py` covers the refusal.
+
 ## Test timeouts
 
 `pyproject.toml` gives every test 180 s with `--timeout-method=thread` (a thread timeout also interrupts a wait inside an extension module, which a signal would never reach) and prints the hung test's stack after 90 s through `faulthandler`. `-v` names the running test in the log, and `-p no:cacheprovider` keeps a tier independent of files an earlier run left in the checkout. A test that legitimately needs longer must say why and use `pytest.mark.timeout`; do not raise the suite-wide deadline. No ceiling in `tests/docker/` may reach the docker tier's own deadline; `tests/structural/test_workflow_budgets.py` checks it.

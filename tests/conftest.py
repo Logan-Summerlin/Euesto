@@ -25,7 +25,29 @@ def pytest_configure(config) -> None:
         config.option.basetemp = str(ROOT / ".pytest-tmp")
 
 
+# A node id is repeated in every `-v` progress line, in each failure header, and by
+# `validate.py collect`, so it must stay short: a parametrization over a captured transcript or
+# a request body writes the whole payload into the tier's log instead of naming the test
+# (docs/TESTING.md, "Test ids").
+MAX_NODE_ID_CHARS = 200
+
+
+def unbounded_test_ids(items) -> list[str]:
+    """Collected node ids that would flood a tier's log with their own parameters."""
+    return [item.nodeid for item in items if len(item.nodeid) > MAX_NODE_ID_CHARS]
+
+
 def pytest_collection_modifyitems(config, items) -> None:
+    unbounded = unbounded_test_ids(items)
+    if unbounded:
+        offending = "; ".join(
+            f"{nodeid[:64]}… ({len(nodeid)} characters)" for nodeid in unbounded[:5]
+        )
+        raise pytest.UsageError(
+            f"{len(unbounded)} collected test id(s) exceed {MAX_NODE_ID_CHARS} characters; "
+            "give the parametrization explicit ids= (docs/TESTING.md, 'Test ids'): "
+            + offending
+        )
     if sys.platform != "win32":
         return
     skip = pytest.mark.skip(

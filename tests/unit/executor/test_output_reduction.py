@@ -251,6 +251,24 @@ main.cpp:3:10: fatal error: 'missing.h' file not found
             ],
         ),
     ],
+    # The captured transcripts belong in the parameters, not in the node id: pytest would
+    # otherwise repeat each one (newlines and all) in every -v line, failure header, and
+    # --collect-only run (docs/TESTING.md, "Test ids").
+    ids=[
+        "pytest",
+        "unittest",
+        "jest",
+        "vitest",
+        "go-test",
+        "cargo-test",
+        "tsc",
+        "eslint",
+        "ruff",
+        "ruff-full",
+        "mypy",
+        "gcc",
+        "clang",
+    ],
 )
 def test_each_parser_reduces_its_fixture(output: str, expected: list[str]) -> None:
     assert reduce_output("cmd", output).splitlines() == expected
