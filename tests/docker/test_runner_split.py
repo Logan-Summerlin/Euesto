@@ -67,6 +67,13 @@ def _env(**extra: str) -> dict[str, str]:
         **os.environ,
         "LOCAL_CHAT_WORKSPACE_ID": os.environ.get("LOCAL_CHAT_WORKSPACE_ID", "ci-workspace"),
         "LOCAL_CHAT_WORKSPACE_KEY": WORKSPACE_KEY,
+        # The fixture workspace holds a handful of files, and a hosted CI runner has far less
+        # free space than the production 8 GB work capacity: with the default `coding` profile
+        # the executor exits at seed time ("Configured work capacity exceeds the actual /work
+        # capacity") and the whole agent profile never becomes healthy. The `small` profile's
+        # 512 MB staging and checkpoint limits need 2 GB, which every runner has.
+        "LOCAL_CHAT_EXECUTOR_PROFILE": "small",
+        "LOCAL_CHAT_WORK_CAPACITY_BYTES": "3000000000",
         **extra,
     }
 
@@ -333,13 +340,20 @@ def _targets() -> list[str]:
     )
 
 
-def _buildx_available() -> bool:
-    """Whether the optional buildx cache path can be used at all on this host."""
+def _cache_exporting_builder() -> bool:
+    """Whether the *current* buildx builder can export a local cache.
+
+    The `docker` driver cannot export `type=local`, and the validation child gets a disposable
+    HOME, so the container-driver builder the workflow creates is usually not the current one.
+    Guessing wrong fails every target build before a toolchain is probed, so ask buildx first
+    and fall back to the plain builder, which shares Docker's own layer cache across the four
+    targets because they are stages of one Dockerfile.
+    """
     try:
-        result = _run(["docker", "buildx", "version"], check=False, timeout=120)
+        result = _run(["docker", "buildx", "inspect"], check=False, timeout=120)
     except (OSError, subprocess.SubprocessError):
         return False
-    return result.returncode == 0
+    return result.returncode == 0 and "Driver: docker-container" in result.stdout
 
 
 def _build_target(target: str, tag: str) -> None:
@@ -348,16 +362,13 @@ def _build_target(target: str, tag: str) -> None:
     ``runner-python`` and ``runner-node`` build on ``runner-base`` and ``runner-polyglot`` on
     ``runner-python``, so a shared cache is what keeps four builds inside one tier deadline.
     The containers job sets up a buildx builder with cache export and points
-    ``EUSTO_BUILDX_CACHE_DIR`` at a directory; without it the plain builder and Docker's own
-    layer cache are used, which is what a developer's machine has.
+    ``EUSTO_BUILDX_CACHE_DIR`` at a directory; the cache flags are only added when that
+    builder is the current one (``_cache_exporting_builder``), otherwise the plain builder and
+    Docker's own layer cache are used, which is what a developer's machine has.
     """
     cache = os.environ.get("EUSTO_BUILDX_CACHE_DIR", "")
     arguments = ["docker", "build"]
-    if cache and _buildx_available():
-        # The cache exporter needs buildx and a builder that supports it. The validation child
-        # gets a disposable HOME, so the workflow's container-driver builder is not visible
-        # here; without the fallback every target build would fail before a toolchain is
-        # probed, which is a false red for an unavailable cache rather than a broken image.
+    if cache and _cache_exporting_builder():
         Path(cache).mkdir(parents=True, exist_ok=True)
         arguments = [
             "docker",

@@ -54,6 +54,10 @@ def _run(
             "LOCAL_CHAT_WORKSPACE_ID": os.environ.get(
                 "LOCAL_CHAT_WORKSPACE_ID", "ci-workspace"
             ),
+            # Same reason as tests/docker/test_runner_split.py: the fixture workspace is tiny,
+            # and the hosted runner's free space is well below the production 8 GB capacity.
+            "LOCAL_CHAT_EXECUTOR_PROFILE": "small",
+            "LOCAL_CHAT_WORK_CAPACITY_BYTES": "3000000000",
             **(extra_env or {}),
         },
     )
