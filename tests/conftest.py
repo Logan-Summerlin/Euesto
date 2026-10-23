@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+# How long a resource that a test stopped using may take to finish. A QThread that has just
+# returned from run() (or a process that has just been terminated) is not a leak yet.
+SETTLE_SECONDS = 2.0
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -29,3 +34,93 @@ def pytest_collection_modifyitems(config, items) -> None:
     for item in items:
         if "posix" in item.keywords:
             item.add_marker(skip)
+
+
+def _reap(process: subprocess.Popen) -> None:
+    """Terminate, then kill, a leaked child so the interpreter can still exit."""
+    try:
+        process.terminate()
+        process.wait(timeout=SETTLE_SECONDS)
+    except (OSError, subprocess.TimeoutExpired):
+        try:
+            process.kill()
+            process.wait(timeout=SETTLE_SECONDS)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+
+@pytest.fixture(autouse=True)
+def no_leaked_child_processes(monkeypatch: pytest.MonkeyPatch):
+    """A test must not leave a child process running (docs/TESTING.md, "Leak policy").
+
+    A leaked child outlives pytest, keeps the step's output open, and turns "the tests
+    finished" into "the step never ends". Tracking what this test actually started is precise
+    and cheap; the guard reaps the leak so the run can finish, and then fails the test that
+    caused it.
+    """
+    started: list[subprocess.Popen] = []
+    original_init = subprocess.Popen.__init__
+
+    def tracking_init(self, *args, **kwargs) -> None:
+        original_init(self, *args, **kwargs)
+        started.append(self)
+
+    monkeypatch.setattr(subprocess.Popen, "__init__", tracking_init)
+    yield
+    leaked = [process for process in started if process.poll() is None]
+    for process in leaked:
+        _reap(process)
+    assert not leaked, (
+        "the test left a child process running; end it in the test or its fixture: "
+        + ", ".join(str(process.args) for process in leaked)
+    )
+
+
+def _qt_thread_classes() -> list[type]:
+    """Every QThread subclass the application defines, so leaks can be tracked per start()."""
+    core = sys.modules.get("PySide6.QtCore")
+    if core is None or not hasattr(core, "QThread"):
+        return []
+    classes: list[type] = []
+    pending = [core.QThread]
+    while pending:
+        current = pending.pop()
+        for subclass in current.__subclasses__():
+            classes.append(subclass)
+            pending.append(subclass)
+    return classes
+
+
+@pytest.fixture(autouse=True)
+def no_leaked_qt_threads(monkeypatch: pytest.MonkeyPatch):
+    """A test must not leave a QThread running.
+
+    A live QThread is joined during interpreter finalisation, after every test has reported
+    "passed", so it presents as a hang rather than a failure. Patching ``start`` on the
+    application's own (Python) subclasses records exactly the threads a test launched.
+    """
+    classes = _qt_thread_classes()
+    if not classes:
+        yield
+        return
+    started: list[object] = []
+    for thread_class in classes:
+        original_start = thread_class.start
+
+        def tracking_start(thread, *args, _original=original_start, **kwargs):
+            started.append(thread)
+            return _original(thread, *args, **kwargs)
+
+        monkeypatch.setattr(thread_class, "start", tracking_start)
+    yield
+    leaked: list[str] = []
+    for thread in started:
+        deadline = time.monotonic() + SETTLE_SECONDS
+        while not thread.isFinished() and time.monotonic() < deadline:
+            thread.wait(50)
+        if not thread.isFinished():
+            leaked.append(thread.objectName() or type(thread).__name__)
+    assert not leaked, (
+        "the test left a QThread running; wait for it (or stop the service that owns it): "
+        + ", ".join(leaked)
+    )

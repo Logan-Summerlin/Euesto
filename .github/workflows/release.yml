@@ -6,6 +6,10 @@ on:
     tags:
       - "v*"
 
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
   packages: write
@@ -20,10 +24,15 @@ env:
 jobs:
   runtime-images:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     outputs:
       manifest: ${{ steps.manifest.outputs.path }}
     steps:
       - uses: actions/checkout@v4
+
+      # Every build below runs through this builder, so its cache export works and the four
+      # runner targets share base layers instead of each creating an implicit builder.
+      - uses: docker/setup-buildx-action@v3
 
       - name: Set image version
         id: version
@@ -50,6 +59,8 @@ jobs:
           context: .
           file: docker/Dockerfile.gateway
           push: true
+          cache-from: type=gha,scope=gateway
+          cache-to: type=gha,mode=max,scope=gateway
           tags: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.GATEWAY_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
 
       - name: Build and publish executor image
@@ -59,6 +70,8 @@ jobs:
           context: .
           file: docker/Dockerfile.executor
           push: true
+          cache-from: type=gha,scope=executor
+          cache-to: type=gha,mode=max,scope=executor
           tags: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.EXECUTOR_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
 
       - name: Build and publish egress proxy image
@@ -68,9 +81,9 @@ jobs:
           context: .
           file: docker/Dockerfile.egress-proxy
           push: true
+          cache-from: type=gha,scope=egress-proxy
+          cache-to: type=gha,mode=max,scope=egress-proxy
           tags: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.EGRESS_PROXY_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
-
-      - uses: docker/setup-buildx-action@v3
 
       - name: Build and publish runner images with SBOM and provenance
         id: runners
@@ -84,35 +97,13 @@ jobs:
             image="${REGISTRY}/${RUNNER_IMAGE_PREFIX}-${target}:${TAG}"
             docker buildx build --file docker/Dockerfile.runner --target "runner-${target}" \
               --sbom=true --provenance=true --push --tag "$image" \
+              --cache-from "type=gha,scope=runner-${target}" \
+              --cache-to "type=gha,mode=max,scope=runner-${target}" \
               --metadata-file "runner-${target}.json" .
             digest=$(jq -r '."containerimage.digest"' "runner-${target}.json")
             [[ "$digest" == sha256:* ]]
             echo "${target}=${image}@${digest}" >> "$GITHUB_OUTPUT"
           done
-
-      - name: Scan runner images for known vulnerabilities
-        shell: bash
-        env:
-          RUNNERS: >-
-            ${{ steps.runners.outputs.base }}
-            ${{ steps.runners.outputs.python }}
-            ${{ steps.runners.outputs.node }}
-            ${{ steps.runners.outputs.polyglot }}
-        run: |
-          set -euo pipefail
-          mkdir -p vulnerability-reports
-          for reference in $RUNNERS; do
-            docker pull "$reference"
-            name=$(basename "${reference%%@*}" | tr ':' '-')
-            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-              aquasec/trivy:0.67.2 image --quiet --severity HIGH,CRITICAL --format table \
-              "$reference" > "vulnerability-reports/${name}.txt"
-          done
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: runner-vulnerability-reports
-          path: vulnerability-reports
 
       - name: Verify digest-pinned runtime image pulls
         shell: bash
@@ -186,7 +177,7 @@ jobs:
   build-windows:
     needs: runtime-images
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -195,35 +186,45 @@ jobs:
           cache: pip
       - name: Bootstrap locked validation environment
         run: python scripts/bootstrap.py
+      - name: Preflight validation report
+        shell: bash
+        timeout-minutes: 2
+        run: bash scripts/validation-step.sh preflight python scripts/validate.py preflight --require fast,slow,ruff,compile,qml,qml-smoke --json release-preflight.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-validation-preflight
+          path: release-preflight.json
+          if-no-files-found: ignore
       - name: Collect tests without running them
         shell: bash
         # Collection imports every test module; a hang there is a Python import problem, not a
         # test timeout, and this step names it in seconds instead of at the end of a tier.
         timeout-minutes: 5
-        run: bash scripts/validation-step.sh collect python -m pytest --collect-only -q
+        run: bash scripts/validation-step.sh collect python scripts/validate.py collect
       - name: Validate: fast tests
         shell: bash
-        timeout-minutes: 15
+        timeout-minutes: 20
         run: bash scripts/validation-step.sh fast python scripts/validate.py fast
       - name: Validate: slow tests
         shell: bash
-        timeout-minutes: 20
+        timeout-minutes: 25
         run: bash scripts/validation-step.sh slow python scripts/validate.py slow --allow-unavailable
       - name: Validate: ruff
         shell: bash
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: bash scripts/validation-step.sh ruff python scripts/validate.py ruff
       - name: Validate: compile
         shell: bash
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: bash scripts/validation-step.sh compile python scripts/validate.py compile
       - name: Validate: QML lint
         shell: bash
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: bash scripts/validation-step.sh qml python scripts/validate.py qml
       - name: Validate: QML smoke
         shell: bash
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: bash scripts/validation-step.sh qml-smoke python scripts/validate.py qml-smoke
       - uses: actions/upload-artifact@v4
         if: always()
@@ -231,13 +232,6 @@ jobs:
           name: validation-logs
           path: validation-logs
           if-no-files-found: ignore
-      - name: Preflight validation report
-        run: python scripts/validate.py preflight --json release-preflight.json
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: release-validation-preflight
-          path: release-preflight.json
       - name: Add release image manifest to package
         uses: actions/download-artifact@v4
         with:

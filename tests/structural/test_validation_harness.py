@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import signal
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -29,12 +31,18 @@ def test_validation_commands_use_explicit_tiers_and_active_python() -> None:
     assert validate.commands("qml-smoke") == [
         ("qml-smoke", [validate.sys.executable, "scripts/qml_smoke.py"])
     ]
+    assert validate.commands("collect") == [
+        ("collect", [validate.sys.executable, "-m", "pytest", "--collect-only", "-q"])
+    ]
+    # `all` runs the checks; collection is a diagnostic step the workflows run first.
+    assert "collect" not in [name for name, _ in commands]
 
 
 def test_validation_environment_keeps_qt_for_qt_children_and_no_secrets(monkeypatch) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "do-not-export")
     env = validate._safe_env()
     assert env["PYTHONUNBUFFERED"] == "1"
+    assert env["PYTHON_KEYRING_BACKEND"] == "keyring.backends.null.Keyring"
     # The platform variables go to the Qt children only: a plain Python child that inherits
     # them, and every process it starts, is told to use a platform it never asked for.
     assert "QT_QPA_PLATFORM" not in env
@@ -43,6 +51,23 @@ def test_validation_environment_keeps_qt_for_qt_children_and_no_secrets(monkeypa
     assert qt_env["QT_QPA_PLATFORM"] == "offscreen"
     assert qt_env["QT_QUICK_BACKEND"] == "software"
     assert qt_env["QT_QUICK_CONTROLS_STYLE"] == "Fusion"
+
+
+def test_container_tier_fixtures_reach_the_validation_child(monkeypatch) -> None:
+    """The docker tier reads its fixtures from the environment.
+
+    Filtering them out of a validation child did not fail the tier: every container check
+    skipped itself as "requires the container-tier fixtures", which is a green job that ran
+    nothing.
+    """
+    monkeypatch.setenv("LOCAL_CHAT_SECRETS_DIR", "/tmp/euesto/secrets")
+    monkeypatch.setenv("LOCAL_CHAT_WORKSPACE", "/tmp/euesto/workspace")
+    monkeypatch.setenv("EUSTO_BUILDX_CACHE_DIR", "/tmp/euesto/cache")
+    env = validate._safe_env()
+    assert env["LOCAL_CHAT_SECRETS_DIR"] == "/tmp/euesto/secrets"
+    assert env["LOCAL_CHAT_WORKSPACE"] == "/tmp/euesto/workspace"
+    assert env["EUSTO_BUILDX_CACHE_DIR"] == "/tmp/euesto/cache"
+    assert "OPENROUTER_API_KEY" not in env
 
 
 def test_only_the_qt_tiers_get_the_qt_environment() -> None:
@@ -64,7 +89,6 @@ def test_windows_children_get_the_os_variables_they_cannot_invent(monkeypatch) -
     env = validate._safe_env(windows=True)
     assert set(validate.WINDOWS_ENV) <= set(env)
     for name in (
-        "APPDATA",
         "PROGRAMDATA",
         "ProgramFiles",
         "HOMEDRIVE",
@@ -74,6 +98,26 @@ def test_windows_children_get_the_os_variables_they_cannot_invent(monkeypatch) -
         "VIRTUAL_ENV",
     ):
         assert env[name] == f"value-of-{name}"
+    # The three directories that hold user state are the disposable tree, not the real ones.
+    for name in ("USERPROFILE", "LOCALAPPDATA", "APPDATA"):
+        assert env[name] != f"value-of-{name}"
+        assert Path(env[name]).is_relative_to(Path(env["HOME"]))
+
+
+def test_validation_children_get_a_disposable_home(monkeypatch) -> None:
+    """A tier must not write real state under the runner's home or prompt the host keyring."""
+    monkeypatch.setenv("USERPROFILE", "C:/Users/real")
+    monkeypatch.setenv("LOCALAPPDATA", "C:/Users/real/AppData/Local")
+    monkeypatch.setenv("APPDATA", "C:/Users/real/AppData/Roaming")
+    env = validate._safe_env()
+    home = Path(env["HOME"])
+    assert home.name.startswith("euesto-validation-home-")
+    for name in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"):
+        assert Path(env[name]).is_relative_to(home)
+    windows = validate._safe_env(windows=True)
+    assert windows["USERPROFILE"] == env["HOME"]
+    assert windows["LOCALAPPDATA"] != "C:/Users/real/AppData/Local"
+    assert windows["APPDATA"] != "C:/Users/real/AppData/Roaming"
 
 
 def test_missing_and_failed_commands_are_distinguished() -> None:
@@ -94,7 +138,7 @@ def test_missing_and_failed_commands_are_distinguished() -> None:
     assert report["checks"][0]["status"] == "failed"
 
 
-def test_a_hung_command_fails_its_tier_by_name_with_its_deadline() -> None:
+def test_a_hung_command_fails_its_tier_by_name_with_its_deadline(monkeypatch) -> None:
     seen: list[float] = []
 
     def hung(*args, **kwargs):
@@ -103,26 +147,60 @@ def test_a_hung_command_fails_its_tier_by_name_with_its_deadline() -> None:
 
     report: dict = {"checks": []}
     assert validate.execute("fast", report=report, runner=hung) == 124
-    assert seen == [validate.COMMAND_TIMEOUT_SECONDS]
+    assert seen == [validate.TIER_TIMEOUTS["fast"]]
     assert report["checks"][0]["status"] == "failed"
     assert report["checks"][0]["detail"] == (
-        f"failed: timed out after {validate.COMMAND_TIMEOUT_SECONDS}s"
+        f"failed: timed out after {validate.TIER_TIMEOUTS['fast']}s"
     )
 
-    # The QML smoke check has its own, much shorter backstop: a wedged Qt startup must not hold
-    # a tier for twenty minutes.
+    # Every tier has its own deadline, so no tier has to borrow another's budget.
+    for tier in ("slow", "ruff", "compile", "qml", "qml-smoke"):
+        seen.clear()
+        report = {"checks": []}
+        assert validate.execute(tier, report=report, runner=hung) == 124
+        assert set(seen) == {validate.TIER_TIMEOUTS[tier]}, tier
+        assert report["checks"][0]["detail"].endswith(f"after {validate.TIER_TIMEOUTS[tier]}s")
+
+    monkeypatch.setenv("LOCAL_CHAT_SECRETS_DIR", "/tmp/euesto/secrets")
+    monkeypatch.setenv("LOCAL_CHAT_WORKSPACE", "/tmp/euesto/workspace")
     seen.clear()
     report = {"checks": []}
-    assert validate.execute("qml-smoke", report=report, runner=hung) == 124
-    assert seen == [validate.QML_SMOKE_TIMEOUT_SECONDS]
-    assert report["checks"][0]["detail"] == (
-        f"failed: timed out after {validate.QML_SMOKE_TIMEOUT_SECONDS}s"
-    )
+    assert validate.execute("docker", report=report, runner=hung) == 124
+    assert seen == [validate.TIER_TIMEOUTS["docker"]]
+    assert report["checks"][0]["detail"].endswith(f"after {validate.TIER_TIMEOUTS['docker']}s")
+
+
+def test_the_docker_tier_fails_by_name_when_its_fixtures_are_missing(monkeypatch) -> None:
+    """Without fixtures every container check skipped, which is a green tier that ran nothing."""
+    for name in validate.DOCKER_FIXTURES:
+        monkeypatch.delenv(name, raising=False)
+    report: dict = {"checks": []}
+    assert validate.execute("docker", report=report) == 1
+    assert report["checks"][0]["name"] == "docker-fixtures"
+    assert "setup_fixtures" in report["checks"][0]["detail"]
+    assert validate.execute("docker", allow_unavailable=True) == 0
+
+    calls: list[list[str]] = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    for name in validate.DOCKER_FIXTURES:
+        monkeypatch.setenv(name, "/tmp/euesto/value")
+    assert validate.execute("docker", runner=runner) == 0
+    assert calls == [validate.commands("docker")[0][1]]
+
+
+def test_every_tier_has_its_own_deadline_above_the_per_test_timeout() -> None:
+    """The harness deadline is the inner bound; the workflows keep their ceiling outside it."""
+    for tier, deadline in validate.TIER_TIMEOUTS.items():
+        assert deadline > 180 or tier in {"preflight", "collect"}, tier
+    assert validate.TIER_TIMEOUTS["fast"] < validate.TIER_TIMEOUTS["slow"]
+    assert validate.TIER_TIMEOUTS["docker"] > validate.TIER_TIMEOUTS["slow"]
 
 
 def test_the_default_runner_kills_a_command_that_outlives_its_deadline() -> None:
-    import sys
-
     with pytest.raises(subprocess.TimeoutExpired):
         validate._run_command(
             [sys.executable, "-c", "import time; time.sleep(60)"],
@@ -157,7 +235,50 @@ def test_the_default_runner_has_no_console_window_and_no_stdin(monkeypatch) -> N
     validate._run_command(["tool"], cwd=ROOT, env=validate._safe_env(), timeout=17)
     assert captured["stdin"] == validate.subprocess.DEVNULL
     assert captured["creationflags"] == validate.CREATE_NO_WINDOW
+    # POSIX needs its own session, which is the only handle a deadline has on the whole tree.
+    assert captured["start_new_session"] is (validate.os.name != "nt")
     assert captured["wait"] == 17
+
+
+def test_a_posix_deadline_signals_the_whole_process_group(monkeypatch) -> None:
+    """A direct-child-only kill leaves runner servers and `bash -lc` grandchildren alive."""
+    signalled: list[tuple[int, int]] = []
+    waits: list[float | None] = []
+
+    class GroupProcess:
+        pid = 4321
+
+        def wait(self, timeout=None):
+            waits.append(timeout)
+            raise subprocess.TimeoutExpired("tool", timeout)
+
+        def kill(self) -> None:
+            raise AssertionError("the process group must be signalled, not just the child")
+
+    monkeypatch.setattr(
+        validate.subprocess, "Popen", lambda *args, **kwargs: GroupProcess()
+    )
+    monkeypatch.setattr(validate.os, "name", "posix")
+    monkeypatch.setattr(validate.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(
+        validate.os, "killpg", lambda pgid, signum: signalled.append((pgid, signum))
+    )
+    with pytest.raises(subprocess.TimeoutExpired):
+        validate._run_command(["tool"], cwd=ROOT, env=validate._safe_env(), timeout=1)
+    assert signalled == [(4321, signal.SIGTERM), (4321, signal.SIGKILL)]
+    assert waits == [1, validate.KILL_GRACE_SECONDS, validate.KILL_TIMEOUT_SECONDS]
+
+
+def test_a_running_command_reports_progress(monkeypatch, capsys) -> None:
+    """A command that is alive but silent must still show liveness in the log."""
+    monkeypatch.setattr(validate, "PROGRESS_INTERVAL_SECONDS", 0.05)
+    validate._run_command(
+        [sys.executable, "-c", "import time; time.sleep(0.3)"],
+        cwd=ROOT,
+        env=validate._safe_env(),
+        timeout=60,
+    )
+    assert "[progress]" in capsys.readouterr().out
 
 
 def test_a_deadline_that_cannot_reap_its_child_still_reports_the_timeout(monkeypatch) -> None:
@@ -198,6 +319,37 @@ def test_pytest_empty_tier_is_explicit_and_requires_allowance() -> None:
     report: dict = {"checks": []}
     validate.execute("slow", report=report, runner=empty)
     assert report["checks"][0]["status"] == "empty"
+
+
+def test_preflight_require_fails_when_a_required_tool_is_unavailable(monkeypatch) -> None:
+    """`preflight` is a gate in both workflows, so it has to be able to fail (plan W1)."""
+    report = {
+        "schema_version": 1,
+        "tier": "fast",
+        "checks": [
+            validate._record("python", "available"),
+            validate._record("repository-root", "available"),
+            validate._record("pytest", "unavailable", detail="install requirements-dev.lock"),
+        ],
+    }
+    monkeypatch.setattr(validate, "preflight", lambda *tiers: report)
+    assert validate.main(["preflight", "--require", "fast"]) == 1
+    # Reporting only: a developer without a tool still sees the rest of the environment.
+    assert validate.main(["preflight"]) == 0
+    assert validate.main(["preflight", "--require", "compile"]) == 0
+    assert validate.main(["preflight", "--require", "nonsense"]) == 2
+    assert validate.main(["fast", "--require", "fast"]) == 2
+
+
+def test_preflight_reports_the_tiers_it_is_asked_about() -> None:
+    report = validate.preflight("fast", "docker", runner=lambda *a, **k: _version_stub())
+    names = {check["name"] for check in report["checks"]}
+    assert {"tier:fast", "tier:docker"} <= names
+    assert report["tier"] == "fast,docker"
+
+
+def _version_stub() -> subprocess.CompletedProcess:
+    return subprocess.CompletedProcess([], 0, stdout="tool 1.2.3", stderr="")
 
 
 def test_preflight_has_bounded_safe_records(monkeypatch) -> None:

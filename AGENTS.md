@@ -54,7 +54,7 @@ Keep one authoritative copy of each document. Planning documents and the roadmap
 
 ## Checks
 
-The canonical validation entry point is `python scripts/validate.py`; use `preflight` to report missing dependencies explicitly and the named tiers (`fast`, `slow`, `docker`, `ruff`, `compile`, `qml`, `all`) for execution. Run the applicable checks after changes; the command list lives once, in `docs/TESTING.md` ("Required checks").
+The canonical validation entry point is `python scripts/validate.py`; use `preflight` to report missing dependencies explicitly and the named tiers (`collect`, `fast`, `slow`, `docker`, `ruff`, `compile`, `qml`, `qml-smoke`, `all`) for execution. Run the applicable checks after changes; the command list lives once, in `docs/TESTING.md` ("Required checks").
 
 Python code is `ruff format`-formatted; the `ruff` tier checks it. Tests live in `tests/unit/<domain>/` or a tier folder (`ui`, `docker`, `structural`), never the `tests/` root.
 

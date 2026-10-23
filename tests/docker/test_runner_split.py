@@ -3,6 +3,10 @@
 Runs only in the container tier with Docker and the disposable fixtures from
 ``scripts/docker-fixtures.sh``. The isolation checks run *inside a command* the runner's own
 command server executed, which is exactly where a model's Bash call lands.
+
+This file is also the one authoritative place for the rendered Compose hardening invariants
+(network mode, read-only root, no-new-privileges, capability and mount sets): the workflow only
+renders the configuration and uploads it for a reviewer.
 """
 
 from __future__ import annotations
@@ -22,6 +26,9 @@ COMPOSE = ["docker", "compose", "--file", str(ROOT / "docker" / "compose.yaml")]
 PROJECT = "local-openrouter-chat"
 RUNNER_IMAGE = "local-openrouter-chat-runner-python:1.1.0"
 WORKSPACE_KEY = "c1c1c1c1c1c1"
+# Every in-test ceiling stays below the docker tier's own deadline (scripts/validate.py), so a
+# stuck build reports itself instead of the harness killing the tier with no name.
+RUNNER_BUILD_TIMEOUT_SECONDS = 1200
 
 # Every check must hold for a command, or the command prints which one failed.
 ISOLATION_SCRIPT = r"""
@@ -132,6 +139,27 @@ def _client(request: dict, *, image: str = RUNNER_IMAGE) -> list[dict]:
 
 
 @pytest.mark.skipif(not _available(), reason="requires Docker and the container-tier fixtures")
+def test_every_service_is_hardened_in_the_rendered_composition() -> None:
+    """The authoritative compose-hardening check (it used to be asserted in workflow YAML)."""
+    rendered = _render()
+    services = rendered["services"]
+    assert services
+    for name, service in services.items():
+        security_opt = service.get("security_opt", [])
+        volumes = service.get("volumes", [])
+        assert service.get("read_only") is True, name
+        assert service.get("cap_drop") == ["ALL"], name
+        assert "no-new-privileges:true" in security_opt, name
+        assert service.get("privileged") is not True, name
+        assert not any("seccomp=unconfined" in item for item in security_opt), name
+        assert service.get("network_mode") != "host", name
+        assert not any("docker.sock" in json.dumps(volume) for volume in volumes), name
+    for name in ("executor", "runner"):
+        assert services[name]["user"] == "10002:10001", name
+    assert "docker.sock" not in json.dumps(rendered)
+
+
+@pytest.mark.skipif(not _available(), reason="requires Docker and the container-tier fixtures")
 def test_compose_gives_the_runner_only_staging_its_cache_and_its_socket() -> None:
     rendered = _render()
     services = rendered["services"]
@@ -237,7 +265,7 @@ def test_commands_run_isolated_in_the_runner_and_staging_survives_restarts() -> 
 
 
 @pytest.mark.skipif(not _available(), reason="requires Docker and the container-tier fixtures")
-@pytest.mark.timeout(1500)
+@pytest.mark.timeout(1200)
 def test_bash_through_the_executor_runs_in_the_runner() -> None:
     """The whole agent profile: the executor's bash tool reaches the runner (CI tier)."""
     request = {
@@ -299,25 +327,42 @@ def _targets() -> list[str]:
     )
 
 
+def _build_target(target: str, tag: str) -> None:
+    """Build one runner target, sharing the build cache across the four parametrized builds.
+
+    ``runner-python`` and ``runner-node`` build on ``runner-base`` and ``runner-polyglot`` on
+    ``runner-python``, so a shared cache is what keeps four builds inside one tier deadline.
+    The containers job sets up a buildx builder with cache export and points
+    ``EUSTO_BUILDX_CACHE_DIR`` at a directory; without it the plain builder and Docker's own
+    layer cache are used, which is what a developer's machine has.
+    """
+    cache = os.environ.get("EUSTO_BUILDX_CACHE_DIR", "")
+    arguments = ["docker", "buildx", "build", "--load"] if cache else ["docker", "build"]
+    if cache:
+        arguments += [
+            "--cache-from",
+            f"type=local,src={cache}",
+            "--cache-to",
+            f"type=local,dest={cache},mode=max",
+        ]
+    arguments += [
+        "--file",
+        str(ROOT / "docker" / "Dockerfile.runner"),
+        "--target",
+        target,
+        "--tag",
+        tag,
+        str(ROOT),
+    ]
+    _run(arguments, timeout=RUNNER_BUILD_TIMEOUT_SECONDS)
+
+
 @pytest.mark.skipif(not shutil.which("docker"), reason="requires Docker")
-@pytest.mark.timeout(3600)
+@pytest.mark.timeout(1200)
 @pytest.mark.parametrize("target", _targets())
 def test_each_runner_target_provides_its_toolchain(target: str) -> None:
     tag = f"euesto-{target}:validation"
-    _run(
-        [
-            "docker",
-            "build",
-            "--file",
-            str(ROOT / "docker" / "Dockerfile.runner"),
-            "--target",
-            target,
-            "--tag",
-            tag,
-            str(ROOT),
-        ],
-        timeout=3600,
-    )
+    _build_target(target, tag)
     expected = list(
         dict.fromkeys(TARGET_EXECUTABLES["runner-base"] + TARGET_EXECUTABLES[target])
     )

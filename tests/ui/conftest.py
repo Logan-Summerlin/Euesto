@@ -4,6 +4,11 @@ A UI test that reaches the host blocks the Qt event loop instead of failing: Doc
 the staged-session listing, and the Windows credential store are all native calls that can wait
 without a deadline. This file defines that isolation once, before any test module imports
 ``src.settings``, rather than leaving each module to remember its own environment.
+
+It also refuses to leave a started ``RuntimeService`` behind. One that is never shut down keeps
+its health timer firing and can own a live ``QThread``, which the interpreter joins *after*
+every test has reported "passed" — the third route to "the tests finished and the step never
+ends" (docs/TESTING.md, "Leak policy").
 """
 
 from __future__ import annotations
@@ -36,13 +41,22 @@ def isolated_host_services(monkeypatch):
         runtime_manager.RuntimeManager, "staged_sessions", lambda *args, **kwargs: []
     )
     start_automatically = RuntimeService.start
+    started: list[object] = []
 
     def start_manually(service):
         assert service.automatic is False, (
             "UI tests must run the manual (developer) runtime; an automatic runtime starts the "
             "Docker lifecycle and its timers inside the Qt event loop"
         )
+        started.append(service)
         start_automatically(service)
 
     monkeypatch.setattr(RuntimeService, "start", start_manually)
     yield
+    leaked = [service for service in started if not service.closing]
+    for service in leaked:
+        service.shutdown()
+    assert not leaked, (
+        "a started RuntimeService must be shut down before the test ends, or its timer and "
+        "thread outlive the test"
+    )

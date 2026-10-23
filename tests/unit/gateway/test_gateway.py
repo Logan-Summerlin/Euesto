@@ -18,6 +18,10 @@ from shared.permissions import PermissionDecision, PermissionRule
 from shared.requests import AgentRunRequest, ChatRequest
 
 TOKEN = "t" * 43
+# Every rendezvous below is bounded: pytest-timeout's thread method cannot interrupt a task
+# parked on an event nobody sets, so an unbounded wait would wedge the tier instead of failing
+# the test that stopped signalling (docs/TESTING.md, "Async test policy").
+RENDEZVOUS_TIMEOUT_SECONDS = 5
 
 
 class FakeProvider:
@@ -41,7 +45,10 @@ class SlowProvider:
     async def stream_chat(self, _request, _key, cancel_event):
         yield ProviderEvent(text="partial")
         self.started.set()
-        await cancel_event.wait()
+        try:
+            await asyncio.wait_for(cancel_event.wait(), RENDEZVOUS_TIMEOUT_SECONDS)
+        except TimeoutError as exc:
+            raise AssertionError("the gateway never cancelled the run") from exc
         self.finished.set()
 
 
@@ -147,9 +154,9 @@ def test_cancellation_preserves_partial_events(tmp_path: Path) -> None:
             {"model": "vendor/model", "messages": [{"role": "user", "content": "work"}]}
         )
         run_id = await service.start_chat(request)
-        await started.wait()
+        await asyncio.wait_for(started.wait(), RENDEZVOUS_TIMEOUT_SECONDS)
         assert await service.cancel(run_id)
-        await finished.wait()
+        await asyncio.wait_for(finished.wait(), RENDEZVOUS_TIMEOUT_SECONDS)
         events = service.journal.events_after(run_id)
         assert any(
             event.type == "model.delta" and event.payload["text"] == "partial"

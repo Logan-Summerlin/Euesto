@@ -1,6 +1,7 @@
 import asyncio
 import importlib
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -25,11 +26,26 @@ bash_tool = importlib.import_module("executor.tools.bash")
 
 CHECKPOINTS = ".local-chat-checkpoints"
 ROOT = Path(__file__).resolve().parents[3]
+RENDEZVOUS_TIMEOUT_SECONDS = 5
+RUNNER_STARTUP_TIMEOUT_SECONDS = 10
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """The runner backend is a slow test: it starts a socket server per test.
+
+    That coverage is worth keeping, but it belongs in the slow tier, where it cannot starve
+    the fast feedback loop (docs/TESTING.md). The marker is added here, from the collected
+    parameter, because ``-m`` deselection reads the item's markers after this hook runs.
+    """
+    for item in items:
+        callspec = getattr(item, "callspec", None)
+        if callspec is not None and callspec.params.get("backend") == "runner":
+            item.add_marker(pytest.mark.slow)
 
 
 @pytest.fixture(autouse=True, params=["in-process", "runner"])
 def backend(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[str]:
-    """Every Bash test runs in-process and through a real runner command server."""
+    """Every Bash test runs in-process and (in the slow tier) through a real runner server."""
     if request.param == "in-process" or os.name != "posix":
         if request.param != "in-process":
             pytest.skip("the runner command server needs Unix sockets")
@@ -48,8 +64,14 @@ def backend(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[str]:
         ],
         cwd=ROOT,
         stdin=subprocess.DEVNULL,
+        # The server must not hold the step's output open: a descendant that survives a
+        # cancelled CI step would keep the step in progress after pytest is already gone.
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        # Its own session, so cleanup can signal the whole group rather than the server alone.
+        start_new_session=True,
     )
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + RUNNER_STARTUP_TIMEOUT_SECONDS
     while not socket_path.exists():
         assert server.poll() is None, "runner exited during startup"
         assert time.monotonic() < deadline, "runner did not start"
@@ -59,9 +81,33 @@ def backend(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[str]:
         yield request.param
     finally:
         bash_tool.configure_runner(None)
-        server.terminate()
-        server.wait(timeout=10)
+        _stop_runner(server)
         socket_path.unlink(missing_ok=True)
+
+
+def _signal_group(server: subprocess.Popen, signum: int) -> None:
+    """Signal the server's process group, falling back to the direct child if it is gone."""
+    try:
+        os.killpg(os.getpgid(server.pid), signum)
+    except (ProcessLookupError, PermissionError):
+        try:
+            server.send_signal(signum)
+        except OSError:
+            pass
+
+
+def _stop_runner(server: subprocess.Popen) -> None:
+    """SIGTERM the group, then SIGKILL, and reap the direct child under a bound."""
+    if server.poll() is None:
+        _signal_group(server, signal.SIGTERM)
+    try:
+        server.wait(timeout=RENDEZVOUS_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        _signal_group(server, signal.SIGKILL)
+        try:
+            server.wait(timeout=RENDEZVOUS_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 async def run_bash(
@@ -99,9 +145,9 @@ def run_and_cancel_after_start(
         started = asyncio.Event()
         monkeypatch.setattr(bash_tool._runner, "on_started", lambda _request_id: started.set())
         task = asyncio.create_task(run_bash(root, arguments, request_id=request_id))
-        await started.wait()
+        await asyncio.wait_for(started.wait(), RENDEZVOUS_TIMEOUT_SECONDS)
         assert await cancel(request_id) is True
-        return (await asyncio.wait_for(task, timeout=5))[1]
+        return (await asyncio.wait_for(task, timeout=RENDEZVOUS_TIMEOUT_SECONDS))[1]
 
     return asyncio.run(scenario())
 

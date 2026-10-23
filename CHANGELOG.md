@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased — CI validation hardening
+
+Implements all four phases of [docs/CI_VALIDATION_REMEDIATION_PLAN.md](docs/CI_VALIDATION_REMEDIATION_PLAN.md). The public tool surface, approval tiers, and the executor/runner sandbox are unchanged: this is CI, the validation harness, and the test suite only.
+
+**A hang names itself (Phase 1)**
+
+- Every tier has its own deadline (`preflight` 60 s, `collect` 180 s, `fast` 900 s, `slow` 1200 s, `ruff`/`compile`/`qml` 300 s, `qml-smoke` 300 s, `docker` 2700 s) below its workflow step ceiling, so the harness's `timed out after <n>s` report fires before GitHub kills the step.
+- A validation command now runs in its own session on POSIX and is killed as a process group (`SIGTERM`, a bounded grace, `SIGKILL`), so the runner servers and `bash -lc` grandchildren a test starts cannot outlive the deadline and keep the step's output open. Windows keeps `taskkill /F /T`.
+- A `[progress]` line prints every 30 s while a command runs, and `scripts/validation-step.sh` sends its heartbeat to the console as well as `validation-logs/<name>.log`, so a live-but-slow step is visibly alive.
+- `Validate local gateway` wraps every tier in that script with its own `timeout-minutes`, runs `validate.py collect` first, uploads `validation-logs-<job>` with `if: always()`, and runs as four independent jobs (`fast`, `slow`, `qml`, `containers`).
+
+**Workflow fixes (Phase 2)**
+
+- `push` is limited to `main` and tags, `workflow_dispatch` is kept, and both workflows cancel superseded runs through a `concurrency` group.
+- The container security job no longer needs the validation job, so a hang in one tier cannot cancel the non-root, egress, mount, and resource checks.
+- `validate.py preflight --require <tiers>` exits non-zero when a tier's tools are unavailable; both workflows use it as a gate.
+- The duplicated `compileall` in the QML step is gone, and the Compose hardening assertions moved out of workflow YAML into `tests/docker/test_runner_split.py` (the workflow renders the configuration and uploads it).
+- The release job gets a `runtime-images` ceiling, a builder created before the first push, and shared `type=gha` build caches; `build-windows` keeps 28 minutes of room below its 92 minutes of step ceilings.
+- The vulnerability scan moved to a scheduled workflow that scans the digest-pinned references from the newest release manifest, with no Docker socket and no network dependency in the release path.
+
+**Suite fixes (Phase 3)**
+
+- The Bash tool's runner-backed tests are `slow` and no longer start a socket server in the fast tier; their server gets its own session, muted output, and a group-kill teardown.
+- Unbounded `await event.wait()` rendezvous are bounded with `asyncio.wait_for`, and `tests/structural/test_async_bounds.py` fails on a new one or on an unaudited `asyncio.sleep` of a second or more.
+- `tests/conftest.py` fails a test that leaves a child process or a QThread running (after reaping it), and `tests/ui/conftest.py` fails a test that leaves a `RuntimeService` un-shut-down.
+- Validation children run with a disposable `HOME`/`XDG_*` (`USERPROFILE`/`LOCALAPPDATA`/`APPDATA` on Windows) and the null keyring backend, so a tier cannot write real state or reach a host credential store.
+- The docker tier builds its four runner targets through one shared cache and keeps every in-test ceiling below the tier deadline.
+- The docker tier finally receives its fixtures: the harness forwards only the fixture variables and the build-cache path, and it fails by name when the fixtures are missing instead of skipping every container check as a pass.
+
+**Prevention (Phase 4)**
+
+- `tests/structural/test_workflow_budgets.py` enforces the workflow invariants: a step ceiling and the logging wrapper on every validator step, a collect step before the pytest tiers, an unconditional `validation-logs` upload, a concurrency group, the job-below-step-sum budget, the harness-to-ceiling margin, docker per-test ceilings, no security assertions in YAML, and one owner for the compile file list.
+
 ## Unreleased — Agentic harness Phases 3–5
 
 Implements Phases 3–5 of [docs/AGENTIC_HARNESS_PLAN.md](docs/AGENTIC_HARNESS_PLAN.md). The public surface grows to thirteen model-facing tools: `update_plan` (Plan and Agent), `web_search` and `fetch_url` (Agent, off by default per workspace). The `accept_edits` approval tier is replaced by `sandbox` with no alias. The security boundary is unchanged for the executor and runner; a container gains network only through an approved setup run or a `registries` session, and the workspace policy file is read from the host only.
