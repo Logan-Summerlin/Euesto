@@ -133,10 +133,12 @@ A stalled step therefore still leaves the tier name, the last test, the `[progre
 
 ### Workflow visibility
 
-GitHub only lists a workflow in the Actions tab, and only offers it to `workflow_dispatch`, once the workflow file exists on the repository's **default branch**. A new workflow file therefore looks "missing" until it is merged; on a branch it can only be exercised by its `pull_request` trigger. Two further requirements fail *silently* — the workflow disappears from the list instead of failing — and `tests/structural/test_workflow_syntax.py` proves both before a push:
+GitHub only lists a workflow in the Actions tab, and only offers it to `workflow_dispatch`, once the workflow file exists on the repository's **default branch**. A new workflow file therefore looks "missing" until it is merged, which is why both maintained build workflows also declare `pull_request` and a `push` filter that matches every branch: a branch push and a pull request both use the workflow file from that commit, so the first run is possible before merge. That is safe because neither writes on those events — a branch or pull-request run of `Build Windows release` builds every image and packages the Windows app without pushing to GHCR or creating a release (`PUBLISH` is the single switch: a `v*` tag or a manual dispatch publishes, nothing else does, because a pull request from a fork receives a read-only token), and `Scan runtime images` only reads the newest *published* manifest.
+
+Two further requirements fail *silently* — the workflow disappears from the list instead of failing — and `tests/structural/test_workflow_syntax.py` proves both before a push:
 
 - the file must be valid YAML and a valid workflow (known keys only, `runs-on` on every job, exactly one of `uses`/`run` per step, integer ceilings, `needs` naming real jobs), and it must have a `name` so the Actions tab can list it;
-- a `push` filter must name the default branch. This repository does not record which branch that is, so the filter lists both `main` and `master`; a filter that matches neither stops validation after every merge with no error anywhere.
+- a `push` filter must match the default branch. This repository does not record which branch that is, so the maintained workflows filter on `**` and the test matches the filter as a glob; a filter that matches neither `main` nor `master` stops the workflow after every merge with no error anywhere.
 
 Every workflow also carries `workflow_dispatch`, so a maintainer can always start one by hand once it is on the default branch.
 

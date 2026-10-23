@@ -1,10 +1,25 @@
+# Publish the Windows release, and exercise the same pipeline before merge.
+#
+# Events:
+# - `v*` tag: build, publish the digest-pinned images, and attach the installer to the release.
+# - `workflow_dispatch`: the same, with a `build-<sha>` image tag.
+# - branch push / pull request: build every image and the Windows package without writing to
+#   GHCR and without creating a release, so the pipeline can be run before merge (a workflow
+#   only gains a *Run workflow* button once its file is on the default branch) and a fork's
+#   read-only token is enough. `PUBLISH` below is the single switch: every registry login, image
+#   push, and manifest step is guarded by it, so nothing binds to a publish event by accident.
 name: Build Windows release
 
 on:
-  workflow_dispatch:
+  pull_request:
   push:
+    # Every branch: the repository records no default branch name, and a filter that misses it
+    # disables the workflow after every merge with no error anywhere.
+    branches:
+      - "**"
     tags:
       - "v*"
+  workflow_dispatch:
 
 concurrency:
   group: release-${{ github.workflow }}-${{ github.ref }}
@@ -15,6 +30,9 @@ permissions:
   packages: write
 
 env:
+  # A tag or a manual dispatch publishes; a branch push and a pull request only build, so an
+  # unreviewed commit never lands in the registry.
+  PUBLISH: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') }}
   GHCR_OWNER: ${{ github.repository_owner }}
   GATEWAY_IMAGE_NAME: euesto-gateway
   EXECUTOR_IMAGE_NAME: euesto-executor
@@ -46,6 +64,7 @@ jobs:
           echo "owner=$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GitHub Container Registry
+        if: env.PUBLISH == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -58,7 +77,7 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile.gateway
-          push: true
+          push: ${{ env.PUBLISH == 'true' }}
           cache-from: type=gha,scope=gateway
           cache-to: type=gha,mode=max,scope=gateway
           tags: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.GATEWAY_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
@@ -69,7 +88,7 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile.executor
-          push: true
+          push: ${{ env.PUBLISH == 'true' }}
           cache-from: type=gha,scope=executor
           cache-to: type=gha,mode=max,scope=executor
           tags: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.EXECUTOR_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
@@ -80,7 +99,7 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile.egress-proxy
-          push: true
+          push: ${{ env.PUBLISH == 'true' }}
           cache-from: type=gha,scope=egress-proxy
           cache-to: type=gha,mode=max,scope=egress-proxy
           tags: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.EGRESS_PROXY_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
@@ -93,19 +112,28 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
           set -euo pipefail
+          # SBOM, provenance, and a recorded digest need an image output, so a build-only run
+          # validates the same target without a registry write.
+          if [[ "$PUBLISH" == "true" ]]; then
+            export_flags=(--push --sbom=true --provenance=true)
+          else
+            export_flags=()
+          fi
           for target in base python node polyglot; do
             image="${REGISTRY}/${RUNNER_IMAGE_PREFIX}-${target}:${TAG}"
             docker buildx build --file docker/Dockerfile.runner --target "runner-${target}" \
-              --sbom=true --provenance=true --push --tag "$image" \
+              "${export_flags[@]}" --tag "$image" \
               --cache-from "type=gha,scope=runner-${target}" \
               --cache-to "type=gha,mode=max,scope=runner-${target}" \
               --metadata-file "runner-${target}.json" .
+            [[ "$PUBLISH" == "true" ]] || continue
             digest=$(jq -r '."containerimage.digest"' "runner-${target}.json")
             [[ "$digest" == sha256:* ]]
             echo "${target}=${image}@${digest}" >> "$GITHUB_OUTPUT"
           done
 
       - name: Verify digest-pinned runtime image pulls
+        if: env.PUBLISH == 'true'
         shell: bash
         env:
           GATEWAY_IMAGE: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.GATEWAY_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
@@ -145,6 +173,7 @@ jobs:
 
       - name: Write digest-pinned release manifest
         id: manifest
+        if: env.PUBLISH == 'true'
         shell: bash
         env:
           GATEWAY_IMAGE: ghcr.io/${{ steps.version.outputs.owner }}/${{ env.GATEWAY_IMAGE_NAME }}:${{ steps.version.outputs.tag }}
@@ -170,6 +199,7 @@ jobs:
           echo "path=docker/release-images.json" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
+        if: env.PUBLISH == 'true'
         with:
           name: runtime-image-manifest
           path: docker/release-images.json
@@ -232,7 +262,10 @@ jobs:
           name: validation-logs
           path: validation-logs
           if-no-files-found: ignore
+      # A build-only run publishes no images, so there is no digest-pinned manifest to bundle;
+      # the package is a build check, and only a tag or a dispatch produces a releasable bundle.
       - name: Add release image manifest to package
+        if: env.PUBLISH == 'true'
         uses: actions/download-artifact@v4
         with:
           name: runtime-image-manifest

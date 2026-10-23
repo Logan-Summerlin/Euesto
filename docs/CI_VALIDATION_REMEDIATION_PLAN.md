@@ -370,6 +370,11 @@ landed with the test that pins it, per `AGENTS.md` ("Change discipline").
   `if-no-files-found: ignore`.
 - The tier list in `AGENTS.md` matches `validate.py` (`collect`, `qml-smoke`) and the deadline
   paragraph in `docs/TESTING.md` is the §5 table.
+- Later follow-up: a workflow gains its *Run workflow* button only once its file is on the
+  default branch, so `release.yml` and `vulnerability-scan.yml` also run on `pull_request` and
+  on a push to any branch (`**`), and `release.yml` publishes only from a `v*` tag or a manual
+  dispatch through one `PUBLISH` switch. The scan reads the newest *published* manifest and
+  needs `actions: read` to reach it. `Validate local gateway` keeps `main`, `master`, and tags.
 
 **Phase 3 — the suite**
 

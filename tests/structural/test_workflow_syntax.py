@@ -9,19 +9,23 @@ asserts the part of GitHub's schema that decides whether a workflow is listed an
 - every key is one GitHub defines, and every job and step is complete;
 - the workflow has a name (otherwise the Actions tab lists it by file path);
 - it can be dispatched by hand (``workflow_dispatch``), so a maintainer can always run it;
-- a ``push`` filter names both common default-branch names, because a filter that misses the
-  repository's default branch silently stops validation after a merge.
+- a ``push`` filter matches the default branch, because a filter that misses the repository's
+  default branch silently stops validation after a merge;
+- the workflows that build or scan can run from a branch and from a pull request, so a new
+  workflow file is exercisable before it reaches the default branch, where GitHub first offers
+  it in the Actions tab and to *Run workflow*.
 """
 
 from __future__ import annotations
 
+import fnmatch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
 # A `push` filter must match the default branch. The repository does not record its name, so
-# both conventional spellings are listed; an unmatched filter disables the workflow after every
-# merge, with no error anywhere.
+# both conventional spellings must be covered, by name or by a glob such as `**`; an unmatched
+# filter disables the workflow after every merge, with no error anywhere.
 DEFAULT_BRANCHES = ("main", "master")
 TOP_LEVEL_KEYS = {
     "name",
@@ -273,6 +277,14 @@ def _as_list(value: object) -> list:
     return value if isinstance(value, list) else []
 
 
+def _unquote(value: object) -> str:
+    """Drop the surrounding quotes the parser keeps on a quoted scalar."""
+    text = value if isinstance(value, str) else str(value)
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        return text[1:-1]
+    return text
+
+
 def audit(path: Path) -> list[str]:
     """Everything that stops GitHub from listing, running, or dispatching this workflow."""
     problems: list[str] = []
@@ -376,7 +388,11 @@ def test_every_workflow_can_be_run_by_hand() -> None:
 
 
 def test_every_push_trigger_covers_the_default_branch() -> None:
-    """A `push` filter that misses the default branch disables the workflow silently."""
+    """A `push` filter that misses the default branch disables the workflow silently.
+
+    The filter is matched as a glob, so a workflow may name the branches or use `**`; either way
+    the default branch has to be covered.
+    """
     problems = []
     for path in workflow_files():
         triggers = parse_workflow(path).get("on")
@@ -385,14 +401,90 @@ def test_every_push_trigger_covers_the_default_branch() -> None:
         push = triggers["push"]
         if not isinstance(push, dict) or "branches" not in push:
             continue
-        branches = set(_as_list(push["branches"]))
-        missing = set(DEFAULT_BRANCHES) - branches
+        patterns = [_unquote(pattern) for pattern in _as_list(push["branches"])]
+        missing = {
+            branch
+            for branch in DEFAULT_BRANCHES
+            if not any(fnmatch.fnmatchcase(branch, pattern) for pattern in patterns)
+        }
         if missing:
             problems.append(f"{path.name}: push filter misses {sorted(missing)}")
     assert not problems, problems
 
 
 SCAN_WORKFLOW = "vulnerability-scan.yml"
+
+
+def test_the_build_and_scan_workflows_run_before_merge() -> None:
+    """Both must run from a branch and from a pull request, not only after a merge.
+
+    GitHub only lists a workflow and offers it to `workflow_dispatch` once the file is on the
+    default branch, so a new workflow is otherwise unexercisable until it is merged. A push to a
+    branch and a pull request both use the workflow file from that commit, which is what makes
+    the first run possible.
+    """
+    problems = []
+    for filename in (SCAN_WORKFLOW, "release.yml"):
+        path = WORKFLOWS / filename
+        if not path.is_file():
+            problems.append(f"{filename}: missing")
+            continue
+        triggers = parse_workflow(path).get("on")
+        if not isinstance(triggers, dict):
+            problems.append(f"{filename}: on: must be a mapping")
+            continue
+        if "pull_request" not in triggers:
+            problems.append(f"{filename}: a pull request must run it")
+        push = triggers.get("push")
+        if not isinstance(push, dict) or not _as_list(push.get("branches")):
+            problems.append(f"{filename}: a branch push must run it")
+        if "workflow_dispatch" not in triggers:
+            problems.append(f"{filename}: keep workflow_dispatch")
+    assert not problems, problems
+
+
+def test_the_release_publishes_only_from_a_tag_or_a_dispatch() -> None:
+    """A pull request from a fork gets a read-only token, so nothing may write to the registry.
+
+    Branch and pull-request runs exist to exercise the pipeline; every write to GHCR and every
+    step that needs a published manifest is guarded by the `PUBLISH` switch, so those runs build
+    and package only.
+    """
+    path = WORKFLOWS / "release.yml"
+    document = parse_workflow(path)
+    environment = document.get("env")
+    assert isinstance(environment, dict), "release.yml needs a top-level env"
+    publish = environment.get("PUBLISH")
+    assert isinstance(publish, str), "release.yml needs the PUBLISH switch in env"
+    assert "workflow_dispatch" in publish, publish
+    assert "refs/tags/" in publish, publish
+    assert "pull_request" not in publish, publish
+    unguarded = []
+    for job_name, job in document["jobs"].items():
+        for position, step in enumerate(_as_list(job.get("steps")), 1):
+            if not isinstance(step, dict):
+                continue
+            uses = str(step.get("uses", ""))
+            if not uses.startswith(("docker/login-action", "docker/build-push-action")):
+                continue
+            guard = str(step.get("if", "")) + str(step.get("with", ""))
+            if "PUBLISH" not in guard:
+                unguarded.append(f"release.yml:{job_name} step {position}: {uses}")
+    assert not unguarded, unguarded
+
+
+def test_the_scan_can_read_the_release_runs_it_downloads_from() -> None:
+    """`permissions:` sets every unlisted scope to `none`, and the manifest is another run's.
+
+    Reading a workflow run and its artifacts needs `actions: read`; without it the fetch fails
+    with 403 and the scan never starts, so the permission is part of the workflow's contract.
+    """
+    path = WORKFLOWS / SCAN_WORKFLOW
+    permissions = parse_workflow(path).get("permissions")
+    assert isinstance(permissions, dict), "the scan needs an explicit permissions mapping"
+    assert permissions.get("actions") == "read", permissions
+    assert permissions.get("contents") == "read", permissions
+    assert permissions.get("packages") == "read", permissions
 
 
 def test_the_image_scan_runs_on_commits_and_not_only_on_a_schedule() -> None:
@@ -411,9 +503,10 @@ def test_the_image_scan_runs_on_commits_and_not_only_on_a_schedule() -> None:
         if not isinstance(push, dict):
             problems.append("the scan must run on a pushed commit")
         else:
-            branches = set(_as_list(push.get("branches")))
-            for branch in sorted(set(DEFAULT_BRANCHES) - branches):
-                problems.append(f"the push filter misses {branch}")
+            patterns = [_unquote(pattern) for pattern in _as_list(push.get("branches"))]
+            for branch in DEFAULT_BRANCHES:
+                if not any(fnmatch.fnmatchcase(branch, pattern) for pattern in patterns):
+                    problems.append(f"the push filter misses {branch}")
             if not _as_list(push.get("tags")):
                 problems.append("a release tag must run the scan too")
     assert not problems, f"{workflow.name}: {problems}"
