@@ -79,6 +79,19 @@ def test_an_unterminated_private_key_is_still_redacted() -> None:
         "AKIA lowercase akiaabcdefghij234567",
         "sk-" + "a" * 40,
     ],
+    # These values are the payload, so they stay in the parameters instead of the node id
+    # (docs/TESTING.md, "Test ids").
+    ids=[
+        "repeated-letters",
+        "sha256-hex",
+        "uuid",
+        "git-commit",
+        "short-key-prefix",
+        "task-token",
+        "base64-text",
+        "lowercase-aws-prefix",
+        "sk-letter-run",
+    ],
 )
 def test_ordinary_hashes_uuids_and_base64_are_not_flagged(benign: str) -> None:
     assert find_secrets(benign) == {}

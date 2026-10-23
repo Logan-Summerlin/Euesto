@@ -48,12 +48,12 @@ The Bash tool's tests run twice: once in-process, which stays in the fast tier, 
 A collected node id is echoed by every `-v` progress line, by each failure header, and by
 `validate.py collect`, so it must stay short: `tests/conftest.py` refuses a collected id longer
 than 200 characters and names the parametrization to fix. Keep the payload in the parameters and
-give the case an explicit `ids=`, as `tests/unit/executor/test_runner_protocol.py` and
-`tests/unit/executor/test_output_reduction.py` do. A parametrization over a captured transcript
-or a request body otherwise writes that whole payload into the tier's log, so the fast and slow
-logs show parameters instead of the failure, and one oversized case (a four-megabyte request
-body) is enough to bury the report and to repeat it in `--collect-only`.
-`tests/structural/test_test_id_bounds.py` covers the refusal.
+give the case an explicit `ids=`, as `tests/unit/executor/test_runner_protocol.py`,
+`tests/unit/executor/test_output_reduction.py`, and `tests/unit/gateway/test_redaction_and_web.py`
+do. A parametrization over a captured transcript or a request body otherwise writes that whole
+payload into the tier's log, so the fast and slow logs show parameters instead of the failure, and
+one oversized case (a four-megabyte request body) is enough to bury the report and to repeat it in
+`--collect-only`. `tests/structural/test_test_id_bounds.py` covers the refusal.
 
 ## Test timeouts
 

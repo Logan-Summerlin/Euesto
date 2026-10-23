@@ -45,8 +45,8 @@ def pytest_collection_modifyitems(config, items) -> None:
         )
         raise pytest.UsageError(
             f"{len(unbounded)} collected test id(s) exceed {MAX_NODE_ID_CHARS} characters; "
-            "give the parametrization explicit ids= (docs/TESTING.md, 'Test ids'): "
-            + offending
+            "give the parametrization explicit ids= or shorten the test name "
+            "(docs/TESTING.md, 'Test ids'): " + offending
         )
     if sys.platform != "win32":
         return
