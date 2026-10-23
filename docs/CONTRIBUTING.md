@@ -14,7 +14,7 @@ python -m pip install -r requirements-dev.lock
 
 ## Required checks
 
-The canonical validation entry point is `python scripts/validate.py`. Run `python scripts/validate.py preflight --json validation-report.json` to distinguish unavailable tools from failed checks, then `fast`, `slow`, `docker`, `ruff`, `compile`, `qml`, or `all` for explicit tiers. The individual commands are listed once, in [TESTING.md](TESTING.md#required-checks); run the ones that apply to the change.
+The canonical validation entry point is `python scripts/validate.py`. Run `python scripts/validate.py preflight --json validation-report.json` to distinguish unavailable tools from failed checks, then `fast`, `slow`, `docker`, `ruff`, `compile`, `qml`, `qml-smoke`, or `all` for explicit tiers. The individual commands are listed once, in [TESTING.md](TESTING.md#required-checks); run the ones that apply to the change.
 
 Python code is formatted with `ruff format` (run `ruff format .` before committing); the `ruff` tier fails on unformatted files. Container changes should also be checked with the repository's container workflow/scripts. QML checks apply when QML or QML-facing interfaces change.
 

@@ -31,6 +31,13 @@ Implements Phases 3–5 of [docs/AGENTIC_HARNESS_PLAN.md](docs/AGENTIC_HARNESS_P
 - `web_search` and `fetch_url` give the model documentation access through the gateway, never through the executor or runner. `fetch_url` fetches allowlisted documentation hosts and asks for any other URL.
 - `LOCAL_CHAT_EXECUTOR_EGRESS` is removed.
 
+**Release validation (Windows)**
+
+- The release job runs `pytest --collect-only` and then one step per validation tier, each `shell: bash` with its own `timeout-minutes`. Every step runs through `scripts/validation-step.sh`, which writes to `validation-logs/<name>.log`, appends a heartbeat every 20 s, prints the log when the command ends, and exits with its status; the artifact is uploaded even when the job fails.
+- `scripts/qml_smoke.py` loads `qml/Main.qml` against the real bridge (temporary database, null keyring, no Docker), fails on a QML `ReferenceError`/`TypeError` instead of ignoring it, and is bounded by faulthandler, a 30 s quit timer, and the new `validate.py qml-smoke` tier (300 s). It leaves through `os._exit` so Qt teardown cannot wedge it.
+- pytest names each test (`-v`), interrupts a hung test after 180 s with the thread method, and dumps its stack after 90 s. The validator gives a command no stdin and no console window, kills its whole process tree on a deadline, reaps it with a bounded wait, stops leaking `QT_QPA_PLATFORM` to non-Qt children, and passes Windows the OS variables plus `PYTHONUNBUFFERED`.
+- Qt tests take their host isolation from `tests/ui/conftest.py`: the null keyring backend for every module, no Docker discovery, no staged-session listing, and no automatic runtime.
+
 ## Agentic harness Phases 0–2
 
 Implements Phases 0–2 of [docs/AGENTIC_HARNESS_PLAN.md](docs/AGENTIC_HARNESS_PLAN.md). The ten-tool contract and the manifest, approval, and hash-validation protocol are unchanged. The security boundary is narrower: commands no longer run where the source mount is.

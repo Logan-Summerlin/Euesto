@@ -77,3 +77,20 @@ Transcript rich text uses Qt native text rendering as the low-risk mitigation.
 When reporting a remaining issue, record whether the delegate exists, its
 HTML is populated, its geometry is non-zero, and whether software rendering
 changes the result.
+
+## A validation step hangs
+
+The release job writes each tier's output to `validation-logs/<name>.log` and uploads the
+directory as the `validation-logs` artifact even when the job fails. Read that log in order:
+
+- The last `PASSED`/`FAILED` line (`-v` is always on) names the test that was running, or the
+  `+ <command>` line that started if none did.
+- `Timeout (0:03:00)` comes from pytest-timeout: the test exceeded its 180 s deadline and the
+  thread method interrupted it.
+- The `faulthandler` stack printed at 90 s names the blocked native call: `QTest.qWait`,
+  `QApplication` teardown, `RegisterHotKey`, `sqlite3`, or Docker.
+- Heartbeat lines every 20 s show the step was alive while producing no output.
+
+A `tests/ui/` frame means the test reached something real. Fix the isolation in
+`tests/ui/conftest.py` (one `QApplication` for the session, `shutdown()`/`deleteLater()` in every
+fixture teardown, no automatic runtime) rather than raising a timeout.

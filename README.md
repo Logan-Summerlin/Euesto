@@ -86,7 +86,7 @@ py -3.12 -m venv .venv
 python -m pip install -r requirements-dev.lock
 ```
 
-Run the applicable checks with `python scripts/validate.py` (`preflight`, `fast`, `slow`, `docker`, `ruff`, `compile`, `qml`, or `all`). The individual commands are listed once, in [docs/TESTING.md](docs/TESTING.md#required-checks).
+Run the applicable checks with `python scripts/validate.py` (`preflight`, `fast`, `slow`, `docker`, `ruff`, `compile`, `qml`, `qml-smoke`, or `all`). The individual commands are listed once, in [docs/TESTING.md](docs/TESTING.md#required-checks).
 
 Unit tests do not require provider credentials. Container/security checks are part of the CI workflow when container-related changes apply.
 

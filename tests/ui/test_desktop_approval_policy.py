@@ -3,12 +3,9 @@ network mode (harness plan 4.1, 5.3)."""
 
 from __future__ import annotations
 
-import os
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 

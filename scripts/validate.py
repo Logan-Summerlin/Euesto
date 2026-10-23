@@ -25,33 +25,69 @@ EXECUTABLES = ("pyside6-qmllint", "docker", "docker compose", "pyinstaller")
 # Hard ceilings per command. A hung command must fail its tier by name, not stall the whole
 # validation step (the release job's Windows step once sat for hours with no output).
 COMMAND_TIMEOUT_SECONDS = 1200
+QML_SMOKE_TIMEOUT_SECONDS = 300
 DOCKER_TIMEOUT_SECONDS = 3600
+COMMAND_TIMEOUTS = {
+    "docker": DOCKER_TIMEOUT_SECONDS,
+    "qml-smoke": QML_SMOKE_TIMEOUT_SECONDS,
+}
+# After a deadline the command tree is killed and then awaited for at most this long; a process
+# that refuses to die is reported as the timeout it already is instead of blocking the tier.
+KILL_TIMEOUT_SECONDS = 30
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+# Tiers whose direct child is a Qt program. Only they receive the Qt platform variables: a
+# plain Python child told to use the offscreen platform breaks, and the variable would be
+# inherited by every process (and every QApplication decision) that child starts.
+QT_TIERS = frozenset({"qml", "qml-smoke"})
+QT_ENV = {
+    "QT_QPA_PLATFORM": "offscreen",
+    "QT_QUICK_BACKEND": "software",
+    "QT_QUICK_CONTROLS_STYLE": "Fusion",
+}
+# OS-level variables a Windows child needs for DLL and service-provider resolution (including
+# asyncio/WinSock startup), executable lookup, Path.home()/Path.expanduser(), and imports from
+# an active virtual environment. User directories that only a signed-in desktop has are
+# included because tests read them through tempfile and Qt.
+WINDOWS_ENV = (
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "PROGRAMDATA",
+    "ProgramFiles",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+    "VIRTUAL_ENV",
+)
 
 
-def _safe_env() -> dict[str, str]:
-    """Only pass validation variables; credentials and user configuration are excluded."""
+def _safe_env(*, qt: bool = False, windows: bool | None = None) -> dict[str, str]:
+    """Only pass validation variables; credentials and user configuration are excluded.
+
+    ``qt`` adds the offscreen platform variables for the tiers whose child is itself a Qt
+    program. Leaking them to everything else told unrelated Python children which Qt platform
+    to use and reached the processes those children start. ``windows`` overrides the host
+    platform for tests; it defaults to ``os.name == "nt"``.
+    """
     env = {
         "PATH": os.environ.get("PATH", ""),
         "PYTHONPATH": str(ROOT),
         "PYTHONIOENCODING": "utf-8",
-        "QT_QPA_PLATFORM": "offscreen",
-        "QT_QUICK_BACKEND": "software",
+        "PYTHONUNBUFFERED": "1",
     }
-    if os.name == "nt":
-        # Windows subprocesses need these OS-level variables for DLL and
-        # service-provider resolution (including asyncio/WinSock startup),
-        # executable lookup, and Path.home() (USERPROFILE).
-        for var in (
-            "SYSTEMROOT",
-            "SYSTEMDRIVE",
-            "WINDIR",
-            "COMSPEC",
-            "PATHEXT",
-            "TEMP",
-            "TMP",
-            "USERPROFILE",
-            "LOCALAPPDATA",
-        ):
+    if qt:
+        env.update(QT_ENV)
+    on_windows = os.name == "nt" if windows is None else windows
+    if on_windows:
+        for var in WINDOWS_ENV:
             value = os.environ.get(var)
             if value:
                 env[var] = value
@@ -75,6 +111,7 @@ def _run_probe(
             stderr=subprocess.STDOUT,
             timeout=timeout,
             env=env,
+            creationflags=CREATE_NO_WINDOW,
         )
         output.seek(0)
         text = output.read().decode("utf-8", "replace")
@@ -186,6 +223,8 @@ def commands(tier: str) -> list[tuple[str, list[str]]]:
         return [("docker", pytest + ["-m", "docker"])]
     if tier == "qml":
         return [("qml", ["pyside6-qmllint", *QML_FILES])]
+    if tier == "qml-smoke":
+        return [("qml-smoke", [sys.executable, "scripts/qml_smoke.py"])]
     if tier == "ruff":
         ruff = [sys.executable, "-m", "ruff"]
         return [
@@ -219,6 +258,7 @@ def commands(tier: str) -> list[tuple[str, list[str]]]:
             *commands("ruff"),
             *commands("compile"),
             *commands("qml"),
+            *commands("qml-smoke"),
             *commands("docker"),
         ]
     raise ValueError(f"unknown validation tier: {tier}")
@@ -227,27 +267,51 @@ def commands(tier: str) -> list[tuple[str, list[str]]]:
 def _run_command(
     command: list[str], *, cwd: Path, env: dict[str, str], timeout: float
 ) -> subprocess.CompletedProcess:
-    """Run a validation command; on timeout, kill its whole process tree.
+    """Run a validation command under a deadline that is never unbounded.
 
-    ``subprocess.run`` kills only the direct child. On Windows a grandchild (a test helper, a
-    launcher) that inherits the step's output keeps the CI log open, so the step never ends.
+    The command gets no console window and no stdin, so it can neither prompt nor inherit an
+    interactive console. On timeout its whole process tree is killed (``subprocess.run`` kills
+    only the direct child, and on Windows a grandchild that inherits the step's output keeps
+    the CI log open), then the direct child is reaped with its own bounded wait. A child that
+    still refuses to exit is reported as the deadline failure it already is.
     """
-    process = subprocess.Popen(command, cwd=cwd, env=env)
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        creationflags=CREATE_NO_WINDOW,
+    )
     try:
         code = process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        if os.name == "nt":
+        _kill_tree(process)
+        try:
+            process.wait(timeout=KILL_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
+        raise
+    return subprocess.CompletedProcess(command, code)
+
+
+def _kill_tree(process: subprocess.Popen) -> None:
+    """Kill a command and its descendants; the caller reaps the direct child afterwards."""
+    if os.name == "nt":
+        try:
             subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(process.pid)],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=60,
+                creationflags=CREATE_NO_WINDOW,
             )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    try:
         process.kill()
-        process.wait()
-        raise
-    return subprocess.CompletedProcess(command, code)
+    except OSError:
+        pass
 
 
 def execute(
@@ -260,9 +324,14 @@ def execute(
     worst = 0
     for name, command in commands(tier):
         print("+", " ".join(command), flush=True)
-        timeout = DOCKER_TIMEOUT_SECONDS if name == "docker" else COMMAND_TIMEOUT_SECONDS
+        timeout = COMMAND_TIMEOUTS.get(name, COMMAND_TIMEOUT_SECONDS)
         try:
-            result = runner(command, cwd=ROOT, env=_safe_env(), timeout=timeout)
+            result = runner(
+                command,
+                cwd=ROOT,
+                env=_safe_env(qt=name in QT_TIERS),
+                timeout=timeout,
+            )
             code = result.returncode
         except (FileNotFoundError, OSError) as exc:
             code, detail = 127, f"unavailable: {type(exc).__name__}"
@@ -288,7 +357,18 @@ def execute(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "tier", choices=("preflight", "fast", "slow", "docker", "qml", "ruff", "compile", "all")
+        "tier",
+        choices=(
+            "preflight",
+            "fast",
+            "slow",
+            "docker",
+            "qml",
+            "qml-smoke",
+            "ruff",
+            "compile",
+            "all",
+        ),
     )
     parser.add_argument("--json", metavar="PATH")
     parser.add_argument("--allow-unavailable", action="store_true")

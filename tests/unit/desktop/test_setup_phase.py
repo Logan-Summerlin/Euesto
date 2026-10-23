@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import scripts.validate as validate
 from runner.setup import (
     TIMEOUT_EXIT,
     SetupError,
@@ -229,7 +230,9 @@ def test_run_docker_streams_lines_and_honours_the_deadline(tmp_path: Path) -> No
         Path(sys.executable),
         ["-c", "print('one'); print('two')"],
         cwd=tmp_path,
-        environment={},
+        # The child is a Python process: it needs SYSTEMROOT and the rest, exactly as the
+        # validation harness gives them. An empty environment made this fail on Windows.
+        environment=validate._safe_env(),
         timeout=30,
         stop_event=threading.Event(),
         on_line=seen.append,
@@ -240,7 +243,7 @@ def test_run_docker_streams_lines_and_honours_the_deadline(tmp_path: Path) -> No
             Path(sys.executable),
             ["-c", "import time; time.sleep(30)"],
             cwd=tmp_path,
-            environment={},
+            environment=validate._safe_env(),
             timeout=0.5,
             stop_event=threading.Event(),
         )

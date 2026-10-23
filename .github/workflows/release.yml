@@ -195,28 +195,36 @@ jobs:
           cache: pip
       - name: Bootstrap locked validation environment
         run: python scripts/bootstrap.py
-      - name: Validate non-container application
+      - name: Collect tests without running them
         shell: bash
-        timeout-minutes: 40
-        run: |
-          # Each command writes to a log file instead of the step's output pipe. A child that
-          # outlives its tier's kill (scripts/validate.py) then cannot keep the step open, and
-          # the log is printed as soon as its command ends and uploaded by the next step.
-          mkdir -p validation-logs
-          run_logged() {
-            local name="$1"
-            shift
-            local status=0
-            "$@" > "validation-logs/${name}.log" 2>&1 || status=$?
-            cat "validation-logs/${name}.log"
-            return "$status"
-          }
-          run_logged fast python scripts/validate.py fast
-          run_logged slow python scripts/validate.py slow --allow-unavailable
-          run_logged ruff python scripts/validate.py ruff
-          run_logged compile python scripts/validate.py compile
-          run_logged qml python scripts/validate.py qml
-          run_logged qml-smoke python scripts/qml_smoke.py
+        # Collection imports every test module; a hang there is a Python import problem, not a
+        # test timeout, and this step names it in seconds instead of at the end of a tier.
+        timeout-minutes: 5
+        run: bash scripts/validation-step.sh collect python -m pytest --collect-only -q
+      - name: Validate: fast tests
+        shell: bash
+        timeout-minutes: 15
+        run: bash scripts/validation-step.sh fast python scripts/validate.py fast
+      - name: Validate: slow tests
+        shell: bash
+        timeout-minutes: 20
+        run: bash scripts/validation-step.sh slow python scripts/validate.py slow --allow-unavailable
+      - name: Validate: ruff
+        shell: bash
+        timeout-minutes: 5
+        run: bash scripts/validation-step.sh ruff python scripts/validate.py ruff
+      - name: Validate: compile
+        shell: bash
+        timeout-minutes: 5
+        run: bash scripts/validation-step.sh compile python scripts/validate.py compile
+      - name: Validate: QML lint
+        shell: bash
+        timeout-minutes: 5
+        run: bash scripts/validation-step.sh qml python scripts/validate.py qml
+      - name: Validate: QML smoke
+        shell: bash
+        timeout-minutes: 5
+        run: bash scripts/validation-step.sh qml-smoke python scripts/validate.py qml-smoke
       - uses: actions/upload-artifact@v4
         if: always()
         with:

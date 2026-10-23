@@ -8,11 +8,8 @@ exist on the bridge.
 
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 

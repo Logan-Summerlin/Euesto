@@ -6,13 +6,9 @@ the ``slow`` tier and skip cleanly where PySide6 cannot load.
 
 from __future__ import annotations
 
-import os
 import time
 from collections.abc import Callable
 from pathlib import Path
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-os.environ.setdefault("QT_QUICK_BACKEND", "software")
 
 import pytest
 
