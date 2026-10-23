@@ -193,9 +193,13 @@ Both deletions are irreversible and are not required for normal use.
 
 - **Agent unavailable:** restart with `-Workspace`, then select the identical canonical folder.
 - **Executor exits during startup:** inspect `docker compose --profile agent logs executor`; the
-  most common causes are a workspace exceeding 300,000 materialized files or the 2.5 GB staging budget, an insufficient
-  Docker Desktop memory allocation, or an unreadable source file. Remove unnecessary generated data
-  or select a narrower project folder.
+  entrypoint names the precondition that failed. The most common causes are a workspace
+  exceeding 300,000 materialized files or the 2.5 GB staging budget, an insufficient Docker
+  Desktop memory allocation, an unreadable source file, or a credential the container cannot
+  read: Compose mounts a `file:` secret as a bind mount, so the container keeps the host
+  file's owner and mode, while the gateway runs as UID 10001 and the executor as UID 10002
+  (the container tier's fixtures are world-readable for exactly this reason). Remove
+  unnecessary generated data or select a narrower project folder.
 - **Workspace identity mismatch:** run `dev-down.ps1`; do not reuse the old executor. Kept staging
   for each workspace lives in its own volumes and is never mounted for another workspace.
 - **Socket unavailable:** inspect `docker compose --profile agent ps` and the executor and runner

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
+import shutil
 import signal
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -68,6 +71,38 @@ def test_container_tier_fixtures_reach_the_validation_child(monkeypatch) -> None
     assert env["LOCAL_CHAT_WORKSPACE"] == "/tmp/euesto/workspace"
     assert env["EUSTO_BUILDX_CACHE_DIR"] == "/tmp/euesto/cache"
     assert "OPENROUTER_API_KEY" not in env
+
+
+@pytest.mark.posix
+@pytest.mark.skipif(
+    shutil.which("bash") is None,
+    reason="the fixture script is checked through the file modes it sets",
+)
+def test_container_fixture_credentials_are_readable_by_the_container_users(tmp_path) -> None:
+    """A credential the containers cannot read fails every whole-profile check.
+
+    Compose mounts a `file:` secret as a bind mount, so a container sees the host file's owner
+    and mode. These fixtures belong to the CI user, while the gateway runs as UID 10001 and the
+    executor as UID 10002: with a 0600 credential the executor's entrypoint exited at its
+    credential check, the gateway refused a token it never read, and `docker compose up --wait`
+    failed for both egress checks and the executor-to-runner check while the runner-only check
+    passed, with no error naming the credential.
+    """
+    root = tmp_path / "euesto-validation"
+    subprocess.run(
+        ["bash", "-c", "set -euo pipefail; source scripts/docker-fixtures.sh; setup_fixtures"],
+        cwd=ROOT,
+        env={**os.environ, "LOCAL_CHAT_CI_ROOT": str(root)},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    secrets = root / "secrets"
+    for name in ("gateway_token.txt", "executor_token.txt"):
+        mode = stat.S_IMODE((secrets / name).stat().st_mode)
+        assert mode & stat.S_IROTH, f"{name} is mode {mode:o}; a container user cannot read it"
+    # The directory stays private: only the two files the containers mount are readable.
+    assert stat.S_IMODE(secrets.stat().st_mode) & 0o077 == 0
 
 
 def test_only_the_qt_tiers_get_the_qt_environment() -> None:
