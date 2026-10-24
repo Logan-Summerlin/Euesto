@@ -5,8 +5,13 @@
 Run `python scripts/validate.py preflight --json validation-report.json`. **Unavailable** means a
 required executable or dependency is absent (or a pytest tier collected no tests); install the
 locked development dependencies or use `--allow-unavailable` only for diagnostics. **Failed** means
-the tool ran and returned an error, timed out, or the environment violated a prerequisite and must
-be investigated. A full validation run does not silently convert either result into a pass.
+the tool ran and returned an error, or the environment violated a prerequisite (the Docker daemon
+not answering is one), and must be investigated. A version probe that timed out is not a failure:
+an executable found on `PATH` stays **available** with an unknown version and `version probe timed
+out after 10s` as its detail, because the first launch of a freshly installed tool on a cold Windows
+runner is slow rather than missing. The QML linter is never launched at all: `preflight` locates
+`pyside6-qmllint` and reports the version of the PySide6 distribution it ships with, and the `qml`
+tier proves it runs. A full validation run does not silently convert either result into a pass.
 
 ## Docker failures
 

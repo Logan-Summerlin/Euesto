@@ -19,12 +19,22 @@ import threading
 import time
 from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 ROOT = Path(__file__).resolve().parents[1]
 QML_FILES = ("qml/Main.qml", "qml/Sidebar.qml", "qml/Transcript.qml", "qml/Composer.qml")
 PYTHON_PACKAGES = ("PySide6", "pytest", "pytest-timeout", "ruff")
 EXECUTABLES = ("pyside6-qmllint", "docker", "docker compose", "pyinstaller")
+# Tools proven present by a ``PATH`` lookup plus the version of the distribution that ships
+# them, instead of by launching them. ``pyside6-qmllint`` is the first Qt program a Windows job
+# starts, so its launch pays for loading (and virus-scanning) the freshly installed Qt DLLs:
+# that measures a cold start, not availability, and under a short probe deadline it reported a
+# working linter as failed and turned the release gate red. The ``qml`` tier runs it for real.
+DISTRIBUTION_PROBES = {"pyside6-qmllint": "PySide6"}
+# The deadline for one version probe. Four tools plus the Docker daemon are the most a
+# preflight probes, so this keeps the whole probe phase inside the 60 s preflight deadline
+# while still covering a cold first launch; a probe that times out is not a failure verdict.
+VERSION_PROBE_TIMEOUT_SECONDS = 10
 # The deadline ladder, innermost first: pytest's per-test timeout (`pyproject.toml`, 180 s) <
 # the harness deadline for the tier < the workflow step ceiling < the job ceiling. A deadline
 # that cannot fire before GitHub kills the step reports nothing, so every tier has its own and
@@ -226,17 +236,44 @@ def _run_probe(
     return subprocess.CompletedProcess(command, completed.returncode, stdout=text, stderr="")
 
 
+class _Version(NamedTuple):
+    """A tool's version, why it could not be read, and whether the probe ran out of time."""
+
+    version: str
+    detail: str
+    timed_out: bool
+
+
 def _version(
     command: list[str], runner: Callable[..., subprocess.CompletedProcess] = _run_probe
-) -> tuple[str, str]:
+) -> _Version:
+    """Report a tool's version without turning a slow cold start into a broken tool.
+
+    The deadline is small enough that every probe fits the 60 s preflight deadline and large
+    enough for a freshly installed console script on a cold Windows runner to answer: its
+    first launch loads, and the host's virus scanner inspects, the package it ships with.
+    """
     try:
-        result = runner(command, timeout=8, env=_safe_env())
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return "unknown", type(exc).__name__
+        result = runner(command, timeout=VERSION_PROBE_TIMEOUT_SECONDS, env=_safe_env())
+    except subprocess.TimeoutExpired:
+        return _Version(
+            "unknown", f"timed out after {VERSION_PROBE_TIMEOUT_SECONDS}s", timed_out=True
+        )
+    except OSError as exc:
+        return _Version("unknown", type(exc).__name__, timed_out=False)
     output = (result.stdout or result.stderr or "").strip().splitlines()
     candidate = output[0][:120] if output else "unknown"
     version = candidate if re.search(r"\d+\.\d+", candidate) else "unknown"
-    return version, "" if result.returncode == 0 else f"exit {result.returncode}"
+    detail = "" if result.returncode == 0 else f"exit {result.returncode}"
+    return _Version(version, detail, timed_out=False)
+
+
+def _package_version(name: str) -> str:
+    """The installed distribution's version, or ``unknown`` when its metadata is absent."""
+    try:
+        return importlib.metadata.version(name)
+    except Exception:
+        return "unknown"
 
 
 def _record(
@@ -298,13 +335,35 @@ def preflight(
         if not shutil.which(executable):
             records.append(_record(name, "unavailable", detail="executable not found"))
             continue
+        distribution = DISTRIBUTION_PROBES.get(name)
+        if distribution:
+            records.append(
+                _record(
+                    name,
+                    "available",
+                    _package_version(distribution),
+                    f"ships with {distribution}",
+                )
+            )
+            continue
         command = (
             ["docker", "compose", "version"]
             if name == "docker compose"
             else [executable, "--version"]
         )
-        version, error = _version(command, runner)
-        records.append(_record(name, "failed" if error else "available", version, error))
+        probe = _version(command, runner)
+        # Found on ``PATH`` and failed to answer are different facts: a probe that timed out
+        # means the tool was slow to start, and the tier that runs it is the authority on
+        # whether it works. Reporting ``failed`` here made the release gate depend on the
+        # temperature of a Windows runner's virus scanner.
+        records.append(
+            _record(
+                name,
+                "available" if probe.timed_out or not probe.detail else "failed",
+                probe.version,
+                f"version probe {probe.detail}" if probe.timed_out else probe.detail,
+            )
+        )
     for filename in QML_FILES:
         records.append(
             _record(
@@ -315,13 +374,15 @@ def preflight(
         )
     if shutil.which("docker"):
         command = ["docker", "info", "--format", "{{.ServerVersion}}"]
-        version, error = _version(command, runner)
+        probe = _version(command, runner)
+        # Unlike a tool's version probe, this one is a reachability verdict: the docker tier
+        # cannot run when the daemon does not answer, including when it does not answer in time.
         records.append(
             _record(
                 "docker-daemon",
-                "available" if not error else "failed",
-                version,
-                error or "reachable",
+                "available" if not probe.detail else "failed",
+                probe.version,
+                probe.detail or "reachable",
             )
         )
     else:

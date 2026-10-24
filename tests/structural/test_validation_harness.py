@@ -397,9 +397,45 @@ def test_version_output_is_bounded_and_version_like() -> None:
     def runner(*args, **kwargs):
         return subprocess.CompletedProcess(args[0], 0, stdout="secret-token\n", stderr="")
 
-    version, detail = validate._version(["tool", "--version"], runner)
-    assert version == "unknown"
-    assert detail == ""
+    probe = validate._version(["tool", "--version"], runner)
+    assert (probe.version, probe.detail, probe.timed_out) == ("unknown", "", False)
+
+
+def test_a_version_probe_timeout_does_not_condemn_an_installed_tool(monkeypatch) -> None:
+    """A cold first launch is slow, not missing: it must not fail a required tier's gate."""
+
+    def slow(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(validate.shutil, "which", lambda name: "/usr/bin/" + name)
+    report = validate.preflight("fast", runner=slow)
+    checks = {check["name"]: check for check in report["checks"]}
+    assert checks["pyinstaller"]["status"] == "available"
+    assert "timed out" in checks["pyinstaller"]["detail"]
+    # The daemon probe is a reachability test, so there a timeout stays a failure.
+    assert checks["docker-daemon"]["status"] == "failed"
+
+
+def test_preflight_never_launches_the_qml_linter(monkeypatch) -> None:
+    """Its first cold Qt start timed out and reported a working linter as a failed gate."""
+    launched: list[list[str]] = []
+
+    def runner(command, **kwargs):
+        launched.append(list(command))
+        return _version_stub()
+
+    monkeypatch.setattr(validate.shutil, "which", lambda name: "/usr/bin/" + name)
+    report = validate.preflight("qml", runner=runner)
+    checks = {check["name"]: check for check in report["checks"]}
+    assert checks["pyside6-qmllint"]["status"] == "available"
+    assert checks["pyside6-qmllint"]["detail"] == "ships with PySide6"
+    assert not any(command[0].startswith("pyside6-qmllint") for command in launched)
+
+
+def test_preflight_probes_fit_the_preflight_deadline() -> None:
+    """Four tools plus the daemon, at the per-probe deadline, stay inside 60 s."""
+    probes = len(validate.EXECUTABLES) + 1
+    assert probes * validate.VERSION_PROBE_TIMEOUT_SECONDS < validate.TIER_TIMEOUTS["preflight"]
 
 
 def test_validation_scripts_and_lock_are_repository_owned() -> None:
