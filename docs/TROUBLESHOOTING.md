@@ -94,3 +94,42 @@ directory as the `validation-logs` artifact even when the job fails. Read that l
 A `tests/ui/` frame means the test reached something real. Fix the isolation in
 `tests/ui/conftest.py` (one `QApplication` for the session, `shutdown()`/`deleteLater()` in every
 fixture teardown, no automatic runtime) rather than raising a timeout.
+
+## A workflow cannot be dispatched
+
+`Workflow dispatch unavailable — Workflow does not exist or does not have a workflow_dispatch
+trigger in this branch` has two causes, and the wording describes only the first.
+
+1. **The file is not where GitHub looks.** `workflow_dispatch` is resolved against the **default
+   branch**: a workflow is listed in the Actions tab, and offered to *Run workflow*, only once
+   its file exists there, and the branch picked in the dropdown must also contain the file with
+   the trigger. A workflow added on a feature branch therefore has no button and no dispatch-API
+   entry until it is merged, however valid the file is.
+2. **The file is not valid YAML.** GitHub reports the syntax error separately — `You have an
+   error in your yaml syntax on line <n>` — and then treats the workflow as nonexistent, which is
+   the same message with no hint that the file itself is the problem. `Build Windows release`
+   failed exactly this way on `- name: Validate: fast tests`: an unquoted plain scalar may not
+   contain `": "`, so the parser read a mapping where a scalar must be. Quote the value
+   (`- name: "Validate: fast tests"`) and push again;
+   `tests/structural/test_workflow_syntax.py` now fails on any unquoted `": "` in a value and
+   names the line.
+
+Nothing in the repository can lift that rule, so run it before merge through an event that reads
+the workflow from the commit rather than the default branch:
+
+- push a commit to the branch: `Build Windows release` and `Scan runtime images` filter `push` on
+  `**`, so any branch runs them (an empty commit is enough to re-run one);
+- open a pull request, or push to an existing one: `pull_request` reads the workflow from that
+  commit, so a PR that adds the workflow runs it once without being merged.
+
+Establish which side is missing before changing anything:
+
+- `gh workflow list` — a workflow missing from the list does not exist on the default branch;
+- `gh repo view --json defaultBranchRef --jq .defaultBranchRef.name`, then
+  `gh api "repos/{owner}/{repo}/contents/.github/workflows?ref=<that branch>"` — what the default
+  branch actually has;
+- `gh workflow run "Build Windows release" --ref <branch>` — the API form of the button; it fails
+  with the same message for the same reason.
+
+After the merge the dropdown runs the workflow from any branch that contains the file; a branch
+created before the merge still shows the message until it is rebased or merged up.

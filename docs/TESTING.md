@@ -137,7 +137,7 @@ GitHub only lists a workflow in the Actions tab, and only offers it to `workflow
 
 Two further requirements fail *silently* — the workflow disappears from the list instead of failing — and `tests/structural/test_workflow_syntax.py` proves both before a push:
 
-- the file must be valid YAML and a valid workflow (known keys only, `runs-on` on every job, exactly one of `uses`/`run` per step, integer ceilings, `needs` naming real jobs), and it must have a `name` so the Actions tab can list it;
+- the file must be valid YAML and a valid workflow (known keys only, `runs-on` on every job, exactly one of `uses`/`run` per step, integer ceilings, `needs` naming real jobs, and no unquoted `": "` in a value — `- name: Validate: fast tests` is a syntax error that makes GitHub hide the whole workflow), and it must have a `name` so the Actions tab can list it;
 - a `push` filter must match the default branch. This repository does not record which branch that is, so the maintained workflows filter on `**` and the test matches the filter as a glob; a filter that matches neither `main` nor `master` stops the workflow after every merge with no error anywhere.
 
 Every workflow also carries `workflow_dispatch`, so a maintainer can always start one by hand once it is on the default branch.

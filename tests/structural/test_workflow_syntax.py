@@ -7,6 +7,8 @@ asserts the part of GitHub's schema that decides whether a workflow is listed an
 
 - it parses as block YAML, with no duplicate keys;
 - every key is one GitHub defines, and every job and step is complete;
+- no value is a plain scalar containing ": " (GitHub rejects the file; an invalid workflow is
+  listed nowhere and cannot be dispatched, so it looks like a missing file rather than a typo);
 - the workflow has a name (otherwise the Actions tab lists it by file path);
 - it can be dispatched by hand (``workflow_dispatch``), so a maintainer can always run it;
 - a ``push`` filter matches the default branch, because a filter that misses the repository's
@@ -19,6 +21,7 @@ asserts the part of GitHub's schema that decides whether a workflow is listed an
 from __future__ import annotations
 
 import fnmatch
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -285,6 +288,48 @@ def _unquote(value: object) -> str:
     return text
 
 
+def _yaml_lines(path: Path):
+    """Yield ``(number, text)`` for each YAML line outside a block scalar body."""
+    block_indent: int | None = None
+    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        indent = len(raw) - len(raw.lstrip(" "))
+        text = raw.strip()
+        if block_indent is not None:
+            if not text or indent > block_indent:
+                continue
+            block_indent = None
+        if not text or text.startswith("#"):
+            continue
+        yield number, text
+        tail = text.partition(":")[2].strip()
+        if tail in BLOCK_MARKERS:
+            block_indent = indent
+
+
+def scalar_problems(path: Path) -> list[str]:
+    """Reject a plain scalar that YAML would read as a nested mapping.
+
+    An unquoted `: ` inside a value makes GitHub answer "You have an error in your yaml syntax
+    on line <n>" and then treat the workflow as absent: it is not listed in the Actions tab,
+    cannot be dispatched, and looks exactly like a missing file. `release.yml` shipped
+    `- name: Validate: fast tests` for that reason. Block scalar bodies are skipped, so a
+    `run: |` script may contain colons freely.
+    """
+    problems: list[str] = []
+    for number, text in _yaml_lines(path):
+        if text.startswith("- "):
+            text = text[2:].strip()
+        _, value = _split_key(text, path.name, number)
+        if value is None:
+            continue
+        value = value.strip()
+        if not value or value[0] in "\"'":
+            continue
+        if ": " in value or value.endswith(":"):
+            problems.append(f"{path.name}:{number}: quote a value containing ': ' ({text})")
+    return problems
+
+
 def audit(path: Path) -> list[str]:
     """Everything that stops GitHub from listing, running, or dispatching this workflow."""
     problems: list[str] = []
@@ -292,6 +337,7 @@ def audit(path: Path) -> list[str]:
         document = parse_workflow(path)
     except WorkflowError as exc:
         return [str(exc)]
+    problems.extend(scalar_problems(path))
     unknown = set(document) - TOP_LEVEL_KEYS
     if unknown:
         problems.append(f"{path.name}: unknown top-level keys {sorted(unknown)}")
@@ -363,6 +409,34 @@ def test_every_workflow_is_a_valid_workflow() -> None:
     assert not problems, problems
 
 
+def test_an_unquoted_colon_space_in_a_value_is_reported() -> None:
+    """`release.yml` shipped `- name: Validate: fast tests`, and GitHub rejected the whole file.
+
+    The failure mode is silent in the UI — the workflow is not listed and cannot be dispatched
+    — so the check has to name the line before the push. A temporary directory is used instead
+    of a fixture so the module's own ``__main__`` self-check can run it too.
+    """
+    source = (
+        "name: Example\n"
+        "on:\n"
+        "  workflow_dispatch:\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - name: Validate: fast tests\n"
+        "        run: echo ok\n"
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        broken = Path(directory) / "broken.yml"
+        broken.write_text(source, encoding="utf-8")
+        problems = audit(broken)
+        assert any("quote a value containing" in problem for problem in problems), problems
+        fixed = Path(directory) / "fixed.yml"
+        fixed.write_text(source.replace(": Validate:", ': "Validate:'), encoding="utf-8")
+        assert audit(fixed) == []
+
+
 def test_every_workflow_has_its_own_name() -> None:
     """Two workflows with one name are indistinguishable in the Actions tab."""
     seen: dict[str, str] = {}
@@ -390,8 +464,8 @@ def test_every_workflow_can_be_run_by_hand() -> None:
 def test_every_push_trigger_covers_the_default_branch() -> None:
     """A `push` filter that misses the default branch disables the workflow silently.
 
-    The filter is matched as a glob, so a workflow may name the branches or use `**`; either way
-    the default branch has to be covered.
+    The filter is matched as a glob, so a workflow may name the branches or use `**`; either
+    way the default branch has to be covered.
     """
     problems = []
     for path in workflow_files():
@@ -419,9 +493,9 @@ def test_the_build_and_scan_workflows_run_before_merge() -> None:
     """Both must run from a branch and from a pull request, not only after a merge.
 
     GitHub only lists a workflow and offers it to `workflow_dispatch` once the file is on the
-    default branch, so a new workflow is otherwise unexercisable until it is merged. A push to a
-    branch and a pull request both use the workflow file from that commit, which is what makes
-    the first run possible.
+    default branch, so a new workflow is otherwise unexercisable until it is merged. A push to
+    a branch and a pull request both use the workflow file from that commit, which is what
+    makes the first run possible.
     """
     problems = []
     for filename in (SCAN_WORKFLOW, "release.yml"):
@@ -447,8 +521,8 @@ def test_the_release_publishes_only_from_a_tag_or_a_dispatch() -> None:
     """A pull request from a fork gets a read-only token, so nothing may write to the registry.
 
     Branch and pull-request runs exist to exercise the pipeline; every write to GHCR and every
-    step that needs a published manifest is guarded by the `PUBLISH` switch, so those runs build
-    and package only.
+    step that needs a published manifest is guarded by the `PUBLISH` switch, so those runs
+    build and package only.
     """
     path = WORKFLOWS / "release.yml"
     document = parse_workflow(path)

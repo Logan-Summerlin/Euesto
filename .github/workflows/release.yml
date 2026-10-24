@@ -232,27 +232,30 @@ jobs:
         # test timeout, and this step names it in seconds instead of at the end of a tier.
         timeout-minutes: 5
         run: bash scripts/validation-step.sh collect python scripts/validate.py collect
-      - name: Validate: fast tests
+      # The labels are quoted because an unquoted plain scalar may not contain ": ". GitHub
+      # rejects the whole file ("You have an error in your yaml syntax"), and an invalid workflow
+      # is not listed and cannot be dispatched — it looks like a missing file, not a typo.
+      - name: "Validate: fast tests"
         shell: bash
         timeout-minutes: 20
         run: bash scripts/validation-step.sh fast python scripts/validate.py fast
-      - name: Validate: slow tests
+      - name: "Validate: slow tests"
         shell: bash
         timeout-minutes: 25
         run: bash scripts/validation-step.sh slow python scripts/validate.py slow --allow-unavailable
-      - name: Validate: ruff
+      - name: "Validate: ruff"
         shell: bash
         timeout-minutes: 10
         run: bash scripts/validation-step.sh ruff python scripts/validate.py ruff
-      - name: Validate: compile
+      - name: "Validate: compile"
         shell: bash
         timeout-minutes: 10
         run: bash scripts/validation-step.sh compile python scripts/validate.py compile
-      - name: Validate: QML lint
+      - name: "Validate: QML lint"
         shell: bash
         timeout-minutes: 10
         run: bash scripts/validation-step.sh qml python scripts/validate.py qml
-      - name: Validate: QML smoke
+      - name: "Validate: QML smoke"
         shell: bash
         timeout-minutes: 10
         run: bash scripts/validation-step.sh qml-smoke python scripts/validate.py qml-smoke

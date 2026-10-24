@@ -63,6 +63,15 @@ The container tier failed the same three checks after the line-ending fix — bo
 - `vulnerability-scan.yml` declares `actions: read`. `permissions:` sets every scope it does not list to `none`, so the `gh run list` / `gh run download` steps that read another workflow's runs would have failed with 403 on every run.
 - The scan resolves the newest *published* manifest rather than the newest successful run: a build-only release run uploads no manifest, so it walks back through the last 20 successful runs to the first with the `runtime-image-manifest` artifact. When no release has published one yet it reports an `::notice::` and scans nothing, instead of failing a first-time contributor on an empty `gh run list`.
 - `tests/structural/test_workflow_syntax.py` matches a `push` filter as a glob, so `**` is accepted, and adds three checks: both workflows run on a pull request, on a branch push, and by hand; every GHCR login and image build in `release.yml` is guarded by `PUBLISH`; and the scan holds the `actions: read` scope its manifest fetch needs.
+- `docs/TROUBLESHOOTING.md` records the rule no workflow change can lift: *Run workflow* and the dispatch API resolve `workflow_dispatch` against the **default branch**, so a workflow added on a branch must be merged — or run through its `push`/`pull_request` triggers — before the button exists, and a branch created before the merge keeps reporting `Workflow dispatch unavailable` until it is rebased.
+
+**Follow-up: `Build Windows release` was not valid YAML**
+
+With the files finally on the default branch, GitHub answered `You have an error in your yaml syntax on line 235`, and the Actions tab still showed `Workflow dispatch unavailable — Workflow does not exist or does not have a workflow_dispatch trigger in this branch`. Both describe the same thing: an invalid workflow file is treated as absent, so it is listed nowhere and cannot be dispatched. Line 235 was `- name: Validate: fast tests` — an unquoted plain scalar may not contain `": "`, so the parser reads a mapping where a scalar must be, and the six step labels of the same shape (`slow tests`, `ruff`, `compile`, `QML lint`, `QML smoke`) made the whole file invalid.
+
+- The six labels are quoted (`- name: "Validate: fast tests"`), with a comment at the step saying why.
+- `tests/structural/test_workflow_syntax.py` gains `scalar_problems`: every value outside a block scalar body that is unquoted and contains `": "` (or ends with `:`) is reported with its file and line, so the fast tier fails before a push instead of the Actions tab failing after one. The previous audit split each line at the first `": "` and never looked at the remainder, which is exactly how a "valid" file could still be rejected by GitHub. A regression test writes the historical line into a temporary workflow and asserts it is reported and that quoting clears it.
+- `docs/TESTING.md` lists the rule with the other silent workflow requirements, and `docs/TROUBLESHOOTING.md` now puts the invalid-YAML cause first for that message, because it produces the same text as a missing default-branch file.
 
 ## Unreleased — Agentic harness Phases 3–5
 
