@@ -337,4 +337,3 @@ def test_a_natural_completion_carries_the_status_fields(monkeypatch) -> None:
     assert result["budget_exhausted"] is False
     assert result["degraded"] is False
     assert result["parent_budget_exceeded"] is False
-

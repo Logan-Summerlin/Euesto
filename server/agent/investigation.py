@@ -2,9 +2,10 @@
 
 Each call runs a bounded nested model loop restricted to the read-only investigation tools
 (Plan's reads plus ``status``, so it can review staged changes), through the parent run's
-executor session. It is offered in Plan and Agent mode. The loop has its own capped budget, debits every model call against
-the parent's budget, and keeps its own evidence ledger: nested results never enter the
-parent's context, so they neither consume nor are starved by the parent's result allowance.
+executor session. It is offered in Plan and Agent mode. The loop has its own capped budget,
+debits every model call against the parent's budget, and keeps its own evidence ledger: nested
+results never enter the parent's context, so they neither consume nor are starved by the
+parent's result allowance.
 """
 
 from __future__ import annotations
@@ -210,7 +211,10 @@ class RepositoryInvestigation:
         last_turn_cost = 0.0
         while stop_cause is None:
             stop_cause = _stop_cause(
-                child, last_turn_cost, self.evidence_bytes, estimate_message_tokens(self.messages)
+                child,
+                last_turn_cost,
+                self.evidence_bytes,
+                estimate_message_tokens(self.messages),
             )
             if stop_cause is not None:
                 break
@@ -301,7 +305,9 @@ class RepositoryInvestigation:
             stop_cause = stop_cause or "provider_error"
         degraded = False
         if not content.strip():
-            content = _digest(stop_cause, self.files, self.observed, self.listed, provider_error)
+            content = _digest(
+                stop_cause, self.files, self.observed, self.listed, provider_error
+            )
             degraded = True
         extra = self._extra(stop_cause, degraded=degraded)
         if provider_error is not None:
@@ -709,7 +715,9 @@ def _next_step(observed: list[str], unread: list[str], files: set[str]) -> str:
     """One concrete next step for the parent: read the most specific unchecked path, or narrow."""
     target = _most_specific(unread) or _most_specific(observed)
     if target:
-        return f"Next step: read {target} (or narrow the query with grep) and continue directly."
+        return (
+            f"Next step: read {target} (or narrow the query with grep) and continue directly."
+        )
     fallback = _most_specific(sorted(files))
     if fallback:
         return f"Next step: read {fallback} and continue directly."

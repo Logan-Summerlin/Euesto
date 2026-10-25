@@ -969,4 +969,3 @@ def test_every_failure_payload_carries_a_summary_and_an_error_code():
     short = _investigate(_recording_runtime()[0], RunBudget(100, 600, 0.01, 100, "test"))
     assert short["error_code"] == INVESTIGATION_FAILED
     assert short["summary"].startswith("No investigation ran")
-

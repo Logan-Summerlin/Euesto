@@ -15,6 +15,7 @@ from server.executor import ExecutorClient
 from server.extensions.skills import render_skill_context
 from server.openrouter.agent import AgentTurn, agent_turn, tool_schemas
 from server.openrouter.errors import ProviderError
+from shared.investigation import INVESTIGATION_CALL_LIMIT, InvestigationResult
 from shared.permissions import (
     PermissionDecision,
     PermissionRule,
@@ -24,7 +25,6 @@ from shared.permissions import (
     resolve_permission,
     rule_scope,
 )
-from shared.investigation import INVESTIGATION_CALL_LIMIT, InvestigationResult
 from shared.requests import AgentRunRequest
 from shared.tools import (
     MUTATION_TOOLS,
