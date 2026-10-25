@@ -324,7 +324,7 @@ Plus, in CI, one run that intentionally wedges a tier and demonstrates the named
 | `COMMAND_TIMEOUT_SECONDS`/`DOCKER_TIMEOUT_SECONDS`/`QML_SMOKE_TIMEOUT_SECONDS`; `_run_command` without `start_new_session` or output redirection; `_kill_tree` POSIX gap; `preflight` returns 0 | [validate.py](../scripts/validate.py) |
 | Heartbeat written only to the log file; log printed only after the command ends | [validation-step.sh](../scripts/validation-step.sh) |
 | 180 s thread timeout, `faulthandler_timeout = 90`, no cache provider | [pyproject.toml](../pyproject.toml) |
-| Tier list, per-command deadlines, "each command has a hard deadline", release-job step layout, async test policy | [TESTING.md](TESTING.md) |
+| Tier list, per-command deadlines, "each command has a hard deadline", release-job step layout, async test policy | [TESTING.md](../docs/TESTING.md) |
 | Harness deadlines and tier names pinned by test; `fast` deadline asserted by name | [test_validation_harness.py](../tests/structural/test_validation_harness.py) |
 | Doubled Bash backend starting a real socket server per test, inherited stdout | [test_bash.py](../tests/unit/executor/test_bash.py) |
 | Unbounded `Event.wait()` rendezvous | [test_gateway.py](../tests/unit/gateway/test_gateway.py) |

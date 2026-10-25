@@ -119,7 +119,7 @@ small-window models, instead of forcing 150k into every window.
   every profile.
 - Keep the 10%-of-working-set result ceiling (`result_cap`): 150,000 × 4 // 10 = 60,000 bytes,
   still above the 32,000-byte `read` cap and the 24,000-byte default, so no result changes
-  size. [LIMITS.md](LIMITS.md) §"Model-facing result bounds" records the new ceiling.
+  size. [LIMITS.md](../docs/LIMITS.md) §"Model-facing result bounds" records the new ceiling.
 
 ### Step 2 — Raise the window share and make the derivation explicit
 
@@ -189,12 +189,12 @@ is the one item here that needs a product decision (§7).
 
 ### Step 5 — Documentation
 
-- [LIMITS.md](LIMITS.md): the working-set row (96,000 in `coding`) and the result-ceiling row
+- [LIMITS.md](../docs/LIMITS.md): the working-set row (96,000 in `coding`) and the result-ceiling row
   (38,400 bytes → 60,000 bytes).
-- [ARCHITECTURE.md](ARCHITECTURE.md) §"Compaction" and §"Result bounds": the 96,000 example,
+- [ARCHITECTURE.md](../docs/ARCHITECTURE.md) §"Compaction" and §"Result bounds": the 96,000 example,
   and the stale claim that a result is "never more than 10% of the working set" (the code's
   40%-of-tokens figure equals 10% of the working set in bytes; state it once, correctly).
-- [AGENTIC_HARNESS_PLAN.md](AGENTIC_HARNESS_PLAN.md) §1.3: the status line ("working sets
+- [AGENTIC_HARNESS_PLAN.md](../docs/AGENTIC_HARNESS_PLAN.md) §1.3: the status line ("working sets
   96,000 / 160,000 / 256,000") and the worked example ("compaction runs at 96,000 tokens and
   returns to 32,000").
 - `CHANGELOG.md` entry when the change lands.

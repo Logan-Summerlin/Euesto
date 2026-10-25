@@ -31,6 +31,7 @@ This document is a status-oriented roadmap. It is not the authoritative architec
 - Keep schemas, dispatch, permissions, limits, tests, and documentation synchronized as the thirteen-tool API evolves.
 - Maintain container and QML checks alongside the Python test/lint/compile checks.
 - Continue release/runtime validation for Windows packaging and digest-pinned container images.
+- Record a green Linux and Docker CI run for the validation remediation (`archived-doc/ci-validation-remediation-plan.md`, §7 and §12); the code and workflow invariants are already pinned by tests.
 
 ## Planned
 

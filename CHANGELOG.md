@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — documentation rationalized
+
+- `AGENTS.md`, `README.md`, `docs/ARCHITECTURE.md`, and `docs/TESTING.md` rewritten to state only what each owns; the duplicated repository map, command lists, and CI minutiae were removed and now link to their single authoritative home.
+- Fully implemented plans moved to `archived-doc/` (`context-limit-plan.md`, `investigate-repository-summary-plan.md`, `ci-validation-remediation-plan.md`); the open CI-run confirmation is carried into `docs/ROADMAP.md`.
+- `docs/CONTRIBUTING.md` corrected to the thirteen-tool surface.
+
 ## Unreleased — checkpoint pruning on Windows
 
 `Build Windows release` failed in `tests/unit/executor/test_visible_files_cache.py` on `assert len(stored) == 2`: a prune could leave an unreferenced blob behind and could drop the wrong checkpoint. The public tool surface, approval tiers, and sandbox are unchanged.
@@ -9,7 +15,7 @@
 
 ## Unreleased — larger context windows and a synthesis that cannot be lost
 
-Implements [docs/CONTEXT_LIMIT_PLAN.md](docs/CONTEXT_LIMIT_PLAN.md) and [docs/INVESTIGATE_REPOSITORY_SUMMARY_PLAN.md](docs/INVESTIGATE_REPOSITORY_SUMMARY_PLAN.md). The tool surface, approval tiers, and sandbox are unchanged.
+Implements [archived-doc/context-limit-plan.md](archived-doc/context-limit-plan.md) and [archived-doc/investigate-repository-summary-plan.md](archived-doc/investigate-repository-summary-plan.md). The tool surface, approval tiers, and sandbox are unchanged.
 
 **Context**
 
@@ -27,7 +33,7 @@ Implements [docs/CONTEXT_LIMIT_PLAN.md](docs/CONTEXT_LIMIT_PLAN.md) and [docs/IN
 
 ## Unreleased — CI validation hardening
 
-Implements all four phases of [docs/CI_VALIDATION_REMEDIATION_PLAN.md](docs/CI_VALIDATION_REMEDIATION_PLAN.md). The public tool surface, approval tiers, and the executor/runner sandbox are unchanged: this is CI, the validation harness, and the test suite only.
+Implements all four phases of [archived-doc/ci-validation-remediation-plan.md](archived-doc/ci-validation-remediation-plan.md). The public tool surface, approval tiers, and the executor/runner sandbox are unchanged: this is CI, the validation harness, and the test suite only.
 
 **A hang names itself (Phase 1)**
 

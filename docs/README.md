@@ -1,49 +1,39 @@
-# Euesto documentation
+# Documentation index
 
-Euesto is a local-first Windows chatbot. The desktop talks to an authenticated gateway; the gateway talks to a network-disabled executor, which runs commands in a separate network-disabled runner; changes remain in persistent, disposable staging until the desktop publication broker approves and applies them.
+Start with [`../AGENTS.md`](../AGENTS.md) for the durable invariants and [`../README.md`](../README.md) for the product overview. The references below are authoritative; when two documents disagree, fix the one that is wrong rather than adding a third.
 
-## Recommended reading order
+## Reading order
 
-1. [Architecture](ARCHITECTURE.md) — system boundaries and dependency direction.
-2. [Contributing](CONTRIBUTING.md) — setup, workflow, and review rules.
-3. [Testing](TESTING.md) — test taxonomy, markers, and required checks.
-4. [Tools](TOOLS.md), [Limits](LIMITS.md), [Publication](PUBLICATION.md), and [Egress](EGRESS.md) — contracts and security-sensitive behavior.
-5. [Troubleshooting](TROUBLESHOOTING.md) — operational failures and recovery.
+| Read this | When you need |
+|---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Components, ownership and dependency rules, data flow, and the security boundary. |
+| [TOOLS.md](TOOLS.md) | The thirteen public tools: arguments, modes, permissions, results, and error codes. |
+| [LIMITS.md](LIMITS.md) | Effective defaults, hard ceilings, and how requested values are clamped. |
+| [PUBLICATION.md](PUBLICATION.md) | Staging, manifests, approval, hash validation, conflicts, and recovery. |
+| [EGRESS.md](EGRESS.md) | Network modes, the one-shot dependency setup container, and the allowlisted registry proxy. |
+| [TESTING.md](TESTING.md) | Test tiers, the validator, the one authoritative list of required checks, and CI workflows. |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup and the rules for changing a public tool, schema, or limit. |
+| [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Symptoms and fixes for runtime, workspace, staging, and publication failures. |
+| [../docker/README.container.md](../docker/README.container.md) | Operating the container runtime and verifying it. |
 
-## Where to make a change
+## Plans and roadmap
 
-| Concern | Owner | Notes |
-|---|---|---|
-| Qt Quick presentation | `qml/` | Views and composition only; call the bridge rather than implementing policy. |
-| Desktop state and adapters | `src/` | Controllers, persistence, gateway client, runtime, approvals, and publication coordination. `qml_backend.py` is the thin QML adapter; behavior belongs in the matching service under `src/desktop/` (runtime, settings, conversations, generation, staging/publication). |
-| Process/bootstrap wiring | `app.py` | Application startup and dependency wiring only. |
-| Provider and agent behavior | `server/` | Gateway, OpenRouter, budgets, journals, sessions, and agent loops. |
-| Workspace tools and staging | `executor/` | Bounded, network-disabled control plane: file tools, staging, checkpoints, baselines, and manifests; never publication. |
-| Command execution | `runner/`, `docker/Dockerfile.runner` | Standard-library command server and the toolchain images Bash runs in. |
-| Opt-in package egress | `egress/`, `docker/compose.egress.yaml` | Allowlisted CONNECT proxy for the install-capable profile; never loaded by default. |
-| Protocol and registries | `shared/` | Framework-neutral structures; no desktop or gateway orchestration. |
-| Tests | `tests/` | Follow the taxonomy in `TESTING.md`; security and container tests must remain credential-free. |
-
-## Plans
-
-Every living plan and the roadmap live in this directory, one authoritative copy each. Status is recorded per item inside each document; when a plan is fully implemented or superseded it moves to `archived-doc/` (non-normative) rather than being kept alongside a newer copy.
+Each living plan and the roadmap live only in this directory, one authoritative copy each. A plan moves to [`../archived-doc/`](../archived-doc/README.md) once it is fully implemented or superseded.
 
 | Document | Scope |
 |---|---|
-| [ROADMAP.md](ROADMAP.md) | Completed, active, planned, deferred, and non-goal status for the product, including the open items carried from archived plans. |
-| [AGENTIC_HARNESS_PLAN.md](AGENTIC_HARNESS_PLAN.md) | Phased plan to widen agent capability inside the Docker sandbox while narrowing exits. Phases 0–5 are implemented (loop fixes, token and cache efficiency, a separate runner workbench, durable staging, long-run support, risk-proportional approvals, and controlled connectivity); Phases 6–7 (long-running projects and simple setup) are proposed. |
-| [CI_VALIDATION_REMEDIATION_PLAN.md](CI_VALIDATION_REMEDIATION_PLAN.md) | Investigation and fix plan for the GitHub Actions workflows and the test suite: why the Linux "Fast tests" tier stalled until the job ceiling, the deadline, process-kill, async-bound, and leak defects behind it, and the phased remediation. Phases 1–4 are implemented — per-tier deadlines that fire before the step ceiling, process-group kills, a console heartbeat, four independent tier jobs, bounded async rendezvous, process and thread leak guards, and a workflow-invariant guard test; the confirming Linux/Docker runs are still to be recorded from CI (§7, §12). |
-| [INVESTIGATE_REPOSITORY_SUMMARY_PLAN.md](INVESTIGATE_REPOSITORY_SUMMARY_PLAN.md) | Diagnosis and fix plan for `investigate_repository` returning a stub or no summary: the exploration loop ends in one tool-free synthesis call that every failure path can lose — a 60-second reserve that ignores context size, a parent budget charge made after the summary was paid for, an unguarded executor call, an insensitive emptiness check, an evidence ledger that misses `find`/`ls`, and a diagnostic that blames the budget for a timeout. Implemented (§8): a reserve derived from nested context size, the parent charge moved off the answer, executor failures answered in-loop, a digest fallback with a specific `stop_cause`, and `error_code` on every failure payload. |
-| [CONTEXT_LIMIT_PLAN.md](CONTEXT_LIMIT_PLAN.md) | Investigation of the 96,000-token compaction high-water mark (`coding`): where the number comes from (`min(0.6 × 0.8 × window, 96,000)`), why it binds on the profile cap for the large-window default models and coincides with the window share at 200k, and what raising it costs per turn and per cycle. Implemented (§8): a 150,000-token `coding` working set (240,000 / 400,000 for the larger tiers), a 0.75 window share with an explicit three-bound derivation, a 160,000-token default prompt budget, invariant tests, and the doc updates. |
+| [ROADMAP.md](ROADMAP.md) | Completed, active, planned, deferred, and non-goal status, including open items carried from archived plans. |
+| [AGENTIC_HARNESS_PLAN.md](AGENTIC_HARNESS_PLAN.md) | Phased plan to widen agent capability inside the sandbox. Phases 0–5 are implemented; Phases 6–7 (long-running projects, simple setup) are proposed. |
 
-Documentation file names are predictable: `UPPER_SNAKE_CASE.md` in `docs/`, lowercase-hyphenated names in `archived-doc/`, and no spaces or embedded dates anywhere (dates belong in commit history or `CHANGELOG.md`). The repository root keeps only `README.md`, `AGENTS.md`, and `CHANGELOG.md`. `tests/structural/test_documentation_layout.py` enforces this.
+## Naming and ownership rules
 
-The completed harness fix, harness quality-of-life, harness validation, organization, and code-simplification plans are archived in `archived-doc/` (indexed in its `README.md`).
+- Files in `docs/` are `UPPER_SNAKE_CASE.md`. Files in `archived-doc/` are lowercase-hyphenated.
+- No spaces or dates in document names; dates belong in `CHANGELOG.md` or commit history.
+- The repository root holds only `README.md`, `AGENTS.md`, and `CHANGELOG.md` as documentation.
+- Each fact has one home. Other documents link to it instead of restating it.
+
+`tests/structural/test_documentation_layout.py` and `tests/structural/test_documentation_contract.py` enforce these rules, the index, relative links, and the tool and limit values.
 
 ## Local-only state
 
-`.local-chat-checkpoints/` is a runtime artifact. It is ignored and must not be committed. The historical `archived-doc/` directory is non-normative.
-
-## Checks
-
-The required checks are listed once, in [TESTING.md](TESTING.md#required-checks).
+`.local-chat-checkpoints/` is a runtime artifact. It is git-ignored and must not be committed.

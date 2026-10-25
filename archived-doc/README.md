@@ -17,3 +17,6 @@ lowercase and hyphenated.
 | `organization-plan.md` | Implemented; product naming and flat-test relocation carried into `docs/ROADMAP.md` | `docs/README.md`, `docs/ARCHITECTURE.md`, `docs/TESTING.md`, `docs/ROADMAP.md` |
 | `simplification-plan.md` | Implemented; the findings left for a decision are carried into `docs/ROADMAP.md` | `docs/ROADMAP.md`, `CHANGELOG.md` |
 | `improvement-plan.md` | Implemented or superseded item by item (disposition table at its top); formerly the root `Euesto QoL Plan.md` | `harness-fix-plan.md`, `docs/TROUBLESHOOTING.md`, `docs/TOOLS.md` |
+| `context-limit-plan.md` | Implemented (§8): 150,000-token `coding` working set, 0.75 window share, 160,000-token prompt budget | `docs/LIMITS.md`, `docs/ARCHITECTURE.md` |
+| `investigate-repository-summary-plan.md` | Implemented (§8): synthesis reserve, parent charge after summary, degraded-synthesis digest, `error_code` on failures | `docs/TOOLS.md`, `docs/LIMITS.md`, `docs/TROUBLESHOOTING.md` |
+| `ci-validation-remediation-plan.md` | Phases 1–4 implemented; confirming Linux/Docker CI runs carried into `docs/ROADMAP.md` | `docs/TESTING.md`, `.github/workflows/`, `docs/ROADMAP.md` |
