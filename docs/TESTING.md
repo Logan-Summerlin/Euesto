@@ -142,4 +142,4 @@ Two further requirements fail *silently* — the workflow disappears from the li
 
 Every workflow also carries `workflow_dispatch`, so a maintainer can always start one by hand once it is on the default branch.
 
-On Windows (the release job), tests marked `posix` are skipped: they need the executor's Linux container, either its `/bin/bash`, POSIX permission bits (`chmod` only toggles read-only on Windows), or POSIX `st_ctime` (creation time on Windows). Mark any new test with the same dependency the same way.
+On Windows (the release job), tests marked `posix` are skipped: they need the executor's Linux container, either its `/bin/bash`, POSIX permission bits (`chmod` only toggles read-only on Windows), POSIX `st_ctime` (creation time on Windows), the output-log directory handles (`dir_fd`, `O_NOFOLLOW`, `os.O_DIRECTORY`), or a process-group kill (`os.killpg`, `SIGKILL`). Mark any new test with the same dependency the same way. When only one assertion in a test needs the container, keep the cross-platform assertions in their own test instead of skipping the whole thing (a discard test can create the log directory directly rather than running a command).

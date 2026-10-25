@@ -86,6 +86,7 @@ def test_bash_result_leads_with_a_reduction(service: ExecutorService) -> None:
     assert result.data["reduction"].splitlines()[0] == "pytest: 1 failed, 3 passed"
 
 
+@pytest.mark.posix
 def test_log_pruning_stays_within_age_count_and_size_bounds(tmp_path: Path) -> None:
     directory = tmp_path / OUTPUT_DIRECTORY
     directory.mkdir()

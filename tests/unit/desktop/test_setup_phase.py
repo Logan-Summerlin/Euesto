@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import sys
 import threading
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -161,7 +161,10 @@ def test_the_setup_environment_is_fixed_apart_from_the_proxy() -> None:
             "OPENROUTER_API_KEY": "leak",
             "PATH": "/evil",
         },
-        cache_root=Path("/cache"),
+        # The setup service only runs in the Linux runner, so these are container paths: pass
+        # POSIX paths rather than letting the host's path flavour decide the assertion.
+        work_root=PurePosixPath("/work"),
+        cache_root=PurePosixPath("/cache"),
     )
     assert environment["PATH"] == "/usr/local/bin:/usr/bin:/bin"
     assert environment["HTTPS_PROXY"] == "http://172.31.250.2:3128"

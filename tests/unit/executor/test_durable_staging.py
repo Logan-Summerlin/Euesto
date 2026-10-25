@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from executor.app import ExecutorService
+from executor.paths import OUTPUT_DIRECTORY
 from executor.state import WorkspaceIdentityMismatch
 from shared.tools import PublicationReceipt, ToolRequest
 from tests.helpers import executor_config
@@ -240,11 +241,17 @@ def test_a_volume_belonging_to_another_workspace_is_refused(tmp_path: Path) -> N
 def test_discard_reseeds_from_the_host_and_clears_checkpoints(tmp_path: Path) -> None:
     service = make(tmp_path, **{"a.txt": "a"})
     assert run(service, "write", {"path": "a.txt", "content": "changed"}).ok
-    assert run(service, "bash", {"command": "echo hi"}).ok
-    service.discard()
+    assert run(service, "write", {"path": "b.txt", "content": "b"}).ok
     work = service.config.work_root
+    # What the Bash tool's full-output log leaves beneath the work root. Running a command
+    # here would need the Linux runner, and discard itself is cross-platform.
+    log = work / OUTPUT_DIRECTORY / "req.log"
+    log.parent.mkdir()
+    log.write_text("hi\n", encoding="utf-8")
+    service.discard()
     assert (work / "a.txt").read_text(encoding="utf-8") == "a"
-    assert not (work / ".euesto-output").exists()
+    assert not (work / "b.txt").exists()
+    assert not (work / OUTPUT_DIRECTORY).exists()
     assert not any((service.config.state_directory / "checkpoints").iterdir())
     assert service.manifest("run", "approval").operations == ()
 

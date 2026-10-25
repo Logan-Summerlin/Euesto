@@ -191,8 +191,17 @@ def test_secret_files_never_reach_staging_or_manifests(tmp_path: Path) -> None:
     assert "server.pem" not in listing.output
     refused = run(service, "write", {"path": "new.key", "content": "k"})
     assert not refused.ok and refused.error_code == "path.unsafe"
+    assert service.manifest("run", "approval").operations == ()
+
+
+@pytest.mark.posix
+def test_a_command_cannot_stage_a_secret_file(tmp_path: Path) -> None:
+    """The Bash tool runs ``/bin/bash`` in the Linux runner, so this check is POSIX only."""
+    service = make(tmp_path, {"app.py": "x\n"}, secret_patterns=("*.vault",))
     created = run(service, "bash", {"command": "echo k > other.pem && echo v > x.vault"})
     assert created.ok
+    work = service.config.work_root
+    assert (work / "other.pem").is_file() and (work / "x.vault").is_file()
     assert service.manifest("run", "approval").operations == ()
 
 

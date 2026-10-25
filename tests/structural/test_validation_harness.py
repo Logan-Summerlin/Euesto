@@ -275,8 +275,13 @@ def test_the_default_runner_has_no_console_window_and_no_stdin(monkeypatch) -> N
     assert captured["wait"] == 17
 
 
+@pytest.mark.posix
 def test_a_posix_deadline_signals_the_whole_process_group(monkeypatch) -> None:
-    """A direct-child-only kill leaves runner servers and `bash -lc` grandchildren alive."""
+    """A direct-child-only kill leaves runner servers and `bash -lc` grandchildren alive.
+
+    POSIX only: Windows defines neither ``os.getpgid``/``os.killpg`` nor ``SIGKILL``, and its
+    ``_kill_tree`` branch is the ``taskkill`` case covered below.
+    """
     signalled: list[tuple[int, int]] = []
     waits: list[float | None] = []
 

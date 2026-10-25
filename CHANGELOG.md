@@ -82,6 +82,16 @@ With the files finally on the default branch, GitHub answered `You have an error
 - The per-probe deadline is 10 s instead of 8 s, and at most five probes run (four tools plus the Docker daemon), so the probe phase stays inside the 60 s `preflight` deadline. The daemon probe keeps the opposite rule: it is a reachability check, so a timeout is a failure, because the docker tier cannot run without it.
 - `tests/structural/test_validation_harness.py` pins the no-launch rule, the timeout-is-not-a-failure rule, the daemon exception, and the probe budget; `docs/TESTING.md` and `docs/TROUBLESHOOTING.md` say what `available`, `failed`, and a timed-out probe now mean.
 
+**Follow-up: five fast-tier tests failed on the Windows runner**
+
+`Build Windows release` reached `fast` for the first time and failed with five tests whose only common cause was a Linux-only dependency the Windows job had never exercised:
+
+- `test_a_posix_deadline_signals_the_whole_process_group` monkeypatches `os.getpgid`, `os.killpg`, and `signal.SIGKILL`; Windows defines none of them, and its `_kill_tree` branch is the `taskkill` test. It is now marked `posix`.
+- `test_the_setup_environment_is_fixed_apart_from_the_proxy` compared the fixed container paths `/work/.venv` and `/cache/uv` against values built from `Path`, which is backslash-flavoured on Windows. The test now passes `PurePosixPath`, because those are the Linux runner's paths and not the host's.
+- `test_log_pruning_stays_within_age_count_and_size_bounds` drives the output-log directory, which is opened with `dir_fd`, `O_NOFOLLOW`, and `os.O_DIRECTORY` so a command cannot swap it for a link. That implementation belongs to the Linux runner and is now marked `posix` like the tests around it.
+- `test_discard_reseeds_from_the_host_and_clears_checkpoints` called the Bash tool only to leave a log behind; `discard` itself is cross-platform, so the test now creates `.euesto-output/<request>.log` directly and asserts a second staged file is dropped as well. `test_secret_files_never_reach_staging_or_manifests` keeps its seeding, `find`, and `write` assertions, and the command-smuggling assertion moved to the new `posix` test `test_a_command_cannot_stage_a_secret_file`.
+- `docs/TESTING.md` names the additional `posix` dependencies (output-log directory handles and process-group kills) and says to split a test rather than skip cross-platform coverage it does not need the container for.
+
 ## Unreleased — Agentic harness Phases 3–5
 
 Implements Phases 3–5 of [docs/AGENTIC_HARNESS_PLAN.md](docs/AGENTIC_HARNESS_PLAN.md). The public surface grows to thirteen model-facing tools: `update_plan` (Plan and Agent), `web_search` and `fetch_url` (Agent, off by default per workspace). The `accept_edits` approval tier is replaced by `sandbox` with no alias. The security boundary is unchanged for the executor and runner; a container gains network only through an approved setup run or a `registries` session, and the workspace policy file is read from the host only.
