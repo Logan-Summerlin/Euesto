@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import ClassVar
 
 from .errors import INVALID_ARGUMENTS, ExecutorToolError
+from .paths import validate_publish_globs, validate_secret_patterns
+
+MAX_GIT_HISTORY_DEPTH = 100_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +26,19 @@ class ExecutorConfig:
     socket_path: Path
     token: str
     workspace_id: str
+    # Persistent executor state (identity, baseline, checkpoints) on a volume the runner never
+    # mounts. None keeps it beside the work root, which is what unit tests use.
+    state_root: Path | None = None
+    # The runner's command socket. None runs Bash in this process (unit tests only); the
+    # container entrypoint always sets it, so production commands never run in the executor.
+    runner_socket: Path | None = None
+    # Commits of host history cloned into the sandbox repository; 0 clones the full history.
+    git_history_depth: int = 200
+    runner_image: str = ""
+    # Workspace policy (``.euesto/policy.toml``, validated by the desktop): extra secret name
+    # globs added to the built-in set, and path globs that are never offered for publication.
+    secret_patterns: tuple[str, ...] = ()
+    never_publish: tuple[str, ...] = ()
 
     max_read_bytes: int = 1_000_000
     max_write_bytes: int = 1_000_000
@@ -72,6 +89,12 @@ class ExecutorConfig:
     sources: dict[str, str] = field(default_factory=dict, compare=False, repr=False)
 
     @property
+    def state_directory(self) -> Path:
+        if self.state_root is not None:
+            return self.state_root
+        return self.work_root.with_name(self.work_root.name + ".state")
+
+    @property
     def required_capacity_bytes(self) -> int:
         return (
             self.max_staging_bytes
@@ -110,6 +133,20 @@ class ExecutorConfig:
         over = [name for name, value in values.items() if value > self.HARD_CEILINGS[name]]
         if over:
             raise ValueError("Configured limits exceed hard ceilings: " + ", ".join(over))
+        if (
+            not isinstance(self.git_history_depth, int)
+            or isinstance(self.git_history_depth, bool)
+            or not 0 <= self.git_history_depth <= MAX_GIT_HISTORY_DEPTH
+        ):
+            raise ValueError(
+                f"git_history_depth must be an integer from 0 to {MAX_GIT_HISTORY_DEPTH}"
+            )
+        object.__setattr__(
+            self, "secret_patterns", validate_secret_patterns(list(self.secret_patterns))
+        )
+        object.__setattr__(
+            self, "never_publish", validate_publish_globs(list(self.never_publish))
+        )
         if self.required_capacity_bytes >= self.work_capacity_bytes:
             raise ValueError(
                 "Staging capacity, checkpoint capacity, and required temporary headroom must fit "
@@ -141,6 +178,13 @@ class ExecutorConfig:
                 raise ValueError(f"{env_name} must be a positive integer") from exc
             values[name] = value
             sources[name] = f"environment:{env_name}"
+        raw_depth = os.environ.get("LOCAL_CHAT_GIT_HISTORY_DEPTH", "200").strip()
+        try:
+            git_history_depth = int(raw_depth, 10)
+        except ValueError as exc:
+            raise ValueError("LOCAL_CHAT_GIT_HISTORY_DEPTH must be an integer") from exc
+        # Compose mounts the state volume at /state; elsewhere it sits beside the work root.
+        state_root = os.environ.get("LOCAL_CHAT_STATE_ROOT", "").strip()
         return cls(
             source_root=Path(os.environ.get("LOCAL_CHAT_SOURCE_ROOT", "/source")),
             work_root=Path(os.environ.get("LOCAL_CHAT_WORK_ROOT", "/work")),
@@ -149,6 +193,16 @@ class ExecutorConfig:
             ),
             token=token_path.read_text(encoding="utf-8").strip(),
             workspace_id=os.environ.get("LOCAL_CHAT_WORKSPACE_ID", "").strip(),
+            # Fail closed: a container without an explicit runner socket still never runs
+            # commands in the executor; it reports the runner as unreachable instead.
+            state_root=Path(state_root) if state_root else None,
+            runner_socket=Path(
+                os.environ.get("LOCAL_CHAT_RUNNER_SOCKET", "/run/runner/runner.sock")
+            ),
+            git_history_depth=git_history_depth,
+            runner_image=os.environ.get("LOCAL_CHAT_RUNNER_IMAGE", "").strip()[:200],
+            secret_patterns=tuple(_json_list("LOCAL_CHAT_SECRET_PATTERNS")),
+            never_publish=tuple(_json_list("LOCAL_CHAT_NEVER_PUBLISH")),
             sources=sources,
             **values,
         )
@@ -233,3 +287,16 @@ class ExecutorConfig:
         for name, value in derived.items():
             status[name] = {"configured": value, "effective": value, "source": "resource-model"}
         return status
+
+
+def _json_list(name: str) -> list[object]:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{name} must be a JSON list") from exc
+    if not isinstance(value, list):
+        raise ValueError(f"{name} must be a JSON list")
+    return value

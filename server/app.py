@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -9,6 +10,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
+from shared.permissions import new_permission_rule
 from shared.requests import (
     MAX_WORKSPACE_CONFIG_BYTES,
     WORKSPACE_CONFIG_KEYS,
@@ -23,6 +25,8 @@ from .config import GatewayConfig
 from .logging_config import configure_logging
 from .openrouter.errors import ProviderError
 from .service import GatewayService, GatewayServiceError, utc_now
+
+MAX_SELECTED_PATHS = 10_000
 
 
 def create_app(
@@ -53,8 +57,10 @@ def create_app(
         Route(f"{run}/cancel", _cancel_run, methods=["POST"]),
         Route(f"{run}/pause", _pause_run, methods=["POST"]),
         Route(f"{run}/resume", _resume_run, methods=["POST"]),
+        Route(f"{run}/messages", _steer_run, methods=["POST"]),
         Route(f"{run}/approvals/{{approval_id:str}}", _resolve_approval, methods=["POST"]),
-        Route("/v1/permissions", _permission_rules, methods=["GET"]),
+        Route("/v1/permissions", _permission_rules, methods=["GET", "POST"]),
+        Route("/v1/notices/{notice_id:str}/acknowledge", _acknowledge_notice, methods=["POST"]),
         Route(rule, _delete_permission_rule, methods=["DELETE"]),
         Route(f"{rule}/enabled", _set_permission_rule_enabled, methods=["PUT"]),
         Route(f"{workspace}/config", _workspace_config, methods=["GET", "PUT"]),
@@ -62,6 +68,10 @@ def create_app(
         Route(f"{workspace}/staging/discard", _discard_staging, methods=["POST"]),
         Route(f"{workspace}/staging/mark-published", _mark_staging_published, methods=["POST"]),
         Route(f"{workspace}/staging/manifest", _publication_batch, methods=["POST"]),
+        Route(f"{workspace}/staging/rebase", _rebase_staging, methods=["POST"]),
+        Route(f"{workspace}/staging/publication", _staged_publication, methods=["POST"]),
+        Route(f"{workspace}/staging/review", _review_staging, methods=["POST"]),
+        Route(f"{workspace}/checks/{{name:str}}/run", _run_check, methods=["POST"]),
     ]
     app = Starlette(
         routes=routes,
@@ -171,13 +181,38 @@ async def _pause_run(request: Request) -> Response:
 
 
 async def _resume_run(request: Request) -> Response:
+    try:
+        data = await _json(request) if await request.body() else {}
+        if set(data) - {"new_budget"} or not isinstance(data.get("new_budget", False), bool):
+            raise ValueError("A resume takes only new_budget (a boolean)")
+    except ValueError as exc:
+        return _error("request.invalid_resume", str(exc), status=422)
     existing = _service(request).journal.events_after(request.path_params["run_id"])
     after_event_id = existing[-1].event_id if existing else 0
-    resumed = await _service(request).resume_agent(request.path_params["run_id"])
+    resumed = await _service(request).resume_agent(
+        request.path_params["run_id"], new_budget=bool(data.get("new_budget", False))
+    )
     return JSONResponse(
         {"resumed": resumed, "after_event_id": after_event_id},
         status_code=202 if resumed else 200,
     )
+
+
+async def _steer_run(request: Request) -> Response:
+    try:
+        data = await _json(request)
+        if set(data) - {"content"} or not isinstance(data.get("content"), str):
+            raise ValueError("Steering needs exactly one text field: content")
+    except ValueError as exc:
+        return _error("request.invalid_steering", str(exc), status=422)
+    await _service(request).steer(request.path_params["run_id"], data["content"])
+    return JSONResponse({"queued": True}, status_code=202)
+
+
+async def _acknowledge_notice(request: Request) -> Response:
+    if not _service(request).journal.acknowledge_notice(request.path_params["notice_id"]):
+        return _error("notice.not_found", "Notice not found.", status=404)
+    return JSONResponse({"acknowledged": True})
 
 
 async def _resolve_approval(request: Request) -> Response:
@@ -196,6 +231,8 @@ async def _resolve_approval(request: Request) -> Response:
 
 
 async def _permission_rules(request: Request) -> Response:
+    if request.method == "POST":
+        return await _create_permission_rule(request)
     workspace = request.query_params.get("workspace_id", "")
     if not workspace:
         return _error("workspace.required", "workspace_id is required.", status=422)
@@ -209,6 +246,19 @@ async def _permission_rules(request: Request) -> Response:
             ]
         }
     )
+
+
+async def _create_permission_rule(request: Request) -> Response:
+    try:
+        data = await _json(request)
+        workspace = data.get("workspace_id")
+        if not isinstance(workspace, str) or not workspace:
+            raise ValueError("workspace_id is required")
+        rule = new_permission_rule(str(uuid.uuid4()), workspace, data)
+    except (TypeError, ValueError) as exc:
+        return _error("request.invalid_rule", str(exc), status=422)
+    _service(request).journal.save_permission_rule(rule)
+    return JSONResponse({"rule": rule.to_dict()}, status_code=201)
 
 
 async def _delete_permission_rule(request: Request) -> Response:
@@ -268,8 +318,9 @@ async def _publication_batch(request: Request) -> Response:
     workspace_id = request.path_params["workspace_id"]
     try:
         data = await _json(request)
-        if set(data) - {"run_id", "publication_id", "batch_index"}:
+        if set(data) - {"run_id", "publication_id", "batch_index", "paths"}:
             raise ValueError("Unknown publication batch fields")
+        paths = _paths(data.get("paths"))
         batch_index = data.get("batch_index")
         if isinstance(batch_index, bool) or not isinstance(batch_index, int) or batch_index < 2:
             raise ValueError("batch_index must be an integer of at least 2")
@@ -278,11 +329,70 @@ async def _publication_batch(request: Request) -> Response:
         if not run_id or not publication_id:
             raise ValueError("run_id and publication_id are required")
         manifest = await _service(request).publication_batch(
-            workspace_id, run_id, publication_id, batch_index
+            workspace_id, run_id, publication_id, batch_index, paths
         )
     except (KeyError, TypeError, ValueError) as exc:
         return _error("request.invalid_publication_batch", str(exc), status=422)
     return JSONResponse(manifest.to_dict())
+
+
+async def _staged_publication(request: Request) -> Response:
+    workspace_id = request.path_params["workspace_id"]
+    try:
+        data = await _json(request)
+        if set(data) - {"paths"}:
+            raise ValueError("A staged publication takes only an optional paths selection")
+        paths = _paths(data.get("paths"))
+    except ValueError as exc:
+        return _error("request.invalid_publication", str(exc), status=422)
+    manifest = await _service(request).staged_publication(workspace_id, paths)
+    return JSONResponse(manifest.to_dict())
+
+
+async def _review_staging(request: Request) -> Response:
+    workspace_id = request.path_params["workspace_id"]
+    try:
+        data = await _json(request) if await request.body() else {}
+        if set(data) - {"paths", "cursor", "max_results"}:
+            raise ValueError("A review takes paths, cursor, and max_results")
+    except ValueError as exc:
+        return _error("request.invalid_review", str(exc), status=422)
+    return JSONResponse(await _service(request).review_staging(workspace_id, data))
+
+
+async def _run_check(request: Request) -> Response:
+    workspace_id = request.path_params["workspace_id"]
+    return JSONResponse(
+        await _service(request).run_check(workspace_id, request.path_params["name"])
+    )
+
+
+def _paths(value: object) -> list[str] | None:
+    if value is None:
+        return None
+    if (
+        not isinstance(value, list)
+        or not value
+        or len(value) > MAX_SELECTED_PATHS
+        or not all(isinstance(item, str) and item for item in value)
+    ):
+        raise ValueError("paths must be a non-empty list of workspace paths")
+    return value
+
+
+async def _rebase_staging(request: Request) -> Response:
+    workspace_id = request.path_params["workspace_id"]
+    try:
+        data = await _json(request) if await request.body() else {}
+        resolutions = {name: data.get(name) or [] for name in ("keep_staged", "take_host")}
+        if set(data) - set(resolutions) or not all(
+            isinstance(paths, list) and all(isinstance(path, str) for path in paths)
+            for paths in resolutions.values()
+        ):
+            raise ValueError("keep_staged and take_host must be lists of paths")
+    except ValueError as exc:
+        return _error("request.invalid_rebase", str(exc), status=422)
+    return JSONResponse(await _service(request).rebase_staging(workspace_id, **resolutions))
 
 
 async def _inspect_staging(request: Request) -> Response:

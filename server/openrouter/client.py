@@ -205,6 +205,14 @@ def parse_sse_line(line: str) -> ProviderEvent | None:
 
 
 def normalize_usage(usage: dict[str, Any]) -> dict[str, Any]:
+    """Normalize one provider usage block into the gateway's token and cost fields.
+
+    OpenRouter reports OpenAI-style ``prompt_tokens_details``; upstream shapes that leak
+    through are also understood: Anthropic's ``cache_read_input_tokens`` and
+    ``cache_creation_input_tokens`` (whose ``input_tokens`` excludes cached input), DeepSeek's
+    ``prompt_cache_hit_tokens``, and Gemini's ``cached_content_token_count``. Missing fields
+    stay absent rather than becoming zero.
+    """
     if not isinstance(usage, dict):
         return {}
     prompt_details = (
@@ -218,15 +226,32 @@ def normalize_usage(usage: dict[str, Any]) -> dict[str, Any]:
         else {}
     )
     normalized = dict(usage)
-    normalized["prompt_tokens"] = optional_int(
-        usage.get("prompt_tokens", usage.get("input_tokens"))
+    cached = _first_int(
+        usage.get("cached_tokens"),
+        prompt_details.get("cached_tokens"),
+        usage.get("cache_read_input_tokens"),
+        usage.get("prompt_cache_hit_tokens"),
+        usage.get("cached_content_token_count"),
     )
+    cache_write = _first_int(
+        usage.get("cache_write_tokens"),
+        prompt_details.get("cache_write_tokens"),
+        usage.get("cache_creation_input_tokens"),
+    )
+    prompt = optional_int(usage.get("prompt_tokens"))
+    if prompt is None and optional_int(usage.get("input_tokens")) is not None:
+        prompt = optional_int(usage.get("input_tokens")) or 0
+        if "cache_read_input_tokens" in usage or "cache_creation_input_tokens" in usage:
+            # Anthropic counts cache reads and writes outside input_tokens.
+            prompt += (optional_int(usage.get("cache_read_input_tokens")) or 0) + (
+                optional_int(usage.get("cache_creation_input_tokens")) or 0
+            )
+    normalized["prompt_tokens"] = prompt
     normalized["completion_tokens"] = optional_int(
         usage.get("completion_tokens", usage.get("output_tokens"))
     )
-    normalized["cached_tokens"] = optional_int(
-        usage.get("cached_tokens", prompt_details.get("cached_tokens"))
-    )
+    normalized["cached_tokens"] = cached
+    normalized["cache_write_tokens"] = cache_write
     normalized["reasoning_tokens"] = optional_int(
         usage.get("reasoning_tokens", completion_details.get("reasoning_tokens"))
     )
@@ -239,6 +264,14 @@ def normalize_usage(usage: dict[str, Any]) -> dict[str, Any]:
         )
     normalized["cost"] = optional_float(usage.get("cost"))
     return {key: value for key, value in normalized.items() if value is not None}
+
+
+def _first_int(*values: object) -> int | None:
+    for value in values:
+        parsed = optional_int(value)
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def _http_error(response: httpx.Response) -> ProviderError:

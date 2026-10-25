@@ -6,15 +6,20 @@ from enum import StrEnum
 from typing import Any
 
 from .coercion import relative_posix_path
-from .tools import MUTATION_TOOLS, READ_TOOLS, STAGED_EDIT_TOOLS, ToolRequest
+from .tools import EXECUTOR_TOOLS, MUTATION_TOOLS, READ_TOOLS, ToolRequest
 
 # Session approval policies for Agent runs, from most to least prompting:
-#   prompt        every mutation or command asks unless a rule matches
-#   accept_edits  staged file edits (write/edit/apply_patch) run without asking; bash still asks
-#   auto          every otherwise-valid call runs without asking
+#   prompt   every mutation or command asks unless a rule matches
+#   sandbox  staged edits and Bash run without asking while the runner has no network; with
+#            network (the egress overlay or the `registries` mode) Bash asks unless a rule matches
+#   auto     every otherwise-valid call runs without asking; with network, Bash still asks
 # Explicit DENY rules win under every policy, and publication stays separately approved
-# except under auto.
-APPROVAL_POLICIES = ("prompt", "accept_edits", "auto")
+# (under auto, risk-flagged files still need confirmation).
+APPROVAL_POLICIES = ("prompt", "sandbox", "auto")
+# Decisions a saved rule may carry (harness plan 4.2). Rules cover executor tools only: the
+# gateway's own tools never prompt (update_plan, investigate_repository) or always ask per URL.
+RULE_DECISIONS = ("allow_rule", "ask", "deny")
+MAX_RULE_COMMAND_CHARS = 500
 
 
 class PermissionDecision(StrEnum):
@@ -59,20 +64,120 @@ class PermissionRule:
                 for path in paths
             ):
                 return False
+        if (
+            request.tool == "bash"
+            and self.executable is None
+            and self.decision != PermissionDecision.DENY
+        ):
+            # An allow rule must name the command it allows; a broad one never matches.
+            return False
         if self.executable is not None:
             if request.tool != "bash":
                 return False
-            try:
-                tokens = shlex.split(str(request.arguments.get("command") or ""), posix=True)
-            except ValueError:
-                return False
+            command = str(request.arguments.get("command") or "")
+            executable, arguments = bash_command_tokens(command)
             if (
-                not tokens
-                or tokens[0] != self.executable
-                or tokens[1 : 1 + len(self.argument_prefix)] != list(self.argument_prefix)
+                executable != self.executable
+                or arguments[: len(self.argument_prefix)] != self.argument_prefix
             ):
                 return False
+            if self.decision != PermissionDecision.DENY and not simple_command(command):
+                # `pytest && curl ...` is not `pytest`: an allow or ask rule covers only a
+                # single simple command, never a list, pipeline, redirection, or substitution.
+                return False
         return True
+
+
+def new_permission_rule(
+    rule_id: str, workspace_id: str, spec: dict[str, Any]
+) -> PermissionRule:
+    """A saved rule from the rules screen: a tool, an optional path prefix, and for Bash a
+    command prefix such as ``pytest`` or ``npm test`` (the executable plus leading arguments).
+
+    Raises ``ValueError`` for anything a rule cannot mean exactly.
+    """
+    allowed = {"workspace_id", "mode", "tool", "decision", "path_prefix", "command", "enabled"}
+    if not isinstance(spec, dict) or set(spec) - allowed:
+        raise ValueError("A rule takes tool, decision, mode, path_prefix, command, enabled")
+    tool = spec.get("tool")
+    if tool not in EXECUTOR_TOOLS:
+        raise ValueError(f"tool must be one of: {', '.join(sorted(EXECUTOR_TOOLS))}")
+    decision = spec.get("decision", "allow_rule")
+    if decision not in RULE_DECISIONS:
+        raise ValueError(f"decision must be one of: {', '.join(RULE_DECISIONS)}")
+    mode = spec.get("mode", "agent")
+    if mode not in {"agent", "plan"}:
+        raise ValueError("mode must be agent or plan")
+    enabled = spec.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ValueError("enabled must be a boolean")
+    path_prefix = spec.get("path_prefix")
+    if path_prefix in ("", None):
+        path_prefix = None
+    elif not isinstance(path_prefix, str) or relative_posix_path(path_prefix) is None:
+        raise ValueError("path_prefix must be a relative workspace path")
+    else:
+        path_prefix = relative_posix_path(path_prefix)
+    command = spec.get("command")
+    executable: str | None = None
+    argument_prefix: tuple[str, ...] = ()
+    if command not in ("", None):
+        if tool != "bash":
+            raise ValueError("Only bash rules take a command prefix")
+        if not isinstance(command, str) or len(command) > MAX_RULE_COMMAND_CHARS:
+            raise ValueError("command must be a short command prefix")
+        executable, argument_prefix = bash_command_tokens(command)
+        if executable is None:
+            raise ValueError("command must name an executable")
+    if tool == "bash" and executable is None and decision != "deny":
+        raise ValueError("A bash rule that allows or asks must name a command prefix")
+    if tool == "bash" and path_prefix is not None:
+        raise ValueError("bash rules are scoped by command, not path")
+    return PermissionRule(
+        rule_id,
+        PermissionDecision(decision),
+        workspace_id,
+        mode,
+        tool,
+        path_prefix,
+        executable,
+        argument_prefix,
+        enabled,
+    )
+
+
+def bash_command_tokens(command: str) -> tuple[str | None, tuple[str, ...]]:
+    """The executable and arguments a Bash rule is scoped to, as POSIX shell tokens.
+
+    Both per-run and saved rules store exactly these, so a rule never widens to every command.
+    """
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return None, ()
+    if not tokens:
+        return None, ()
+    return tokens[0], tuple(tokens[1:])
+
+
+_SHELL_OPERATOR_CHARS = frozenset(";&|<>()")
+
+
+def simple_command(command: str) -> bool:
+    """Whether ``command`` is one simple command: no command lists, pipelines, redirections,
+    subshells, background jobs, or line breaks outside quotes, and no command substitution
+    anywhere (it expands inside double quotes too)."""
+    if "\n" in command or "\r" in command or "`" in command or "$(" in command:
+        return False
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return False
+    return bool(tokens) and not any(
+        token and set(token) <= _SHELL_OPERATOR_CHARS for token in tokens
+    )
 
 
 def request_paths(request: ToolRequest) -> list[str]:
@@ -132,24 +237,30 @@ def resolve_permission(
 
 
 def apply_approval_policy(
-    decision: PermissionDecision, request: ToolRequest, policy: str
+    decision: PermissionDecision, request: ToolRequest, policy: str, *, network: bool = False
 ) -> PermissionDecision:
     """Resolve a rule-level ``ASK`` under the session approval policy.
 
     Only ``ASK`` changes: ``DENY`` (including Plan-mode mutation denial and explicit deny
-    rules) and already-allowed decisions pass through untouched.
+    rules) and already-allowed decisions pass through untouched. ``network`` is true when the
+    runner can reach the network; Bash then asks under every tier unless a rule allowed it.
     """
     if decision != PermissionDecision.ASK:
         return decision
+    if request.mode != "agent":
+        return PermissionDecision.ASK
+    if request.tool == "bash" and network:
+        return PermissionDecision.ASK
     if policy == "auto":
         return PermissionDecision.ALLOW_RUN
-    if (
-        policy == "accept_edits"
-        and request.mode == "agent"
-        and request.tool in STAGED_EDIT_TOOLS
-    ):
+    if policy == "sandbox" and request.tool in MUTATION_TOOLS:
         return PermissionDecision.ALLOW_RUN
     return PermissionDecision.ASK
+
+
+def bash_can_prompt(policy: str, *, network: bool) -> bool:
+    """Whether Bash may ask the user in this session (it then offers ``description``)."""
+    return policy == "prompt" or network
 
 
 def _permission_path(value: str) -> str | None:

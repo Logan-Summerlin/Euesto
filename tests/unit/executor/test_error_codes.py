@@ -200,9 +200,15 @@ def test_typed_exception_families_carry_codes() -> None:
     assert raised.value.code == "permission.denied"
 
 
-# Raise sites that deliberately stay untyped: staging seeding and publication bookkeeping
-# report through their own HTTP endpoints, and configuration validation runs at startup.
-UNTYPED_MODULES = {"executor/config.py", "executor/egress.py"}
+# Raise sites that deliberately stay untyped: staging seeding, host-drift rebase, sandbox git
+# seeding, and publication bookkeeping report through their own HTTP endpoints, and
+# configuration validation runs at startup.
+UNTYPED_MODULES = {
+    "executor/config.py",
+    "executor/egress.py",
+    "executor/drift.py",
+    "executor/sandbox_git.py",
+}
 UNTYPED_STAGING_FUNCTIONS = {"seed_staging", "advance_published_staging"}
 TYPED_EXCEPTIONS = {"ExecutorToolError", "UnsafePath"}
 # Exceptions whose type alone determines the code in classify_error.

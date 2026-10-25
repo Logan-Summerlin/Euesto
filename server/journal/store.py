@@ -7,7 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from shared.events import TERMINAL_EVENT_TYPES, EventEnvelope
-from shared.permissions import PermissionDecision, PermissionRule, rule_scope
+from shared.permissions import (
+    PermissionDecision,
+    PermissionRule,
+    bash_command_tokens,
+    rule_scope,
+)
 from shared.tools import ToolRequest
 
 
@@ -84,8 +89,67 @@ class JournalStore:
                     payload_json TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS session_plans (
+                    session_key TEXT PRIMARY KEY,
+                    plan_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS check_results (
+                    workspace_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (workspace_id, name)
+                );
+                CREATE TABLE IF NOT EXISTS notices (
+                    notice_id TEXT PRIMARY KEY,
+                    message TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    acknowledged INTEGER NOT NULL DEFAULT 0
+                );
                 """
             )
+            self._migrate()
+
+    SCHEMA_VERSION = 1
+
+    def _migrate(self) -> None:
+        """Apply one-time data migrations, tracked in SQLite's ``user_version``."""
+        version = int(self._connection.execute("PRAGMA user_version").fetchone()[0])
+        if version < 1:
+            # Saved Bash rules used to be stored without their command, so they allowed every
+            # command. Disable them; the user re-creates narrow rules from new approvals.
+            cursor = self._connection.execute(
+                "UPDATE permission_rules SET enabled = 0 "
+                "WHERE tool = 'bash' AND executable IS NULL AND enabled = 1"
+            )
+            if cursor.rowcount > 0:
+                self._connection.execute(
+                    "INSERT OR IGNORE INTO notices VALUES (?, ?, datetime('now'), 0)",
+                    (
+                        "broad-bash-rules-disabled",
+                        f"{cursor.rowcount} saved Bash rule(s) allowed every command and were "
+                        "disabled. New 'always allow' approvals save a rule for that command "
+                        "only.",
+                    ),
+                )
+        self._connection.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
+
+    def notices(self) -> list[dict[str, str]]:
+        """Unacknowledged one-time notices for the desktop."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT notice_id, message FROM notices WHERE acknowledged = 0 "
+                "ORDER BY created_at, notice_id"
+            ).fetchall()
+        return [{"notice_id": row["notice_id"], "message": row["message"]} for row in rows]
+
+    def acknowledge_notice(self, notice_id: str) -> bool:
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                "UPDATE notices SET acknowledged = 1 WHERE notice_id = ?", (notice_id,)
+            )
+        return cursor.rowcount > 0
 
     def close(self) -> None:
         with self._lock:
@@ -343,6 +407,64 @@ class JournalStore:
             return {}
         return dict(payload) if isinstance(payload, dict) else {}
 
+    def save_session_plan(
+        self, session_key: str, plan: dict[str, Any], updated_at: str
+    ) -> None:
+        """The ``update_plan`` state of one session (``session_id``, or ``run:<id>``)."""
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO session_plans VALUES (?, ?, ?)
+                ON CONFLICT(session_key) DO UPDATE SET
+                    plan_json=excluded.plan_json, updated_at=excluded.updated_at
+                """,
+                (session_key, json.dumps(plan, separators=(",", ":")), updated_at),
+            )
+
+    def load_session_plan(self, session_key: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT plan_json FROM session_plans WHERE session_key = ?", (session_key,)
+            ).fetchone()
+        if not row:
+            return {}
+        try:
+            payload = json.loads(row[0])
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return dict(payload) if isinstance(payload, dict) else {}
+
+    def save_check_result(
+        self, workspace_id: str, name: str, payload: dict[str, Any], updated_at: str
+    ) -> None:
+        """The latest result of one declared check, tied to the staged fingerprint it ran on."""
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO check_results VALUES (?, ?, ?, ?)
+                ON CONFLICT(workspace_id, name) DO UPDATE SET
+                    payload_json=excluded.payload_json, updated_at=excluded.updated_at
+                """,
+                (workspace_id, name, json.dumps(payload, separators=(",", ":")), updated_at),
+            )
+
+    def check_results(self, workspace_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT name, payload_json, updated_at FROM check_results "
+                "WHERE workspace_id = ? ORDER BY name",
+                (workspace_id,),
+            ).fetchall()
+        results = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload_json"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict):
+                results.append({**payload, "name": str(row["name"]), "at": row["updated_at"]})
+        return results
+
     def is_terminal(self, run_id: str) -> bool:
         events = self.events_after(run_id)
         return bool(events and events[-1].type in TERMINAL_EVENT_TYPES)
@@ -432,8 +554,16 @@ class JournalStore:
         return cursor.rowcount > 0
 
     def rule_for_request(self, request: ToolRequest, workspace_id: str) -> PermissionRule:
-        executable = str(request.arguments.get("executable") or "") or None
-        arguments = tuple(str(item) for item in request.arguments.get("arguments") or ())
+        """The saved rule an "always allow" approval creates; Bash scopes to its command's
+        tokenized executable and argument prefix, exactly as per-run rules do."""
+        executable: str | None = None
+        arguments: tuple[str, ...] = ()
+        if request.tool == "bash":
+            executable, arguments = bash_command_tokens(
+                str(request.arguments.get("command") or "")
+            )
+            if executable is None:
+                raise ValueError("A Bash rule needs a command with an executable")
         return PermissionRule(
             rule_id=f"rule-{request.request_id}",
             decision=PermissionDecision.ALLOW_RULE,

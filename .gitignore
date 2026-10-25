@@ -16,6 +16,8 @@ settings.json
 gateway-session/
 gateway_token.txt
 .local-chat-checkpoints/
+# Per-tier logs from scripts/validation-step.sh (CI uploads them as an artifact).
+validation-logs/
 
 # Packaging output (keep build/chatbot.spec and build/version_info.txt)
 dist/

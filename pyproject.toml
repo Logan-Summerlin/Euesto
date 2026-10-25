@@ -1,6 +1,12 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q --timeout=60"
+# -v names the test that is running in the CI log, so a hang or a failure says which one.
+# --timeout kills a stuck test; the thread method also interrupts a wait inside an extension
+# (Qt, sqlite3, sockets) that a signal would never reach. faulthandler prints the stack of the
+# hung test 90 s in, so the blocked native call is in the log before the 180 s kill. The cache
+# is disabled: every tier must be independent of files a previous run left in the checkout.
+addopts = "-v --timeout=180 --timeout-method=thread -p no:cacheprovider"
+faulthandler_timeout = 90
 pythonpath = ["."]
 markers = [
     "slow: tests that are unsuitable for the default fast feedback loop",

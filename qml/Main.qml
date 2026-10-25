@@ -43,7 +43,8 @@ ApplicationWindow {
     }
     onClosing: close => {
         close.accepted = false
-        backend.shutdown()
+        // Staged work is never lost silently: publish, discard, or keep it first (plan 0.6).
+        backend.requestClose()
     }
 
     Shortcut { sequence: "Ctrl+N"; onActivated: backend.newConversation() }
@@ -128,15 +129,26 @@ ApplicationWindow {
                     }
 
                     Switch {
-                        text: "Accept edits"
+                        text: "Sandbox"
                         visible: backend.currentMode === "agent"
-                        checked: backend.acceptEditsEnabled || backend.autoModeEnabled
-                        enabled: backend.acceptEditsAvailable && backend.workspaceReady
+                        checked: backend.sandboxEnabled || backend.autoModeEnabled
+                        enabled: backend.sandboxAvailable && backend.workspaceReady
                             && !backend.autoModeEnabled
                             && !backend.generating && !backend.stagingBusy
-                        onClicked: backend.requestAcceptEdits(checked)
+                        onClicked: backend.requestSandbox(checked)
                         ToolTip.visible: hovered
-                        ToolTip.text: "Apply write, edit, and apply_patch to staging without prompts; Bash and publication still ask"
+                        ToolTip.text: "Run edits and Bash in the network-less staged copy without prompts; publication still asks"
+                    }
+
+                    Switch {
+                        text: "Registries"
+                        objectName: "registrySwitch"
+                        visible: backend.currentMode === "agent" && backend.registriesAllowed
+                        checked: backend.networkMode === "registries"
+                        enabled: backend.workspaceReady && !backend.generating && !backend.stagingBusy
+                        onClicked: backend.requestRegistryAccess(checked)
+                        ToolTip.visible: hovered
+                        ToolTip.text: "Let Bash reach the package registries the workspace policy names; restarts the runtime"
                     }
 
                     Button {
@@ -222,6 +234,57 @@ ApplicationWindow {
                 mutedColor: window.mutedColor
                 borderColor: window.borderColor
                 accentColor: window.accentColor
+            }
+
+            Rectangle {
+                objectName: "agentPlan"
+                Layout.fillWidth: true
+                visible: backend.agentPlan.steps.length > 0 || backend.budgetContinuationAvailable
+                implicitHeight: planColumn.implicitHeight + 16
+                color: window.panelColor
+                border.color: window.borderColor
+
+                ColumnLayout {
+                    id: planColumn
+                    anchors.fill: parent
+                    anchors.margins: 8
+                    spacing: 2
+                    Label {
+                        visible: backend.agentPlan.steps.length > 0
+                        text: "Plan" + (backend.agentPlan.note ? " — " + backend.agentPlan.note : "")
+                        font.weight: Font.DemiBold
+                        color: window.textColor
+                        elide: Text.ElideRight
+                        Layout.fillWidth: true
+                    }
+                    Repeater {
+                        model: backend.agentPlan.steps
+                        delegate: Label {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            text: ({ done: "☑", in_progress: "▶", blocked: "⚠" }[modelData.status] || "☐")
+                                + " " + (modelData.title || modelData.id)
+                            color: modelData.status === "done" ? window.mutedColor : window.textColor
+                            font.strikeout: modelData.status === "done"
+                            elide: Text.ElideRight
+                        }
+                    }
+                    RowLayout {
+                        visible: backend.budgetContinuationAvailable
+                        Label {
+                            Layout.fillWidth: true
+                            text: "The run paused at its budget. Its plan and staged work are kept."
+                            color: window.mutedColor
+                            wrapMode: Text.Wrap
+                        }
+                        Button {
+                            text: "Continue with another budget"
+                            highlighted: true
+                            enabled: !backend.generating && backend.workspaceReady
+                            onClicked: backend.continueWithBudget()
+                        }
+                    }
+                }
             }
 
             Composer {
@@ -392,6 +455,20 @@ ApplicationWindow {
                         }
                         Label {
                             Layout.fillWidth: true
+                            text: modelData.priceText || ""
+                            visible: text.length > 0
+                            color: window.mutedColor
+                            elide: Text.ElideRight
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            visible: (modelData.warnings || []).length > 0
+                            text: "⚠ " + (modelData.warnings || []).join(" · ")
+                            color: window.dark ? "#f0b45b" : "#a35b00"
+                            wrapMode: Text.Wrap
+                        }
+                        Label {
+                            Layout.fillWidth: true
                             visible: modelData.description.length > 0
                             text: modelData.description
                             color: window.mutedColor
@@ -408,8 +485,12 @@ ApplicationWindow {
                 }
             }
             Label {
-                text: "Press and hold a model to favorite it."
+                Layout.fillWidth: true
+                text: backend.currentMode === "chat"
+                    ? "Press and hold a model to favorite it."
+                    : "Plan and Agent list only models that call tools. Press and hold a model to favorite it."
                 color: window.mutedColor
+                wrapMode: Text.Wrap
             }
         }
     }
@@ -453,9 +534,20 @@ ApplicationWindow {
             stopSequences.text = (options.stop || []).join("\n")
             privacyDeny.checked = options.data_collection !== "allow"
             zdr.checked = options.zero_data_retention === true
+            let runner = backend.runtimeSettings
+            runnerTarget.currentIndex = Math.max(0, runnerTarget.model.indexOf(runner.runnerTarget))
+            runnerCpus.text = runner.cpus ? String(runner.cpus) : ""
+            runnerMemory.text = runner.memoryGb ? String(runner.memoryGb) : ""
+            runnerPids.text = String(runner.pids)
+            gitDepth.text = String(runner.gitHistoryDepth)
+            retentionDays.text = String(runner.retentionDays)
+            backend.refreshStagedSessions()
             let config = backend.workspaceConfiguration()
             workspaceInstructions.text = config.instructions || ""
             customTools.text = JSON.stringify(config.custom_tools || [], null, 2)
+            webTools.checked = config.web_tools === true
+            unredactedPaths.text = (config.unredacted_paths || []).join("\n")
+            backend.refreshPolicy()
             backend.refreshSkills()
             activeSkills.text = activeSkillNames()
             backend.loadPermissionRules()
@@ -469,6 +561,7 @@ ApplicationWindow {
                 TabButton { text: "Connection" }
                 TabButton { text: "Conversation" }
                 TabButton { text: "Agent" }
+                TabButton { text: "Policy" }
                 TabButton { text: "Extensions" }
             }
             StackLayout {
@@ -614,6 +707,16 @@ ApplicationWindow {
                         spacing: 10
                         Label { text: "Workspace instructions"; font.pixelSize: 18; font.weight: Font.DemiBold }
                         Label { text: backend.workspacePath || "No workspace selected"; color: window.mutedColor }
+                        Label {
+                            objectName: "workspaceInstructionsHelp"
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            color: window.mutedColor
+                            text: "Sent to the model with every Plan and Agent run in this workspace, marked as "
+                                + "user-authored configuration (up to 32,000 characters). Unlike AGENTS.md in the "
+                                + "project, they are trusted because you wrote them. They guide the model; they "
+                                + "cannot grant tools, permissions, or network access."
+                        }
                         TextArea {
                             id: workspaceInstructions
                             Layout.fillWidth: true
@@ -631,9 +734,11 @@ ApplicationWindow {
                         }
                         RowLayout {
                             Button {
-                                text: backend.stagingBusy ? "Reviewing…" : "Review staged changes"
+                                text: backend.stagingBusy ? "Reviewing…" : "Staging summary"
                                 enabled: backend.workspaceReady && !backend.generating && !backend.stagingBusy
                                 onClicked: backend.reviewStaging()
+                                ToolTip.visible: hovered
+                                ToolTip.text: "Summarize staged work and list files changed on both sides"
                             }
                             Button { text: "Save workspace configuration"; onClicked: backend.saveWorkspaceConfiguration(workspaceInstructions.text, customTools.text) }
                             Button {
@@ -643,11 +748,201 @@ ApplicationWindow {
                             }
                         }
                         RowLayout {
+                            Button {
+                                objectName: "openReviewButton"
+                                text: "Review and select…"
+                                enabled: backend.workspaceReady && !backend.generating && !backend.stagingBusy
+                                onClicked: backend.openReview()
+                                ToolTip.visible: hovered
+                                ToolTip.text: "Review each staged file with its diff, run checks, and publish a selection"
+                            }
+                            Button {
+                                text: "Publish staged changes"
+                                enabled: backend.workspaceReady && !backend.generating && !backend.stagingBusy
+                                onClicked: backend.publishStaged()
+                                ToolTip.visible: hovered
+                                ToolTip.text: "Review and publish staged work, including work kept from an earlier session"
+                            }
+                            Button {
+                                text: "Bring in host changes"
+                                enabled: backend.workspaceReady && !backend.generating && !backend.stagingBusy
+                                onClicked: backend.rebaseStaging()
+                                ToolTip.visible: hovered
+                                ToolTip.text: "Update staging with files changed on the host since it was seeded"
+                            }
+                        }
+                        Label {
+                            visible: backend.stagingConflicts.length > 0
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            font.weight: Font.DemiBold
+                            text: "Changed on the host and in staging (held back from publication):"
+                        }
+                        Repeater {
+                            objectName: "stagingConflicts"
+                            model: backend.stagingConflicts
+                            delegate: RowLayout {
+                                required property var modelData
+                                Layout.fillWidth: true
+                                Label { Layout.fillWidth: true; text: modelData.path; elide: Text.ElideMiddle }
+                                Button {
+                                    text: "Keep staged"
+                                    enabled: !backend.generating && !backend.stagingBusy
+                                    onClicked: backend.resolveConflict(modelData.path, "keep_staged")
+                                }
+                                Button {
+                                    text: "Take host"
+                                    enabled: !backend.generating && !backend.stagingBusy
+                                    onClicked: backend.resolveConflict(modelData.path, "take_host")
+                                }
+                            }
+                        }
+                        Label { text: "Runner"; font.pixelSize: 18; font.weight: Font.DemiBold }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            color: window.mutedColor
+                            text: "Commands run in a separate, network-disabled runner container. Empty CPU or "
+                                + "memory fields use a share of Docker's allocation. Changes apply when the local "
+                                + "runtime next starts."
+                        }
+                        GridLayout {
+                            objectName: "runnerSettings"
+                            columns: 2
+                            Layout.fillWidth: true
+                            Label { text: "Image" }
+                            ComboBox {
+                                id: runnerTarget
+                                Layout.fillWidth: true
+                                model: ["auto", "base", "python", "node", "polyglot"]
+                                displayText: currentText === "auto" && backend.runtimeSettings.detectedTarget
+                                    ? "auto (" + backend.runtimeSettings.detectedTarget + ")" : currentText
+                            }
+                            Label { text: "CPUs (2–8)" }
+                            TextField { id: runnerCpus; Layout.fillWidth: true; placeholderText: "From Docker"; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+                            Label { text: "Memory, GB (2–16)" }
+                            TextField { id: runnerMemory; Layout.fillWidth: true; placeholderText: "From Docker"; inputMethodHints: Qt.ImhDigitsOnly }
+                            Label { text: "Process limit (256–4,096)" }
+                            TextField { id: runnerPids; Layout.fillWidth: true; inputMethodHints: Qt.ImhDigitsOnly }
+                            Label { text: "Git history depth (0 = full)" }
+                            TextField { id: gitDepth; Layout.fillWidth: true; inputMethodHints: Qt.ImhDigitsOnly }
+                            Label { text: "Offer removal after, days" }
+                            TextField { id: retentionDays; Layout.fillWidth: true; inputMethodHints: Qt.ImhDigitsOnly }
+                        }
+                        Button {
+                            text: "Save runner settings"
+                            onClicked: backend.saveRuntimeSettings({
+                                runnerTarget: runnerTarget.currentText,
+                                cpus: Number(runnerCpus.text || 0),
+                                memoryGb: Number(runnerMemory.text || 0),
+                                pids: runnerPids.text,
+                                gitHistoryDepth: gitDepth.text,
+                                retentionDays: retentionDays.text
+                            })
+                        }
+                        RowLayout {
+                            Label { text: "Staged sessions"; font.pixelSize: 18; font.weight: Font.DemiBold }
+                            Item { Layout.fillWidth: true }
+                            Button { text: "Refresh"; onClicked: backend.refreshStagedSessions() }
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            color: window.mutedColor
+                            text: backend.stagedSessions.length
+                                ? "Staged work is kept per workspace until you publish or discard it."
+                                : "No staged sessions are stored."
+                        }
+                        Repeater {
+                            objectName: "stagedSessions"
+                            model: backend.stagedSessions
+                            delegate: RowLayout {
+                                required property var modelData
+                                Layout.fillWidth: true
+                                Label {
+                                    Layout.fillWidth: true
+                                    elide: Text.ElideMiddle
+                                    text: (modelData.stale ? "⚠ unused · " : "")
+                                        + (modelData.workspace || modelData.key) + " · " + modelData.runner
+                                        + " · " + (Number(modelData.size) / 1048576).toFixed(1) + " MB · "
+                                        + (modelData.age_days === null || modelData.age_days === undefined
+                                            ? "age unknown" : Math.floor(modelData.age_days) + " days")
+                                }
+                                Button { text: "Remove"; onClicked: backend.removeStagedSession(modelData.key) }
+                            }
+                        }
+                        RowLayout {
                             TextField { id: resumeId; Layout.fillWidth: true; placeholderText: "Interrupted run ID" }
                             Button { text: "Resume"; onClicked: backend.resumeRun(resumeId.text) }
                             Button { text: "Pause active agent"; onClicked: backend.pauseAgent() }
                         }
+                        Label { text: "Documentation tools"; font.pixelSize: 18; font.weight: Font.DemiBold }
+                        CheckBox {
+                            id: webTools
+                            objectName: "webToolsToggle"
+                            text: "Let Agent sessions search the web and fetch documentation pages"
+                            onToggled: backend.setWebTools(checked)
+                            ToolTip.visible: hovered
+                            ToolTip.text: "Off by default. Results are untrusted; pages off the documentation allowlist ask first."
+                        }
+                        Label { text: "Redaction exceptions"; font.pixelSize: 18; font.weight: Font.DemiBold }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            color: window.mutedColor
+                            text: "Secrets in tool results are replaced before they reach the model. List "
+                                + "workspace-relative files (one per line, up to 50) whose contents the model "
+                                + "may see unredacted."
+                        }
+                        TextArea {
+                            id: unredactedPaths
+                            objectName: "unredactedPaths"
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 70
+                            placeholderText: "config/example.env"
+                        }
+                        Button { text: "Save redaction exceptions"; onClicked: backend.saveUnredactedPaths(unredactedPaths.text) }
                         Label { text: "Saved permissions"; font.pixelSize: 18; font.weight: Font.DemiBold }
+                        GridLayout {
+                            objectName: "ruleForm"
+                            columns: 5
+                            Layout.fillWidth: true
+                            ComboBox {
+                                id: ruleTool
+                                model: ["bash", "write", "edit", "apply_patch", "read", "grep", "find", "ls", "status"]
+                            }
+                            ComboBox {
+                                id: ruleDecision
+                                model: ["allow_rule", "ask", "deny"]
+                                displayText: ({ allow_rule: "Allow", ask: "Ask", deny: "Deny" })[currentText]
+                            }
+                            TextField {
+                                id: rulePath
+                                Layout.fillWidth: true
+                                placeholderText: "Path prefix (optional)"
+                            }
+                            TextField {
+                                id: ruleCommand
+                                Layout.fillWidth: true
+                                visible: ruleTool.currentText === "bash"
+                                placeholderText: "Command prefix, e.g. pytest"
+                            }
+                            Button {
+                                text: "Add rule"
+                                enabled: backend.workspaceReady
+                                onClicked: {
+                                    backend.addPermissionRule({
+                                        tool: ruleTool.currentText,
+                                        mode: "agent",
+                                        decision: ruleDecision.currentText,
+                                        path_prefix: rulePath.text,
+                                        command: ruleTool.currentText === "bash" ? ruleCommand.text : ""
+                                    })
+                                    rulePath.clear()
+                                    ruleCommand.clear()
+                                }
+                            }
+                        }
                         Repeater {
                             model: backend.permissions
                             delegate: RowLayout {
@@ -659,10 +954,169 @@ ApplicationWindow {
                                 }
                                 Label {
                                     Layout.fillWidth: true
-                                    text: modelData.tool + " · " + (modelData.path_prefix || modelData.executable || "exact scope")
+                                    text: ({ allow_rule: "Allow", ask: "Ask", deny: "Deny" }[modelData.decision] || modelData.decision)
+                                        + " · " + modelData.tool + " · "
+                                        + (modelData.executable
+                                            ? [modelData.executable].concat(modelData.argument_prefix || []).join(" ")
+                                            : (modelData.path_prefix || "exact scope"))
                                     elide: Text.ElideRight
                                 }
                                 Button { text: "Delete"; onClicked: backend.deletePermission(modelData.rule_id) }
+                            }
+                        }
+                        Item { Layout.fillHeight: true }
+                    }
+                }
+
+                ScrollView {
+                    contentWidth: availableWidth
+                    ColumnLayout {
+                        id: policyPane
+                        objectName: "policySettings"
+                        width: parent.width
+                        spacing: 10
+                        readonly property var policy: backend.workspacePolicy
+                        Label { text: "Workspace policy"; font.pixelSize: 18; font.weight: Font.DemiBold }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            color: window.mutedColor
+                            text: "Read from " + (policyPane.policy.path || ".euesto/policy.toml") + " in the host "
+                                + "workspace (never from staging). It takes effect only after you confirm it, "
+                                + "and any change needs confirming again."
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            font.weight: Font.DemiBold
+                            text: ({
+                                absent: "No policy file; defaults apply.",
+                                confirmed: "Confirmed and in effect.",
+                                unconfirmed: "Not confirmed yet; defaults apply until you confirm it.",
+                                changed: "Changed since you confirmed it; the confirmed version stays in effect.",
+                                invalid: "Invalid; defaults apply. Fix the file and refresh.",
+                                removed: "Removed from the workspace; defaults apply."
+                            })[policyPane.policy.status] || ""
+                        }
+                        Repeater {
+                            model: policyPane.policy.errors || []
+                            delegate: Label {
+                                required property var modelData
+                                Layout.fillWidth: true
+                                wrapMode: Text.Wrap
+                                color: window.dark ? "#f0b45b" : "#a35b00"
+                                text: "⚠ " + modelData
+                            }
+                        }
+                        Label { text: "In effect"; font.weight: Font.DemiBold }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            color: window.mutedColor
+                            text: policyPane.policy.effective || ""
+                        }
+                        Label {
+                            visible: (policyPane.policy.pending || "").length > 0
+                                && policyPane.policy.status !== "confirmed"
+                            text: "Waiting for confirmation"
+                            font.weight: Font.DemiBold
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            visible: (policyPane.policy.pending || "").length > 0
+                                && policyPane.policy.status !== "confirmed"
+                            wrapMode: Text.Wrap
+                            color: window.mutedColor
+                            text: policyPane.policy.pending || ""
+                        }
+                        RowLayout {
+                            Button { text: "Refresh"; enabled: backend.workspacePath.length > 0; onClicked: backend.refreshPolicy() }
+                            Button {
+                                text: "Confirm policy"
+                                enabled: policyPane.policy.status === "unconfirmed"
+                                    || policyPane.policy.status === "changed"
+                                    || policyPane.policy.status === "removed"
+                                onClicked: backend.confirmPolicy()
+                            }
+                        }
+                        Label { text: "Dependency setup"; font.pixelSize: 18; font.weight: Font.DemiBold }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            color: window.mutedColor
+                            text: "Installs dependencies into staging in a one-shot container that can reach "
+                                + "only the allowlisted registries. Isolated setup sees only the manifests and "
+                                + "lockfiles; the Agent's runner stays offline."
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            text: policyPane.policy.setup && policyPane.policy.setup.command
+                                ? "Command: " + policyPane.policy.setup.command
+                                : "No setup command: add one to the policy or a lockfile to the workspace."
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            visible: text.length > 0
+                            color: window.mutedColor
+                            text: policyPane.policy.setup ? (policyPane.policy.setup.message || "") : ""
+                        }
+                        RowLayout {
+                            Button {
+                                text: policyPane.policy.setup && policyPane.policy.setup.state === "running"
+                                    ? "Installing…" : "Install dependencies"
+                                enabled: backend.workspaceReady && !backend.generating
+                                    && !!(policyPane.policy.setup && policyPane.policy.setup.command)
+                                    && !(policyPane.policy.setup && policyPane.policy.setup.state === "running")
+                                onClicked: backend.runDependencySetup(false)
+                            }
+                            Button {
+                                text: "Full setup…"
+                                enabled: backend.workspaceReady && !backend.generating
+                                    && !!(policyPane.policy.setup && policyPane.policy.setup.command)
+                                    && !(policyPane.policy.setup && policyPane.policy.setup.state === "running")
+                                onClicked: backend.runDependencySetup(true)
+                                ToolTip.visible: hovered
+                                ToolTip.text: "Runs setup against the whole staged copy, for projects that build during install"
+                            }
+                        }
+                        TextArea {
+                            objectName: "setupLog"
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 140
+                            visible: text.length > 0
+                            readOnly: true
+                            wrapMode: TextEdit.Wrap
+                            font.family: "Cascadia Code"
+                            text: policyPane.policy.setup ? (policyPane.policy.setup.log || "") : ""
+                        }
+                        RowLayout {
+                            Label { text: "Network audit log"; font.pixelSize: 18; font.weight: Font.DemiBold }
+                            Item { Layout.fillWidth: true }
+                            Button { text: "Load"; onClicked: backend.loadEgressAudit() }
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            color: window.mutedColor
+                            text: (policyPane.policy.audit || []).length
+                                ? "Most recent first. Every registry connection the proxy allowed or refused."
+                                : "No network activity is recorded."
+                        }
+                        Repeater {
+                            objectName: "egressAudit"
+                            model: policyPane.policy.audit || []
+                            delegate: Label {
+                                required property var modelData
+                                Layout.fillWidth: true
+                                elide: Text.ElideRight
+                                font.family: "Cascadia Code"
+                                color: modelData.allowed ? window.textColor : (window.dark ? "#f0b45b" : "#a35b00")
+                                text: new Date(Number(modelData.timestamp) * 1000).toLocaleString()
+                                    + " · " + (modelData.allowed ? "allowed " : "refused ")
+                                    + modelData.host + (modelData.port ? ":" + modelData.port : "")
+                                    + (modelData.reason ? " · " + modelData.reason : "")
                             }
                         }
                         Item { Layout.fillHeight: true }
@@ -771,6 +1225,10 @@ ApplicationWindow {
         id: approvalDialog
         property string approvalKey: ""
         property bool allowRule: false
+        property bool allowRun: false
+        property bool allowOnce: true
+        property string commandHtml: ""
+        property string network: ""
         title: "Approval"
         modal: true
         anchors.centerIn: parent
@@ -784,6 +1242,22 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
                 font.weight: Font.DemiBold
+            }
+            Label {
+                objectName: "approvalNetwork"
+                Layout.fillWidth: true
+                visible: approvalDialog.network === "registries"
+                wrapMode: Text.Wrap
+                color: window.dark ? "#f0b45b" : "#a35b00"
+                text: "⚠ This command can reach the allowlisted package registries."
+            }
+            Label {
+                objectName: "approvalCommand"
+                Layout.fillWidth: true
+                visible: approvalDialog.commandHtml.length > 0
+                textFormat: Text.RichText
+                wrapMode: Text.Wrap
+                text: approvalDialog.commandHtml
             }
             Label { text: "Full request details"; color: window.mutedColor }
             ScrollView {
@@ -803,7 +1277,7 @@ ApplicationWindow {
                     onClicked: { backend.resolveApproval(approvalDialog.approvalKey, "deny"); approvalDialog.close() }
                 }
                 Button {
-                    visible: approvalDialog.allowRule
+                    visible: approvalDialog.allowRun
                     text: "Allow for run"
                     onClicked: { backend.resolveApproval(approvalDialog.approvalKey, "allow_run"); approvalDialog.close() }
                 }
@@ -813,9 +1287,175 @@ ApplicationWindow {
                     onClicked: { backend.resolveApproval(approvalDialog.approvalKey, "allow_rule"); approvalDialog.close() }
                 }
                 Button {
+                    visible: approvalDialog.allowOnce
                     text: "Allow once"
                     highlighted: true
                     onClicked: { backend.resolveApproval(approvalDialog.approvalKey, "allow_once"); approvalDialog.close() }
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: reviewDialog
+        objectName: "reviewDialog"
+        readonly property var review: backend.stagingReview
+        title: "Review staged changes"
+        modal: true
+        visible: review.open === true
+        anchors.centerIn: parent
+        width: Math.min(1000, window.width - 40)
+        height: Math.min(720, window.height - 40)
+        closePolicy: Popup.NoAutoClose
+        property string currentPath: ""
+        function currentFile() {
+            let files = review.files || []
+            for (let i = 0; i < files.length; ++i)
+                if (files[i].path === currentPath)
+                    return files[i]
+            return files.length ? files[0] : null
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 8
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: (reviewDialog.review.summary || "")
+                    + (reviewDialog.review.truncated ? " (list truncated)" : "")
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                spacing: 8
+                ColumnLayout {
+                    Layout.preferredWidth: 360
+                    Layout.fillHeight: true
+                    RowLayout {
+                        Button { text: "Select all"; onClicked: backend.setReviewAll(true) }
+                        Button { text: "Select none"; onClicked: backend.setReviewAll(false) }
+                    }
+                    ListView {
+                        id: reviewFiles
+                        objectName: "reviewFiles"
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        model: reviewDialog.review.files || []
+                        ScrollBar.vertical: ScrollBar {}
+                        delegate: ItemDelegate {
+                            id: reviewRow
+                            required property var modelData
+                            width: reviewFiles.width
+                            highlighted: modelData.path === reviewDialog.currentPath
+                            onClicked: reviewDialog.currentPath = modelData.path
+                            contentItem: RowLayout {
+                                CheckBox {
+                                    checked: reviewRow.modelData.selected
+                                    onToggled: backend.setReviewSelected(reviewRow.modelData.path, checked)
+                                }
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 0
+                                    Label {
+                                        Layout.fillWidth: true
+                                        elide: Text.ElideMiddle
+                                        text: reviewRow.modelData.path
+                                        font.weight: reviewRow.modelData.confirm ? Font.DemiBold : Font.Normal
+                                    }
+                                    Label {
+                                        Layout.fillWidth: true
+                                        elide: Text.ElideRight
+                                        color: reviewRow.modelData.flags.length
+                                            ? (window.dark ? "#f0b45b" : "#a35b00") : window.mutedColor
+                                        text: reviewRow.modelData.operation
+                                            + " · +" + reviewRow.modelData.added + " −" + reviewRow.modelData.removed
+                                            + (reviewRow.modelData.flags.length
+                                                ? " · ⚠ " + reviewRow.modelData.flags.join(", ") : "")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                ScrollView {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    TextArea {
+                        objectName: "reviewDiff"
+                        readOnly: true
+                        wrapMode: TextEdit.NoWrap
+                        font.family: "Cascadia Code"
+                        text: {
+                            let file = reviewDialog.currentFile()
+                            return file ? (file.diff || "(no textual diff)") : "No staged changes."
+                        }
+                    }
+                }
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: (reviewDialog.review.neverPublish || []).length > 0
+                wrapMode: Text.Wrap
+                color: window.mutedColor
+                text: "Never published by workspace policy: " + (reviewDialog.review.neverPublish || []).join(", ")
+            }
+            Label {
+                visible: (reviewDialog.review.checks || []).length > 0
+                text: "Checks"
+                font.weight: Font.DemiBold
+            }
+            Repeater {
+                objectName: "reviewChecks"
+                model: reviewDialog.review.checks || []
+                delegate: RowLayout {
+                    id: checkRow
+                    required property var modelData
+                    Layout.fillWidth: true
+                    Label {
+                        Layout.fillWidth: true
+                        elide: Text.ElideRight
+                        text: (checkRow.modelData.required ? "★ " : "") + checkRow.modelData.name
+                            + " · " + checkRow.modelData.command + " · "
+                            + (checkRow.modelData.running ? "running…"
+                                : checkRow.modelData.status + (checkRow.modelData.status !== "not_run"
+                                    && !checkRow.modelData.current ? " (stale)" : ""))
+                        color: checkRow.modelData.status === "passed" && checkRow.modelData.current
+                            ? window.textColor : (checkRow.modelData.status === "failed"
+                                ? (window.dark ? "#f0b45b" : "#a35b00") : window.mutedColor)
+                        ToolTip.visible: checkMouse.containsMouse && checkRow.modelData.output.length > 0
+                        ToolTip.text: checkRow.modelData.output
+                        MouseArea { id: checkMouse; anchors.fill: parent; hoverEnabled: true }
+                    }
+                    Button {
+                        text: "Run"
+                        enabled: !backend.generating && !backend.stagingBusy
+                        onClicked: backend.runCheck(checkRow.modelData.name)
+                    }
+                }
+            }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                Label {
+                    text: (reviewDialog.review.selectedCount || 0) + " of "
+                        + (reviewDialog.review.files || []).length + " selected"
+                    color: window.mutedColor
+                }
+                Button {
+                    text: "Refresh"
+                    enabled: !backend.stagingBusy
+                    onClicked: backend.openReview()
+                }
+                Button {
+                    text: "Close"
+                    onClicked: backend.closeReview()
+                }
+                Button {
+                    text: "Publish selected"
+                    highlighted: true
+                    enabled: (reviewDialog.review.selectedCount || 0) > 0
+                        && !backend.generating && !backend.stagingBusy
+                    onClicked: backend.publishSelection()
                 }
             }
         }
@@ -857,8 +1497,44 @@ ApplicationWindow {
         }
     }
 
+    Dialog {
+        id: leaveDialog
+        objectName: "leaveDialog"
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(640, window.width - 50)
+        property bool resolved: false
+        onOpened: resolved = false
+        onClosed: if (!resolved) backend.resolveLeave("cancel")
+        function choose(choice) {
+            resolved = true
+            backend.resolveLeave(choice)
+            close()
+        }
+        contentItem: ColumnLayout {
+            spacing: 12
+            Label {
+                id: leaveText
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+            }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                Button { text: "Review and publish"; highlighted: true; onClicked: leaveDialog.choose("publish") }
+                Button { text: "Discard"; onClicked: leaveDialog.choose("discard") }
+                Button { text: "Keep for later"; onClicked: leaveDialog.choose("keep") }
+                Button { text: "Cancel"; onClicked: leaveDialog.choose("cancel") }
+            }
+        }
+    }
+
     Connections {
         target: backend
+        function onLeaveRequested(title, message) {
+            leaveDialog.title = title
+            leaveText.text = message
+            leaveDialog.open()
+        }
         function onInfoRequested(title, message) {
             noticeDialog.show(title, message)
         }
@@ -874,6 +1550,10 @@ ApplicationWindow {
         function onApprovalRequested(value) {
             approvalDialog.approvalKey = value.key
             approvalDialog.allowRule = value.allowRule
+            approvalDialog.allowRun = value.allowRun === true
+            approvalDialog.allowOnce = value.allowOnce !== false
+            approvalDialog.commandHtml = value.commandHtml || ""
+            approvalDialog.network = value.network || ""
             approvalDialog.title = value.title
             approvalSummary.text = value.summary
             approvalDetails.text = value.details

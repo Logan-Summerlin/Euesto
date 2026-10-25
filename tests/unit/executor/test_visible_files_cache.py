@@ -98,7 +98,9 @@ def test_single_file_mutation_hashing_does_not_scale_with_repository_size(
     assert small == large
     assert large <= 4
     assert large_data["workspace_status"]["modified"] == ["pkg0/module0.py", "pkg0/module1.py"]
-    assert small_data["workspace_status"] == {**large_data["workspace_status"]}
+    # The fingerprint identifies the whole staged tree, so only it differs between sizes.
+    small_status = {**small_data["workspace_status"], "fingerprint": None}
+    assert small_status == {**large_data["workspace_status"], "fingerprint": None}
 
 
 @pytest.mark.posix
@@ -208,10 +210,10 @@ def test_prune_reads_manifests_after_a_cold_reference_cache(tmp_path: Path) -> N
     (root / "a.txt").write_text("one\n", encoding="utf-8")
     first = create_checkpoint(root, max_checkpoints=2)
     (root / "a.txt").write_text("two\n", encoding="utf-8")
-    checkpoints_module._reference_cache.clear()
+    checkpoints_module._manifest_cache.clear()
     second = create_checkpoint(root, max_checkpoints=2)
     (root / "a.txt").write_text("three\n", encoding="utf-8")
-    checkpoints_module._reference_cache.clear()
+    checkpoints_module._manifest_cache.clear()
     create_checkpoint(root, max_checkpoints=2)
     stored = {path.name for path in (root / ".local-chat-checkpoints" / "objects").iterdir()}
     # The oldest checkpoint was pruned together with the only object it referenced.
@@ -219,6 +221,60 @@ def test_prune_reads_manifests_after_a_cold_reference_cache(tmp_path: Path) -> N
     assert len(stored) == 2
     restore_checkpoint(root, second)
     assert (root / "a.txt").read_text(encoding="utf-8") == "two\n"
+
+
+def test_prune_orders_by_creation_when_directory_timestamps_tie(tmp_path: Path) -> None:
+    root = tmp_path / "work"
+    root.mkdir()
+    (root / "a.txt").write_text("one\n", encoding="utf-8")
+    oldest = create_checkpoint(root, max_checkpoints=3)
+    (root / "a.txt").write_text("two\n", encoding="utf-8")
+    middle = create_checkpoint(root, max_checkpoints=3)
+    (root / "a.txt").write_text("three\n", encoding="utf-8")
+    store = root / ".local-chat-checkpoints"
+    # Windows stamps every directory created inside one clock tick with the same time and can
+    # leave a newer one looking older, so a timestamp sort picks an arbitrary victim.
+    future = time.time_ns() + 60_000_000_000
+    for name in (oldest, middle):
+        os.utime(store / name, ns=(future, future))
+    checkpoints_module._manifest_cache.clear()
+    newest = create_checkpoint(root, max_checkpoints=2)
+    kept = {
+        path.name
+        for path in store.iterdir()
+        if checkpoints_module._CHECKPOINT_ID.fullmatch(path.name)
+    }
+    assert kept == {middle, newest}
+    assert len(list((store / "objects").iterdir())) == 2
+    restore_checkpoint(root, middle)
+    assert (root / "a.txt").read_text(encoding="utf-8") == "two\n"
+
+
+def test_prune_retries_a_blob_a_transient_lock_held(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "work"
+    root.mkdir()
+    (root / "a.txt").write_text("one\n", encoding="utf-8")
+    create_checkpoint(root, max_checkpoints=1)
+    objects = root / ".local-chat-checkpoints" / "objects"
+    real_unlink = os.unlink
+    locked: list[str] = []
+
+    def unlinking(path, *args, **kwargs):
+        name = os.path.basename(os.fspath(path))
+        if not locked and len(name) == 64:
+            # A Windows indexer still holds the blob the previous checkpoint wrote: the delete
+            # fails with a sharing violation that clears on its own a few milliseconds later.
+            locked.append(name)
+            raise PermissionError(13, "The process cannot access the file")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(checkpoints_module.os, "unlink", unlinking)
+    (root / "a.txt").write_text("two\n", encoding="utf-8")
+    create_checkpoint(root, max_checkpoints=1)
+    assert locked, "pruning never attempted to delete the unreferenced blob"
+    stored = {path.name for path in objects.iterdir()}
+    assert locked[0] not in stored
+    assert len(stored) == 1
 
 
 def test_executor_serves_read_only_tools_concurrently(tmp_path: Path, monkeypatch) -> None:

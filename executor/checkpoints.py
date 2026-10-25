@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import shutil
+import stat
 import tempfile
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -19,8 +22,8 @@ from .errors import (
     PATH_UNSAFE,
     ExecutorToolError,
 )
-from .paths import safe_path
-from .staging import copy_with_sha256, sha256_file, visible_files
+from .paths import normalize_relative, safe_path
+from .staging import copy_with_sha256, sha256_file, staging_links, visible_files
 
 DEFAULT_MAX_CHECKPOINTS = 8
 DEFAULT_MAX_CHECKPOINT_FILES = 300_000
@@ -28,6 +31,31 @@ DEFAULT_MAX_CHECKPOINT_BYTES = 2_500_000_000
 _CHECKPOINT_ID = re.compile(r"^[0-9a-f-]{20,64}$")
 # chmod without following links where the platform supports it (Windows Python 3.12 does not).
 _NO_FOLLOW = {"follow_symlinks": False} if os.chmod in os.supports_follow_symlinks else {}
+MAX_LINK_TARGET_BYTES = 4_096
+
+# Where each staging root keeps its checkpoints. The executor points this at its state volume,
+# which the runner never mounts, so commands cannot read or tamper with recovery data. Without
+# a configured store (unit tests), checkpoints live in a hidden directory inside staging.
+_stores: dict[str, Path] = {}
+_store_lock = threading.Lock()
+
+
+def configure_store(work_root: Path, store_root: Path) -> None:
+    """Keep checkpoints for ``work_root`` under ``store_root`` (created if missing)."""
+    store_root.mkdir(parents=True, exist_ok=True)
+    with _store_lock:
+        _stores[os.path.normcase(str(work_root.resolve()))] = store_root
+
+
+def store_root(work_root: Path) -> Path:
+    with _store_lock:
+        configured = _stores.get(os.path.normcase(str(work_root.resolve())))
+    return configured if configured is not None else work_root / ".local-chat-checkpoints"
+
+
+def object_store(work_root: Path) -> Path:
+    """Content-addressed checkpoint objects, also used to show baseline diffs."""
+    return store_root(work_root) / "objects"
 
 
 def create_checkpoint(
@@ -42,24 +70,27 @@ def create_checkpoint(
     ``max_total_bytes`` bounds both this checkpoint and the retained checkpoint store.
     """
     files = visible_files(work_root)
+    links = _link_targets(work_root, staging_links(work_root))
     total = sum(size for _digest, size, _mode in files.values())
-    if len(files) > max_files or total > max_total_bytes:
+    if len(files) + len(links) > max_files or total > max_total_bytes:
         raise ExecutorToolError(
             LIMIT_EXCEEDED, "Staging is too large for a bounded recovery checkpoint."
         )
-    actual_capacity = shutil.disk_usage(work_root).total
-    required_capacity = total + max_total_bytes + ExecutorConfig.REQUIRED_TEMP_HEADROOM_BYTES
-    if actual_capacity <= required_capacity:
-        raise ExecutorToolError(
-            LIMIT_EXCEEDED,
-            "Checkpoint would exceed the combined /work resource budget: "
-            f"staging={total}, checkpoint={max_total_bytes}, "
-            f"temporary={ExecutorConfig.REQUIRED_TEMP_HEADROOM_BYTES}, capacity={actual_capacity}.",
-        )
-
-    root = work_root / ".local-chat-checkpoints"
+    root = store_root(work_root)
     objects = root / "objects"
     objects.mkdir(parents=True, exist_ok=True)
+    # Staging and checkpoints live on persistent volumes, so the bound is the free space
+    # left on the checkpoint store: a new checkpoint adds at most ``total`` bytes.
+    free = shutil.disk_usage(root).free
+    required = total + ExecutorConfig.REQUIRED_TEMP_HEADROOM_BYTES
+    if free <= required:
+        raise ExecutorToolError(
+            LIMIT_EXCEEDED,
+            "Checkpoint would exceed the free space on the state volume: "
+            f"staging={total}, temporary={ExecutorConfig.REQUIRED_TEMP_HEADROOM_BYTES}, "
+            f"free={free}.",
+        )
+
     checkpoint_id = str(uuid.uuid4())
     directory = root / checkpoint_id
     directory.mkdir()
@@ -74,20 +105,25 @@ def create_checkpoint(
                 continue
             _store_object(work_root / relative, objects / digest, digest)
             stored.add(digest)
+        created_ns = time.time_ns()
         manifest = {
             "version": 2,
             "checkpoint_id": checkpoint_id,
+            "created_ns": created_ns,
             "files": {
                 relative: {"sha256": digest, "size_bytes": size, "mode": mode}
                 for relative, (digest, size, mode) in sorted(files.items())
             },
+            "links": links,
             "file_count": len(files),
             "total_bytes": total,
         }
         manifest_path = directory / "manifest.json"
         manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
-        _remember_references(
-            manifest_path, {digest: size for digest, size, _mode in files.values()}
+        _remember_manifest(
+            manifest_path,
+            created_ns,
+            {digest: size for digest, size, _mode in files.values()},
         )
         _remember_files(checkpoint_id, files)
         _prune(root, checkpoint_id, max_checkpoints, max_total_bytes)
@@ -97,18 +133,26 @@ def create_checkpoint(
         raise
 
 
-# Parsed-manifest caches. _prune needs every retained checkpoint's referenced digests on each
-# mutation, and the executor's post-mutation status can start from the file listing the
-# checkpoint just walked; both are keyed so that a rewritten manifest is never reused.
+# Parsed-manifest caches. _prune needs every retained checkpoint's referenced digests and its
+# creation order on each mutation, and the executor's post-mutation status can start from the
+# file listing the checkpoint just walked; both are keyed so that a rewritten manifest is never
+# reused.
 _MAX_REMEMBERED_FILES = 4
-_reference_cache: dict[str, tuple[int, dict[str, int]]] = {}
+# manifest path -> (manifest mtime_ns, creation time_ns, {digest: size_bytes})
+_manifest_cache: dict[str, tuple[int, int, dict[str, int]]] = {}
 _recent_files: dict[str, dict[str, tuple[str, int, int]]] = {}
 _cache_lock = threading.Lock()
 
 
-def _remember_references(manifest_path: Path, references: dict[str, int]) -> None:
+def _remember_manifest(
+    manifest_path: Path, created_ns: int, references: dict[str, int]
+) -> None:
     with _cache_lock:
-        _reference_cache[str(manifest_path)] = (manifest_path.stat().st_mtime_ns, references)
+        _manifest_cache[str(manifest_path)] = (
+            manifest_path.stat().st_mtime_ns,
+            created_ns,
+            references,
+        )
 
 
 def _remember_files(checkpoint_id: str, files: dict[str, tuple[str, int, int]]) -> None:
@@ -170,12 +214,20 @@ def restore_checkpoint(
         digest = str(value.get("sha256") or "")
         size = max(0, int(value.get("size_bytes") or 0))
         mode = int(value["mode"]) if value.get("mode") is not None else None
-        safe_path(work_root, relative, must_exist=False)
+        # Only the name is checked here: links created since the checkpoint are removed below,
+        # and each restored path is contained (refusing links) when it is written.
+        normalize_relative(relative)
         expected[relative] = (digest, size, mode)
     total = sum(size for _digest, size, _mode in expected.values())
     if total > max_total_bytes:
         raise ExecutorToolError(LIMIT_EXCEEDED, "Checkpoint size exceeds the executor limit.")
+    expected_links = _manifest_links(manifest)
     current = visible_files(work_root)
+    # Links first: a link created since the checkpoint may now stand where a restored file's
+    # directory was, and restoring through it would be refused (the file tools never follow).
+    removed_links = _remove_new_links(work_root, expected_links)
+    if removed_links:
+        current = visible_files(work_root)
     absent = (None, None, None)
     changed = [
         relative
@@ -184,7 +236,7 @@ def restore_checkpoint(
         != _content_and_mode(expected.get(relative, absent))
     ]
     prepared: dict[str, tuple[bytes, int | None]] = {}
-    objects = work_root / ".local-chat-checkpoints" / "objects"
+    objects = object_store(work_root)
     for relative in changed:
         if relative not in expected:
             continue
@@ -208,11 +260,78 @@ def restore_checkpoint(
         mode = prepared[relative][1]
         if mode is not None:
             os.chmod(target, mode, **_NO_FOLLOW)
+    restored_links = _recreate_links(work_root, expected_links)
+    paths = sorted(set(changed) | set(removed_links) | set(restored_links), key=str.casefold)
     return {
         "checkpoint_id": checkpoint_id,
-        "restored_paths": changed,
-        "count": len(changed),
+        "restored_paths": paths,
+        "count": len(paths),
     }
+
+
+def _link_targets(work_root: Path, links: list[str]) -> dict[str, str]:
+    targets: dict[str, str] = {}
+    for relative in links:
+        try:
+            target = os.readlink(work_root.joinpath(*relative.split("/")))
+        except OSError:
+            continue
+        if len(os.fsencode(target)) <= MAX_LINK_TARGET_BYTES:
+            targets[relative] = target
+    return dict(sorted(targets.items()))
+
+
+def _manifest_links(manifest: dict[str, object]) -> dict[str, str]:
+    raw = manifest.get("links") or {}
+    if not isinstance(raw, dict):
+        raise ExecutorToolError(CHECKPOINT_CORRUPT, "Checkpoint manifest is invalid.")
+    links: dict[str, str] = {}
+    for relative, target in raw.items():
+        if not isinstance(relative, str) or not isinstance(target, str) or "\x00" in target:
+            raise ExecutorToolError(CHECKPOINT_CORRUPT, "Checkpoint manifest is invalid.")
+        normalize_relative(relative)
+        links[relative] = target
+    return links
+
+
+def _remove_new_links(work_root: Path, expected: dict[str, str]) -> list[str]:
+    """Remove links that were not in the checkpoint, or now point somewhere else."""
+    removed: list[str] = []
+    for relative in staging_links(work_root):
+        path = work_root.joinpath(*relative.split("/"))
+        try:
+            if expected.get(relative) == os.readlink(path):
+                continue
+            safe_path(work_root, relative, must_exist=False)
+            if os.path.islink(path):
+                os.unlink(path)
+                removed.append(relative)
+        except OSError:
+            continue
+    return removed
+
+
+def _recreate_links(work_root: Path, expected: dict[str, str]) -> list[str]:
+    """Put back links the checkpoint recorded; a link is never followed, so its target is
+    only text."""
+    restored: list[str] = []
+    for relative, target in expected.items():
+        path = safe_path(work_root, relative, must_exist=False)
+        try:
+            if os.readlink(path) == target:
+                continue
+        except OSError:
+            pass
+        if os.path.lexists(path):
+            if path.is_dir() and not path.is_symlink():
+                continue  # a real directory took its place; leave the user's content alone
+            path.unlink()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(target, path)
+        restored.append(relative)
+    if restored:
+        visible_files(work_root)
+    return restored
 
 
 def _content_and_mode(entry: tuple[object, object, object]) -> tuple[object, object]:
@@ -223,7 +342,7 @@ def _content_and_mode(entry: tuple[object, object, object]) -> tuple[object, obj
 def _load_manifest(work_root: Path, checkpoint_id: str) -> dict[str, object]:
     if not isinstance(checkpoint_id, str) or not _CHECKPOINT_ID.fullmatch(checkpoint_id):
         raise ExecutorToolError(INVALID_ARGUMENTS, "Invalid checkpoint identity.")
-    path = work_root / ".local-chat-checkpoints" / checkpoint_id / "manifest.json"
+    path = store_root(work_root) / checkpoint_id / "manifest.json"
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -242,7 +361,7 @@ def _prune(root: Path, current_id: str, max_count: int, max_storage_bytes: int) 
             for path in root.iterdir()
             if path.is_dir() and _CHECKPOINT_ID.fullmatch(path.name)
         ),
-        key=lambda path: path.stat().st_mtime,
+        key=_checkpoint_order,
     )
     keep = {path.name for path in directories[-max(1, max_count) :]} | {current_id}
     for directory in directories:
@@ -264,7 +383,7 @@ def _prune(root: Path, current_id: str, max_count: int, max_storage_bytes: int) 
         # never statted blob-by-blob.
         referenced: dict[str, int] = {}
         for directory in kept_directories:
-            referenced.update(_manifest_references(directory))
+            referenced.update(_manifest_state(directory)[1])
         if sum(referenced.values()) <= max_storage_bytes:
             if objects.exists():
                 with os.scandir(objects) as iterator:
@@ -272,10 +391,7 @@ def _prune(root: Path, current_id: str, max_count: int, max_storage_bytes: int) 
                         entry.path for entry in iterator if entry.name not in referenced
                     ]
                 for path in unreferenced:
-                    try:
-                        os.unlink(path)
-                    except (FileNotFoundError, IsADirectoryError, PermissionError):
-                        pass
+                    _discard_object(path)
             return
         removable = [path for path in kept_directories if path.name != current_id]
         if not removable:
@@ -283,45 +399,105 @@ def _prune(root: Path, current_id: str, max_count: int, max_storage_bytes: int) 
                 LIMIT_EXCEEDED,
                 "Checkpoint storage budget is exhausted by the current checkpoint set.",
             )
-        _remove_checkpoint(min(removable, key=lambda path: path.stat().st_mtime))
+        _remove_checkpoint(min(removable, key=_checkpoint_order))
 
 
 def _remove_checkpoint(directory: Path) -> None:
     shutil.rmtree(directory, ignore_errors=True)
     with _cache_lock:
-        _reference_cache.pop(str(directory / "manifest.json"), None)
+        _manifest_cache.pop(str(directory / "manifest.json"), None)
 
 
-def _manifest_references(directory: Path) -> dict[str, int]:
+def _checkpoint_order(directory: Path) -> tuple[int, str]:
+    """Oldest-first order that coarse filesystem timestamps cannot reorder.
+
+    Windows stamps every directory created inside one system clock tick with the same time, so
+    a store whose checkpoints were created within a few milliseconds sorts by nothing and the
+    prune keeps or drops an arbitrary one. Each manifest records its creation time at full
+    resolution, which is the order the store was actually written in.
+    """
+    return _manifest_state(directory)[0], directory.name
+
+
+def _manifest_state(directory: Path) -> tuple[int, dict[str, int]]:
+    """Creation time and referenced objects of one checkpoint, from a cached manifest."""
     manifest_path = directory / "manifest.json"
     try:
         mtime = manifest_path.stat().st_mtime_ns
     except OSError:
-        return {}
+        return 0, {}
     key = str(manifest_path)
     with _cache_lock:
-        cached = _reference_cache.get(key)
+        cached = _manifest_cache.get(key)
     if cached is not None and cached[0] == mtime:
-        return cached[1]
+        return cached[1], cached[2]
+    data = _manifest_json(manifest_path)
+    created = _recorded_creation(data.get("created_ns"))
+    references = _referenced_objects(data)
+    if not created:
+        # A store written before manifests recorded their creation time has only the directory
+        # timestamp to order it by.
+        try:
+            created = directory.stat().st_mtime_ns
+        except OSError:
+            created = 0
+    with _cache_lock:
+        _manifest_cache[key] = (mtime, created, references)
+    return created, references
+
+
+def _manifest_json(manifest_path: Path) -> dict[str, object]:
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _recorded_creation(value: object) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _referenced_objects(data: dict[str, object]) -> dict[str, int]:
+    files = data.get("files")
     references: dict[str, int] = {}
-    for item in _manifest_files(directory).values():
+    if not isinstance(files, dict):
+        return references
+    for item in files.values():
         if isinstance(item, dict) and item.get("sha256"):
             try:
                 references[str(item["sha256"])] = max(0, int(item.get("size_bytes") or 0))
             except (TypeError, ValueError):
                 references[str(item["sha256"])] = 0
-    with _cache_lock:
-        _reference_cache[key] = (mtime, references)
     return references
 
 
-def _manifest_files(directory: Path) -> dict[str, object]:
-    try:
-        data = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return {}
-    value = data.get("files") if isinstance(data, dict) else None
-    return value if isinstance(value, dict) else {}
+# Windows reports a blob that another process still has open (a scanner reading what the
+# mutation just wrote) as a sharing violation and refuses the delete while that handle lives.
+# It clears on its own, so a bounded retry reclaims the blob instead of leaking it until the
+# next prune; the delay only elapses when a lock is actually there.
+_UNLINK_ATTEMPTS = 6
+_UNLINK_DELAY_SECONDS = 0.05
+
+
+def _discard_object(path: str) -> None:
+    """Delete one unreferenced blob, as far as the platform allows right now."""
+    for attempt in range(_UNLINK_ATTEMPTS):
+        if attempt:
+            time.sleep(_UNLINK_DELAY_SECONDS)
+        try:
+            os.unlink(path)
+            return
+        except (FileNotFoundError, IsADirectoryError):
+            return
+        except PermissionError:
+            # Only a Windows read-only attribute outlives the other process's handle.
+            if os.name == "nt":
+                with contextlib.suppress(OSError):
+                    os.chmod(path, stat.S_IWRITE)
 
 
 def _store_object(source: Path, object_path: Path, digest: str) -> None:

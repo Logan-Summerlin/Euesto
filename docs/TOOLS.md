@@ -1,6 +1,6 @@
 # Tools
 
-This is the authoritative human-readable reference for the ten model-facing tools. The source of truth for dispatch is `shared/tools.py`; the model-facing JSON schemas live in `server/openrouter/agent.py`; executor limits and ceilings live in `executor/config.py`. Changes to one must be checked against the others.
+This is the authoritative human-readable reference for the thirteen model-facing tools: nine executor tools (`read`, `write`, `edit`, `apply_patch`, `bash`, `grep`, `find`, `ls`, `status`) and four tools the gateway runs itself and that never reach the executor (`investigate_repository`, `update_plan`, `web_search`, `fetch_url`). The source of truth for dispatch is `shared/tools.py`; the model-facing JSON schemas live in `server/openrouter/agent.py`; executor limits and ceilings live in `executor/config.py`. Changes to one must be checked against the others.
 
 ## Common contract
 
@@ -8,9 +8,11 @@ Every executor request contains `request_id`, `run_id`, `tool`, `mode`, and an o
 
 Every result contains `request_id`, `ok`, `output`, `data`, `error_code`, `truncated`, `elapsed_seconds`, `returned`, `total_known`, `limit`, and `next_cursor`. Optional counts are non-negative integers. Errors are classified and returned rather than exposing arbitrary exception details to the model. A failed result may carry bounded, JSON-serializable diagnostics in `data` (for example why an exact edit did not match, or which `apply_patch` operation failed).
 
+**Model-facing results.** The gateway turns each result into lean plain text before the model sees it (`server/agent/results.py`): a one-line summary, the content, and for errors the code with a short hint. Malformed tool-call JSON, arguments that break the schema, and unknown tool names get a one-line corrective result naming the field and expected type, or the valid tool names for the mode, instead of failing the run (see "Loop resilience" below). Each result is bounded on its own (`docs/LIMITS.md`, "Model-facing result bounds"); a shortened result says so and emits `tool.result_bounded`. When `write` or `edit` omits `expected_sha256`, the gateway fills in the hash the agent last saw for that path (for `write`, only after the agent saw the whole file), so a stale edit fails clearly instead of overwriting newer content. Re-reading an unchanged range that is still in context returns a one-line note pointing at the earlier result.
+
 All tools operate on relative POSIX paths that are normalized and contained beneath the workspace root. Absolute, drive, UNC, traversal (`..`), Windows-alias, reserved-DOS-name, non-canonical-Unicode, and secret-like paths are rejected, as are symlinks and hard-linked files. Only UTF-8 text is readable and writable; binary content is refused.
 
-Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `venv`, `.tox`, `.nox`, `node_modules`, `__pycache__`, and tool caches) plus executor `.local-chat-*` metadata are excluded from staging and are invisible to every read-oriented tool: `find`, `grep`, and `ls` omit them and `read` reports them as missing, in both Plan and Agent mode. A directory named `env/` is ordinary source and is staged, searched, and published like any other directory; name virtual environments `.venv` or `venv` to keep them out of staging.
+Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `venv`, `.tox`, `.nox`, `node_modules`, `__pycache__`, and tool caches), command output logs (`.euesto-output/`), plus executor `.local-chat-*` metadata are excluded from staging and are invisible to every read-oriented tool: `find`, `grep`, and `ls` omit them and `read` reports them as missing, in both Plan and Agent mode. A directory named `env/` is ordinary source and is staged, searched, and published like any other directory; name virtual environments `.venv` or `venv` to keep them out of staging.
 
 ## `read`
 
@@ -18,10 +20,10 @@ Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `ve
 - **Arguments:** `path` (required); optional `start_line`, `end_line`, `offset`, and `max_bytes`.
 - **Modes:** Plan and Agent.
 - **Permission:** read-only.
-- **Defaults:** each call returns at most 64,000 bytes unless `max_bytes` raises it; the tool clamps any request to 256,000 bytes per call regardless of the configured profile limit.
-- **Hard maximum:** 8,000,000 bytes at the protocol/config layer; the 256,000-byte per-call tool ceiling applies on top.
+- **Defaults:** each call returns at most 32,000 bytes unless `max_bytes` asks for more, up to the profile's `max_read_bytes` (1,000,000 in `coding`).
+- **Hard maximum:** 8,000,000 bytes. The model-facing result is bounded separately (32,000 bytes in `coding`).
 - **Semantics:** Plan reads the read-only source snapshot; Agent reads staged workspace content. Excluded metadata/dependency/cache paths fail as missing files, exactly as they are absent from `find`/`grep`/`ls`. Line ranges and byte offsets cannot be combined. An end-line past the end of the file is clipped to the final available line and reported as `range_clipped`; invalid start lines and offsets remain rejected, and byte offsets must land on UTF-8 character boundaries.
-- **Truncation/cursors:** results report `truncated`, `byte_offset`, `next_offset`, and `next_start_line`; continue with the next line range or offset instead of assuming a whole file fits in one response.
+- **Truncation/cursors:** results report `line_count`, `truncated`, `byte_offset`, `next_offset`, and `next_start_line`; continue with the next line range or offset instead of assuming a whole file fits in one response. A truncated read also carries an `outline` of up to 40 top-level definitions in the unshown remainder, with line numbers, so the next read can target the right range.
 - **Errors:** invalid path, invalid range, invalid offset, non-UTF-8 or binary content, missing file, and resource-limit failures are classified.
 
 ## `write`
@@ -67,15 +69,16 @@ Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `ve
 
 ## `bash`
 
-- **Purpose:** run a non-interactive Bash command in the staged workspace.
-- **Arguments:** `command` required; optional `working_directory`, `timeout_seconds` (1–900), `env`, `stdin` (maximum 8,000,000 characters at schema level), and `rollback_on_failure` (default true).
+- **Purpose:** run a non-interactive Bash command in the staged workspace, inside the runner container.
+- **Arguments:** `command` required; optional `working_directory`, `timeout_seconds` (1–900), `env`, `stdin` (maximum 8,000,000 characters at schema level), and `rollback_on_failure` (default true). In sessions where Bash can prompt (the `prompt` tier, or a runner with registry access) the schema also offers `description`, a one-line explanation of at most 200 characters shown in the approval prompt; elsewhere the field is absent. The choice is fixed per session, so the tool list stays byte-stable for caching.
 - **Modes:** Agent only.
 - **Permission:** mutation-capable; checkpointed and staged.
 - **Defaults:** 60 seconds when `timeout_seconds` is omitted; the `coding` profile caps commands at 300 seconds and 1,000,000 bytes of command text, stdin, and output.
 - **Hard maximums:** 900 seconds; 1,000,000 command bytes; 8,000,000 stdin/output bytes.
-- **Execution:** `/bin/bash -lc`, non-interactive (a new session with no controlling terminal; stdin is `/dev/null` unless `stdin` is supplied), no network, restricted environment, process-group cleanup. Under the opt-in allowlisted-egress profile (`docs/EGRESS.md`) the base environment also carries `HTTPS_PROXY`/`HTTP_PROXY` for the allowlisted registry proxy; nothing else becomes reachable.
+- **Execution:** the executor checkpoints, then sends the command to the runner over its Unix socket. The runner runs `/bin/bash -lc` non-interactively (a new session with no controlling terminal; stdin is `/dev/null` unless `stdin` is supplied), one command at a time, in its own process group, which is killed when the command ends, times out, or is cancelled. The runner sees only staging at `/work` (exec allowed, so compiled binaries and installed console scripts run), a package cache at `/cache`, and no network, source mount, state volume, or secrets. Toolchains depend on the runner image (`docs/ARCHITECTURE.md`); the session context lists the executables actually installed. Package managers' caches (pip, uv, npm, Yarn, Corepack, Go, Cargo, Gradle) default to `/cache`, so downloads survive between commands and sessions. The command's timeout is never longer than the run's remaining wall time. In the `registries` network mode (`docs/EGRESS.md`) the base environment also carries `HTTPS_PROXY`/`HTTP_PROXY` for the allowlisted registry proxy; nothing else becomes reachable, and Bash asks before every command unless a saved rule matches.
 - **Environment:** a fixed base environment (`PATH`, `HOME`, locale, UTF-8 Python flags) is always applied. User-supplied `env` is limited to 64 variables with POSIX-identifier names and ≤16,384-byte values; `PATH`, `HOME`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, and `BASH_ENV*` are refused.
-- **Output:** stdout/stderr is bounded; oversized output is retained as a bounded head/tail preview with a truncation marker.
+- **Output:** stdout/stderr is bounded; oversized output is retained as a bounded head/tail preview with a truncation marker. The complete output is always written to `.euesto-output/<request_id>.log` in staging, and the result names that log so a later command can `grep` or `tail` it. When the output is from a recognized test, lint, or compiler run (pytest, unittest, Jest, Vitest, `go test`, `cargo test`, tsc, ESLint, Ruff, mypy, gcc/clang), the result leads with a structured reduction: totals and the first failures with file and line.
+- **Git:** staging holds a sandbox repository cloned from the host's history at seed time (no remotes, hooks, or credential helpers). `git diff refs/euesto/base` shows exactly the changes made in staging; `git log`, `git blame`, and `git diff HEAD` work as usual. Nothing in `.git` is ever published, and checkpoint rollback does not rewind git state.
 - **Failure:** timed-out and cancelled commands always roll staged filesystem changes back to their checkpoint. Non-zero-exit commands roll back by default; set `rollback_on_failure: false` when retaining partial progress is intentional. Results separate the process `exit_code` from checkpoint outcome with `rolled_back` and `rollback_reason` (`cancelled`, `nonzero_exit`, or `none`); `rollback_on_failure: false` never retains the changes of a cancelled command.
 
 ## `grep`
@@ -120,6 +123,7 @@ Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `ve
 - **Modes:** Agent only.
 - **Permission:** read-only; never prompts.
 - **Semantics:** compares the staged workspace against the publication baseline (the snapshot the next manifest is validated against), so it shows exactly what would be published: created, modified, deleted, and permission-changed files with base/staged hashes, sizes, and modes. Available for empty and non-empty staging. Secret-like paths, dependency/cache directories, and executor `.local-chat-*` metadata (snapshot and checkpoints) are never reported or diffed.
+- **Links and conflicts:** symlinks a command created in staging are listed under `unpublishable_links` (never followed or published), and files changed both on the host and in staging since the baseline are listed under `conflicts` with base, host, and staged hashes. A conflicting file is held back from publication until the user keeps the staged or takes the host version; other files still publish.
 - **Publication metadata:** `publication_batches` is how many sequential, separately approved publication batches the pending changes need (`null` if a single file exceeds one batch), with `publication_batch_limits`.
 - **Diffs:** with `include_diffs`, unified diffs against the baseline content (resolved by hash from the checkpoint object store or the read-only source) are returned for the current page, bounded to 64,000 bytes and 800 lines in aggregate; files over 1,000,000 bytes, binary files, mode-only changes, and unavailable baselines are reported by kind without text.
 - **Truncation/cursors:** `returned`, `total_known`, `truncated`, and `next_cursor` page through large change sets.
@@ -130,16 +134,56 @@ Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `ve
 - **Arguments:** `query` required; optional `inspected_paths` (up to 50 relative files or directories). Unknown arguments are rejected.
 - **Request guidance:** put the complete investigation request in `query`: relevant symptoms, error messages, suspected components or files, hypotheses, desired scope, and any other context that can help the investigator focus its search. The investigation model decides whether to use `read`, `grep`, `find`, or `ls` and how to scope those tools.
 - **Inspected paths:** list in `inspected_paths` the files you have already read and directories you have already listed, so the investigator does not re-walk them. The harness enforces this in code: a nested `read` of a listed file or `ls` of a listed directory is refused without reaching the executor (`investigation.already_inspected`, journaled with `skipped: true`), and the refused paths are reported in `skipped_paths`. `grep`/`find` over those paths and reads of other files beneath a listed directory still run. Paths must be relative and are normalized (`./src/` and `src` are the same entry); absolute, drive, and traversal paths fail the call.
-- **Modes:** Agent only.
+- **Modes:** Plan and Agent.
 - **Permission:** read-only; it cannot mutate, execute commands, checkpoint, or publish, and it never requires an approval prompt.
 - **Model:** uses the investigation model saved in Settings → Connection (default `xiaomi/mimo-v2.5`). Any catalog model or typed OpenRouter model ID can be saved; the primary model cannot select or override it.
 - **Budget:** each call receives at most 50% of the parent run's remaining cost (calls fail closed below a $0.01 floor) and inherits bounded iteration, tool-call (36/36 caps), and wall-time limits from the parent's remaining budgets. Wall time is the parent's remaining wall time clamped to 10–300 seconds, so one investigation can never consume most of a long parent run. Up to four calls are accepted per turn (the allowance resets at the start of every parent model turn), and a failed call still counts toward that turn's cap.
-- **Tools:** the nested investigation loop is restricted to `read`, `grep`, `find`, and `ls` through the parent's executor session, so it observes current staged state. Non-Plan tool calls inside the loop are rejected in code.
-- **Synthesis:** exploration stops while one iteration, one tool-call slot, and a wall-time reserve (60 seconds, or a third of a shorter nested budget) remain, or when the call's own 512,000-byte result ledger is nearly spent; the harness then runs one tool-free synthesis turn (`tool_choice: "none"`). Tool calls the model issued past the stopping point are answered with `investigation.budget_reserved` rather than executed, so every call has a result. An empty final answer also triggers the synthesis turn, and if synthesis still returns no text the harness writes a summary naming the files examined, so the parent always gets a summary. `stop_reason` (`budget`, `evidence_limit`, `empty_answer`, or `provider_error`) records why exploration stopped.
-- **Context:** the nested loop keeps its own context and result ledger (it neither consumes nor is starved by the parent's), bounds each result to 40,000 characters, and compacts older results to stay within about 64,000 tokens so smaller-context investigation models still work. Reasoning returned by the model is sent back with its tool calls.
-- **Provider errors:** retryable failures (timeouts, connection errors, 408/409/425/429, 5xx, and error bodies returned with a 200 status) are retried up to three attempts while wall time remains. A failure after evidence was gathered still runs synthesis and reports `provider_error`; a failure before any evidence ends the call with `investigation.failed`.
-- **Result:** returns `summary`, `findings`, `structured`, `files_examined`, `skipped_paths`, and `truncated`; nested `subagent.*` events remain in the journal for replay/audit. On failure the parent is told to fall back to direct tool use.
+- **Tools:** the nested investigation loop is restricted to `read`, `grep`, `find`, `ls`, and `status` through the parent's executor session, so it observes current staged state and can review a staged diff before publication. Any other tool call inside the loop is rejected in code. In Plan mode the loop reads the read-only source snapshot and `status` reports nothing staged.
+- **Synthesis:** exploration stops while one iteration, one tool-call slot, and a wall-time reserve remain, or when the call's own 512,000-byte result ledger is nearly spent; the harness then runs one tool-free synthesis turn (`tool_choice: "none"`). The reserve is 60 seconds plus one second per 2,500 tokens of nested context, capped at a third of a short nested budget, and the synthesis turn's timeout is what is left after it, so a summary is never starved by its own prompt and a retry cannot spend the wall clock twice. Tool calls the model issued past the stopping point are answered with `investigation.budget_reserved` rather than executed, so every call has a result. An empty final answer, an executor failure mid-loop, and a provider failure after evidence was gathered all still run synthesis; when synthesis returns no text the harness writes a digest of the evidence instead: the specific stop cause, the files it examined, the paths it listed but never read, and the next `read` to run. Every payload carries `stop_reason` (`budget` for the tool-call, iteration, cost, and wall-time causes; otherwise `evidence_limit`, `empty_answer`, `provider_error`, or `complete` for a natural finish) and the specific `stop_cause`, so a thin answer never blames the wrong limit. A summary already paid for is returned even when charging it crosses the parent's remaining budget.
+- **Context:** the nested loop keeps its own context and result ledger (it neither consumes nor is starved by the parent's), bounds each result to 40,000 characters, and compacts older results to stay within about 64,000 tokens of exploration (96,000 before the synthesis turn, whose prompt is the longest) so smaller-context investigation models still work. Reasoning returned by the model is sent back with its tool calls.
+- **Provider errors:** retryable failures (timeouts, connection errors, 408/409/425/429, 5xx, and error bodies returned with a 200 status) are retried up to three attempts while wall time remains. A failure after evidence was gathered still runs synthesis and reports `provider_error`; a failure before any evidence ends the call with `investigation.failed`. An executor failure mid-loop (the socket dropped, the executor restarted) is answered in-loop as `investigation.executor_unavailable`, journaled as `subagent.executor_error`, and never ends the call: synthesis still runs and the payload is marked degraded.
+- **Result:** returns `summary`, `findings`, `structured`, `files_examined`, `skipped_paths`, `truncated`, and the status fields `stop_reason`, `stop_cause`, `budget_exhausted`, `degraded`, and `parent_budget_exceeded`; nested `subagent.*` events remain in the journal for replay/audit. A failure payload additionally carries `error_code` (`investigation.failed`, `investigation.executor_unavailable`, or `investigation.call_limit`), a non-empty `summary`, and a `fallback` hint telling the parent to use the direct tools.
 - **Findings:** the investigator is asked to end with a JSON report; its `findings` become a list of up to 50 `{file, line, justification, observed}` entries (`line` is a positive integer or null, `justification` at most 1,000 characters, entries with invalid paths are dropped). `observed` is set by the harness, not the model: it is true only when the investigator itself successfully read the file or matched it with `grep` during the call, so the parent can trust observed claims or verify any finding with one `read`. When the final message is not a structured report, `structured` is false, `findings` is empty, and the whole message is the `summary`.
+
+## `update_plan`
+
+- **Purpose:** record the task plan as a short checklist the user sees live.
+- **Arguments:** `steps` (required, 1–20 entries of `{id, title, status}`) and an optional `note` of at most 200 characters. `id` is a string or integer of at most 40 characters; `title` is at most 120 characters and required only when a step is first added; `status` is `pending`, `in_progress`, `done`, or `blocked` (default `pending`).
+- **Modes:** Plan and Agent.
+- **Permission:** gateway-local; it never reaches the executor and never prompts.
+- **Semantics:** the first call sets the plan. Later calls send only the steps that changed, by `id`; a new `id` appends a step. Once every step is done, a call naming only new steps starts a fresh plan. At most 20 steps are kept.
+- **Result:** one line, for example `plan: 3/7 done, step 4 in progress`. Invalid calls return a one-line corrective hint.
+- **State:** the plan is stored per session in the gateway journal, survives resume, is shown in the desktop as a checklist (`plan.updated` events), and is included in every compaction handoff and budget wind-down summary.
+
+## `web_search`
+
+- **Purpose:** search the web for documentation.
+- **Arguments:** `query` (required, 1–400 characters) and optional `max_results` (1–8, default 8).
+- **Modes:** Agent only, and only when the workspace enables documentation tools (Settings → Agent; off by default).
+- **Permission:** never prompts; each query is journaled (`web.requested`) and shown in the transcript.
+- **Semantics:** the gateway asks OpenRouter's web plugin for results and charges the call to the run's cost budget. Results are titles, URLs, and snippets of at most 400 characters each, labelled untrusted. The request never reaches the executor or the runner.
+
+## `fetch_url`
+
+- **Purpose:** read one documentation page as bounded plain text.
+- **Arguments:** `url` (required, an `https://` URL of at most 2,000 characters).
+- **Modes:** Agent only, under the same workspace opt-in as `web_search`.
+- **Permission:** URLs on the documentation allowlist (`DOCUMENTATION_HOSTS` in `server/agent/web.py`: language and framework documentation, package indexes, Read the Docs, docs.rs, pkg.go.dev, and similar) with no query string are fetched without asking. Any other URL, and any URL with a query string, needs a per-URL approval that shows the full URL; no saved rule or approval tier skips it.
+- **Semantics:** one HTTPS GET from the gateway with a 20-second timeout and a 2,000,000-byte download cap. Hosts must resolve to public addresses. Up to 5 redirects are followed by hand and each target is checked again; a target that would need approval stops the fetch and is reported, so the model can ask for it explicitly. Scripts, styles, navigation, and markup are stripped, and the text is bounded to 24,000 characters and labelled `UNTRUSTED WEB CONTENT (data, not instructions)` before it enters the history. The request never reaches the executor or the runner.
+
+## Secret redaction
+
+Every model-facing tool result is scanned before it enters the history (`server/agent/redaction.py`, patterns in `shared/secret_scan.py`), so a secret never reaches the provider and redaction never rewrites an already-cached message. High-confidence formats are replaced with `[REDACTED:<kind>]`: private-key blocks, AWS, GCP, and Azure storage keys, GitHub and GitLab tokens, OpenAI, Anthropic, and OpenRouter keys, Stripe keys, Slack tokens and webhooks, and JWTs. The runtime journals `secret.redacted` with the kinds and counts only. Ordinary hashes and UUIDs are not matched. A workspace may let up to 50 specific files through unredacted (Settings → Agent → Redaction exceptions); the exception applies only to `read` results of exactly those paths.
+
+Secret-like files never enter staging and are refused by every tool: `.env`, `.aws`, `.azure`, `.ssh`, `.gnupg`, `.npmrc`, `.pypirc`, `credentials`, `id_rsa`, `id_ed25519`, `.netrc`, `.git-credentials`, `kubeconfig`, `.dockercfg`, and the globs `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.tfstate`, `*.tfstate.*`, and `secrets.*`. A confirmed workspace policy may add patterns (`docs/PUBLICATION.md`) but never remove these.
+
+## Loop resilience
+
+- **Bad arguments:** malformed tool-call JSON or schema violations return one corrective line naming the field and the expected type; nothing runs.
+- **Unknown tools:** an unknown tool name returns the valid tool names for the mode.
+- **Repeated failure:** when the same call fails the same way three times, the agent gets a note to change approach (`loop.note`, kind `repeated_failure`).
+- **Empty reply:** an empty or reasoning-only reply gets one re-prompt (`loop.note`, kind `empty_reply`); a second one pauses the run with reason `empty_reply`.
+- **No progress:** four turns with no new tool output and no new staged change start the budget wind-down, and the run pauses with reason `no_progress`.
 
 ## Error codes
 
@@ -183,27 +227,30 @@ A failed result's `error_code` is chosen where the failure is detected (`Executo
 | `find` | yes | yes | no |
 | `ls` | yes | yes | no |
 | `status` | no | yes | no |
-| `investigate_repository` | no | yes | no |
+| `investigate_repository` | yes | yes | no |
+| `update_plan` | yes | yes | no |
+| `web_search` | no | opt-in | no |
+| `fetch_url` | no | opt-in | no |
 
-Read-only tools never prompt. Agent runs choose one of three approval policies (`APPROVAL_POLICIES` in `shared/permissions.py`, applied by `apply_approval_policy` after rule resolution):
+Read-only tools never prompt, except `fetch_url` for a URL off its allowlist. Agent runs choose one of three approval policies (`APPROVAL_POLICIES` in `shared/permissions.py`, applied by `apply_approval_policy` after rule resolution):
 
-| Policy | `write` / `edit` / `apply_patch` | `bash` | Publication |
-|---|---|---|---|
-| `prompt` (default) | ask | ask | approve each batch |
-| `accept_edits` | allowed | ask | approve each batch |
-| `auto` | allowed | allowed | automatic |
+| Policy | `write` / `edit` / `apply_patch` | `bash` (network `none`) | `bash` (network `registries`) | Publication |
+|---|---|---|---|---|
+| `prompt` | ask | ask | ask | approve each batch |
+| `sandbox` | allowed | allowed | ask | approve each batch |
+| `auto` | allowed | allowed | ask | automatic, except risk-flagged batches |
 
-The middle tier matches friction to risk: staged file edits are checkpointed, reversible, and still gated by publication approval, while Bash has broader, harder-to-preview effects. Saved and per-run rules apply first; an explicit deny rule wins under every policy, and Plan-mode mutations are always denied. Session tiers are enabled from the desktop with a confirmation, advertised by the gateway as the `agent_accept_edits` and `agent_auto` capabilities, and reset to `prompt` on resume, mode or workspace change, and app restart. Plan-mode mutation denial is enforced twice: once in `shared/tools.py` request validation and again by `executor/permissions.py`.
+Sandbox is safe to run unprompted because every effect stays inside the checkpointed, persistent staged copy, which has no network, no credentials, and no `/source`; the irreversible step, publication, is unchanged. With registry access on, Bash asks under every tier unless a saved rule matches. Saved and per-run rules apply first; an explicit deny rule wins under every policy, and Plan-mode mutations are always denied. Under `auto`, a batch with a host-executable, dependency, or workspace-policy change still needs explicit confirmation (`docs/PUBLICATION.md`). The tiers are enabled from the desktop: Sandbox after a one-time explanation, after which it is the default for new Agent sessions, and Auto with a confirmation each session. The gateway advertises them as the `agent_sandbox` and `agent_auto` capabilities. Auto resets to the default on resume, mode or workspace change, and app restart. Plan-mode mutation denial is enforced twice: once in `shared/tools.py` request validation and again by `executor/permissions.py`.
 
-The public ten-tool model-facing API includes the scoped read-only `investigate_repository` tool. Check `shared/tools.py` and `server/openrouter/agent.py` when modifying schemas or dispatch.
+The public thirteen-tool model-facing API includes the scoped read-only `investigate_repository` tool. Check `shared/tools.py` and `server/openrouter/agent.py` when modifying schemas or dispatch.
 
 ## Concurrency within a turn
 
-When one model turn issues several calls, consecutive independent read-only calls (`read`, `grep`, `find`, `ls`, `status`) run concurrently (at most 8 at a time) and the executor serves them off its event loop. Mutations (`write`, `edit`, `apply_patch`, `bash`) and `investigate_repository` run one at a time in their original order, so each keeps its own checkpoint and a read issued after a write observes it. Results are always returned to the model in the original call order.
+When one model turn issues several calls, consecutive independent read-only calls (`read`, `grep`, `find`, `ls`, `status`) run concurrently (at most 8 at a time) and the executor serves them off its event loop. Mutations (`write`, `edit`, `apply_patch`, `bash`) and the gateway tools (`investigate_repository`, `update_plan`, `web_search`, `fetch_url`) run one at a time in their original order, so each keeps its own checkpoint and a read issued after a write observes it. Results are always returned to the model in the original call order.
 
 
 ## Permission matching
 
-Permission scopes use case-insensitive canonical relative paths with both slash styles accepted. Invalid, absolute, drive, UNC, and traversal paths do not match a rule and remain subject to executor validation. When multiple non-restrictive rules match, the longest normalized path prefix wins; restrictive decisions retain the ordering `DENY > ASK > ALLOW`.
+Rules cover the executor tools only and are managed in Settings → Agent → Saved permissions: each names a tool and a decision (allow, ask, or deny). File-tool rules take an optional path prefix; `bash` rules take a required command prefix such as `pytest` or `npm test` instead. A Bash allow or ask rule matches only a single simple command whose executable and leading arguments equal the prefix: command lists, pipelines, redirections, background jobs, and command substitution never match it, so `pytest && curl …` asks even when `pytest` is allowed. A Bash deny rule matches every command that starts with its prefix. Permission scopes use case-insensitive canonical relative paths with both slash styles accepted. Invalid, absolute, drive, UNC, and traversal paths do not match a rule and remain subject to executor validation. When multiple non-restrictive rules match, the longest normalized path prefix wins; restrictive decisions retain the ordering `DENY > ASK > ALLOW`.
 
 Approval prompts are bounded by the active agent run's remaining wall-clock budget. An unanswered prompt produces an `approval.timeout` event and fails the run rather than waiting indefinitely.

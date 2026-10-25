@@ -14,7 +14,13 @@ from server.agent.budgets import (
     RunBudget,
 )
 from server.agent.runtime import AgentRuntime
+from server.executor.client import ExecutorUnavailable
 from server.openrouter.agent import AgentTurn
+from shared.investigation import (
+    INVESTIGATION_CALL_LIMIT,
+    INVESTIGATION_FAILED,
+    InvestigationResult,
+)
 from shared.requests import AgentRunRequest
 from shared.tools import ToolResult
 
@@ -89,12 +95,12 @@ def test_investigator_prompt_explains_plan_harness_and_budget(monkeypatch):
 
     system = captured["messages"][0]["content"]
     assert "bounded plan-mode harness" in system
-    assert "read, grep, find, and ls" in system
+    assert "read, grep, find, ls, and status" in system
     assert "36 tool calls" in system
     assert "36 iterations" in system
     assert "stop researching once you have enough evidence" in system
     assert "final available tool call" in system
-    assert captured["allowed_tools"] == {"read", "grep", "find", "ls"}
+    assert captured["allowed_tools"] == {"read", "grep", "find", "ls", "status"}
 
 
 def test_investigator_reserves_final_budget_for_synthesis(monkeypatch):
@@ -103,7 +109,13 @@ def test_investigator_reserves_final_budget_for_synthesis(monkeypatch):
     calls = []
 
     async def fake_agent_turn(*args, **kwargs):
-        calls.append({"messages": args[1], "allowed_tools": kwargs["allowed_tools"]})
+        calls.append(
+            {
+                "messages": args[1],
+                "allowed_tools": kwargs["allowed_tools"],
+                "offered_tools": kwargs["offered_tools"],
+            }
+        )
         if len(calls) == 1:
             return AgentTurn(
                 content="",
@@ -140,7 +152,8 @@ def test_investigator_reserves_final_budget_for_synthesis(monkeypatch):
     )
 
     assert len(calls) == 2
-    assert calls[0]["allowed_tools"] == {"read", "grep", "find", "ls"}
+    assert calls[0]["allowed_tools"] == {"read", "grep", "find", "ls", "status"}
+    assert calls[0]["offered_tools"] == calls[1]["offered_tools"]
     assert calls[1]["allowed_tools"] == set()
     assert any(
         message["role"] == "user" and "Stop repository exploration now" in message["content"]
@@ -359,7 +372,11 @@ def test_investigation_budget_exhaustion_returns_partial_success(monkeypatch):
     result = json.loads(messages[-1]["content"])
     assert result["truncated"] is True
     assert result["budget_exhausted"] is True
-    assert "partial repository analysis" in result["summary"]
+    assert "partial repository analysis" in result["error"]
+    # The digest names the limit that actually stopped exploration, not a generic budget.
+    assert result["stop_cause"] == "tool_calls"
+    assert "tool-call limit" in result["summary"]
+    assert "Next step:" in result["summary"]
 
 
 def test_parent_and_investigation_budgets_are_tripled():
@@ -620,9 +637,10 @@ def test_wall_time_reserve_stops_exploration_and_still_returns_summary(monkeypat
     assert result["summary"] == "Answer within the wall-time reserve."
     assert result["budget_exhausted"] is True
     assert calls[-1]["allowed_tools"] == set()
-    assert calls[-1]["timeout"] >= 60
+    assert calls[-1]["turn_timeout"] >= 60
     assert all(
-        call["timeout"] <= investigation_module.INVESTIGATION_MAX_TURN_SECONDS for call in calls
+        call["turn_timeout"] <= investigation_module.INVESTIGATION_MAX_TURN_SECONDS
+        for call in calls
     )
 
 
@@ -717,7 +735,7 @@ def test_provider_failure_without_evidence_reports_failure(monkeypatch):
     assert result["fallback"]
 
 
-def test_investigation_results_do_not_consume_the_parent_result_ledger(monkeypatch):
+def test_investigation_results_keep_their_own_per_result_bound(monkeypatch):
     class LargeExecutor(FakeExecutor):
         async def execute(self, request):
             return ToolResult(request.request_id, True, output="x" * 200_000)
@@ -733,8 +751,6 @@ def test_investigation_results_do_not_consume_the_parent_result_ledger(monkeypat
     monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
     runtime = AgentRuntime(LargeExecutor(), FakeApprovals(), record_event)
     runtime._api_keys["run-1"] = "api-key"
-    # The parent has nearly exhausted its own tool-result allowance.
-    runtime._tool_result_bytes["run-1"] = runtime_module.MAX_TOOL_RESULT_BYTES - 1_000
     _investigate(runtime)
 
     tool_message = next(m for m in seen[1] if m.get("role") == "tool")
@@ -742,4 +758,214 @@ def test_investigation_results_do_not_consume_the_parent_result_ledger(monkeypat
     assert not payload["data"].get("truncated")  # not starved by the parent's ledger
     assert payload["truncated"] is True  # but bounded per result
     assert len(payload["output"]) <= investigation_module.INVESTIGATION_MAX_OUTPUT_CHARS + 100
-    assert runtime._tool_result_bytes == {"run-1": runtime_module.MAX_TOOL_RESULT_BYTES - 1_000}
+
+
+def _name_call(call_id: str, name: str, arguments: dict) -> dict:
+    return {"id": call_id, "function": {"name": name, "arguments": json.dumps(arguments)}}
+
+
+def _cost_turn(cost: float, text: str = "", *calls: dict) -> AgentTurn:
+    message: dict = {"role": "assistant", "content": text}
+    if calls:
+        message["tool_calls"] = list(calls)
+    return AgentTurn(
+        content=text,
+        tool_calls=tuple(calls),
+        message=message,
+        usage={"cost": cost, "total_tokens": 8},
+    )
+
+
+def _recording_runtime(executor=None) -> tuple[AgentRuntime, list[tuple[str, dict]]]:
+    events: list[tuple[str, dict]] = []
+
+    async def append_event(_run_id, event_type, payload):
+        events.append((event_type, payload))
+
+    runtime = AgentRuntime(executor or FakeExecutor(), FakeApprovals(), append_event)
+    runtime._api_keys["run-1"] = "api-key"
+    return runtime, events
+
+
+def test_parent_budget_crossed_during_synthesis_keeps_the_paid_summary(monkeypatch):
+    # Regression: charging the parent after a paid synthesis raised, so the finished summary
+    # was replaced by a canned budget stub. The summary must survive; the parent's own limit
+    # stops the run at its next step.
+    costs = iter((0.04, 0.08))
+
+    async def fake_agent_turn(model, messages, *args, **kwargs):
+        cost = next(costs)
+        if kwargs["allowed_tools"]:
+            return _cost_turn(cost, "", _read_call("read-1", "src/app.py"))
+        return _cost_turn(cost, "The summary already paid for.")
+
+    monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
+    runtime, events = _recording_runtime()
+
+    result = _investigate(runtime, RunBudget(100, 600, 0.10, 100, "test"))
+
+    assert result["summary"] == "The summary already paid for."
+    assert result["parent_budget_exceeded"] is True
+    assert result["degraded"] is True
+    assert "subagent.failed" not in [kind for kind, _payload in events]
+    assert events[-1][0] == "subagent.completed"
+
+
+def test_an_executor_failure_mid_loop_still_returns_a_usable_payload(monkeypatch):
+    class FailingExecutor(FakeExecutor):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def execute(self, request):
+            self.calls += 1
+            if self.calls == 2:
+                raise ExecutorUnavailable("executor socket is gone")
+            return await super().execute(request)
+
+    turns = []
+
+    async def fake_agent_turn(model, messages, *args, **kwargs):
+        turns.append(kwargs["allowed_tools"])
+        if len(turns) == 1:
+            return _tool_turn(
+                _read_call("read-1", "README.md"),
+                _read_call("read-2", "docs/HARNESS.md"),
+            )
+        return _text_turn("Summary despite the lost executor.")
+
+    monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
+    runtime, events = _recording_runtime(FailingExecutor())
+
+    result = _investigate(runtime)
+
+    assert result["summary"] == "Summary despite the lost executor."
+    assert set(result["files_examined"]) == {"README.md", "docs/HARNESS.md"}
+    assert result["error_code"] == "investigation.executor_unavailable"
+    assert result["degraded"] is True
+    kinds = [kind for kind, _payload in events]
+    assert kinds.count("subagent.executor_error") == 1
+    assert "subagent.failed" not in kinds
+    assert kinds[-1] == "subagent.completed"
+
+
+def test_a_listing_only_investigation_survives_a_provider_error(monkeypatch):
+    class ListingExecutor:
+        async def execute(self, request):
+            output, data = {
+                "find": ("file\t120\tsrc/app.py", {"count": 1}),
+                "ls": ("directory\t-\tsrc", {"count": 1}),
+                "status": ("M  docs/README.md", {"changes": [{"path": "docs/README.md"}]}),
+            }[request.tool]
+            return ToolResult(request.request_id, True, output=output, data=data)
+
+    turns = []
+
+    async def fake_agent_turn(model, messages, *args, **kwargs):
+        turns.append(kwargs["allowed_tools"])
+        if len(turns) == 1:
+            return _tool_turn(
+                _name_call("find-1", "find", {"query": "app"}),
+                _name_call("ls-1", "ls", {"path": "src"}),
+                _name_call("status-1", "status", {}),
+            )
+        raise investigation_module.ProviderError(
+            "provider.agent_error", "OpenRouter agent request failed (503)."
+        )
+
+    monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
+    runtime, _events = _recording_runtime(ListingExecutor())
+
+    result = _investigate(runtime)
+
+    # A listing is evidence: the digest names what was found and what was never opened.
+    assert result["stop_cause"] == "provider_error"
+    assert "failed before it could write a summary" in result["summary"]
+    assert "Paths it listed but never read" in result["summary"]
+    assert "src/app.py" in result["summary"]
+    assert "docs/README.md" in result["summary"]
+
+
+def test_retries_and_synthesis_stay_within_the_child_wall_budget(monkeypatch):
+    clock = {"now": 1_000.0}
+    monkeypatch.setattr(budgets_module.time, "monotonic", lambda: clock["now"])
+    attempts = []
+
+    async def fake_agent_turn(model, messages, *args, **kwargs):
+        attempts.append(kwargs["allowed_tools"])
+        clock["now"] += 60
+        if kwargs["allowed_tools"]:
+            return _tool_turn(_read_call("read-1", "src/app.py"))
+        raise investigation_module.ProviderError(
+            "provider.agent_error", "OpenRouter agent request failed (503).", retryable=True
+        )
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
+    monkeypatch.setattr(investigation_module.asyncio, "sleep", no_sleep)
+    parent_budget = RunBudget(100, 600, 1.0, 100, "test")
+    wall = investigation_module.investigation_wall_seconds(parent_budget)
+
+    result = _investigate(make_runtime(), parent_budget)
+
+    elapsed = clock["now"] - 1_000.0
+    assert elapsed <= wall + investigation_module.INVESTIGATION_MAX_TURN_SECONDS
+    assert set() in attempts
+    assert result["summary"]
+    assert result["truncated"] is True
+
+
+def test_a_wall_time_stop_digest_names_wall_time_not_the_budget(monkeypatch):
+    clock = {"now": 1_000.0}
+    monkeypatch.setattr(budgets_module.time, "monotonic", lambda: clock["now"])
+
+    async def fake_agent_turn(model, messages, *args, **kwargs):
+        if kwargs["allowed_tools"]:
+            clock["now"] += 150
+            return _tool_turn(_read_call("read-1", "src/app.py"))
+        return _text_turn("")
+
+    monkeypatch.setattr(investigation_module, "agent_turn", fake_agent_turn)
+
+    result = _investigate(make_runtime())
+
+    assert result["stop_cause"] == "wall_time"
+    assert result["stop_reason"] == "budget"
+    assert "wall-time limit" in result["summary"]
+    assert "cost limit" not in result["summary"]
+    assert "src/app.py" in result["summary"]
+
+
+def test_every_failure_payload_carries_a_summary_and_an_error_code():
+    refused = InvestigationResult.failed(
+        INVESTIGATION_FAILED, "too little budget", summary="A summary of the refusal."
+    ).to_dict()
+    assert refused["error_code"] == INVESTIGATION_FAILED
+    assert refused["summary"] == "A summary of the refusal."
+    assert refused["fallback"]
+    # Even a caller that passes no summary gets a non-empty one.
+    assert InvestigationResult.failed(INVESTIGATION_FAILED, "boom").to_dict()["summary"]
+
+    runtime, _events = _recording_runtime()
+    request = make_request()
+    runtime._investigation_calls["run-1"] = request.investigation_call_budget
+    messages: list[dict] = []
+    asyncio.run(
+        runtime._investigate_repository(
+            "run-1",
+            request,
+            "investigate-1",
+            json.dumps({"query": "find the relevant implementation"}),
+            messages,
+            RunBudget(100, 600, 1.0, 100, "test"),
+        )
+    )
+    capped = json.loads(messages[-1]["content"])
+    assert capped["error_code"] == INVESTIGATION_CALL_LIMIT
+    assert capped["summary"]
+    assert capped["used"] == request.investigation_call_budget
+
+    short = _investigate(_recording_runtime()[0], RunBudget(100, 600, 0.01, 100, "test"))
+    assert short["error_code"] == INVESTIGATION_FAILED
+    assert short["summary"].startswith("No investigation ran")

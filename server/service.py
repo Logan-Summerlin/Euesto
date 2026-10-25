@@ -14,6 +14,7 @@ from shared.responses import GatewayStatus
 from shared.tools import (
     EXECUTOR_TOOLS,
     MUTATION_TOOLS,
+    PLAN_EXECUTOR_TOOLS,
     PLAN_TOOLS,
     PublicationReceipt,
     PublishManifest,
@@ -28,6 +29,9 @@ from .journal import JournalStore
 from .openrouter.catalog import GatewayCatalog
 from .openrouter.client import OpenRouterGatewayClient
 from .openrouter.errors import ProviderError
+
+MAX_STEERING_CHARS = 8_000
+DEFAULT_CHECK_TIMEOUT_SECONDS = 300
 
 
 class GatewayServiceError(RuntimeError):
@@ -73,6 +77,10 @@ class GatewayService:
                 snapshot_saver=self._save_snapshot,
                 session_saver=self._save_session,
                 pause_requested=self._pause_requested,
+                plan_loader=self.journal.load_session_plan,
+                plan_saver=lambda key, plan: self.journal.save_session_plan(
+                    key, plan, utc_now()
+                ),
             )
             if self.executor
             else None
@@ -106,7 +114,9 @@ class GatewayService:
             {
                 "name": name,
                 "kind": "workspace_tool",
-                "modes": ["plan", "agent"] if name in PLAN_TOOLS else ["agent"],
+                "modes": ["plan", "agent"]
+                if name in PLAN_TOOLS | PLAN_EXECUTOR_TOOLS
+                else ["agent"],
                 "requires_approval": name in MUTATION_TOOLS,
                 "custom": False,
             }
@@ -121,7 +131,16 @@ class GatewayService:
                     "requires_approval": False,
                     "custom": False,
                 }
-                for name in ("agent_accept_edits", "agent_auto")
+                for name in (
+                    "agent_sandbox",
+                    "agent_auto",
+                    "agent_steering",
+                    "agent_budget_continuation",
+                    "agent_plan",
+                    "staging_review",
+                    "declared_checks",
+                    "documentation_tools",
+                )
             )
             capabilities += discover_custom_capabilities(
                 self.journal.load_workspace_config(self.config.workspace_id)
@@ -142,6 +161,7 @@ class GatewayService:
             openrouter_key_configured=bool(self.openrouter_key),
             capabilities=capabilities,
             resumable_runs=tuple(self.journal.resumable_runs()),
+            notices=tuple(self.journal.notices()),
         )
 
     def _active_executor(self, workspace_id: str) -> ExecutorClient:
@@ -161,6 +181,32 @@ class GatewayService:
             raise GatewayServiceError(
                 "staging.discard_failed",
                 "The executor could not reseed the staging workspace.",
+                retryable=True,
+                status=409,
+            ) from exc
+
+    async def rebase_staging(
+        self,
+        workspace_id: str,
+        *,
+        keep_staged: list[str] | None = None,
+        take_host: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Bring host changes made since the staging baseline into staging, optionally
+        resolving conflicts by keeping the staged or taking the host version (2.4)."""
+        executor = self._active_executor(workspace_id)
+        if any(not task.done() for task in self._tasks.values()):
+            raise GatewayServiceError(
+                "staging.busy", "Wait for the active run to finish before rebasing.", status=409
+            )
+        try:
+            return await executor.rebase_staging(
+                keep_staged=keep_staged or [], take_host=take_host or []
+            )
+        except Exception as exc:
+            raise GatewayServiceError(
+                "staging.rebase_failed",
+                "The executor could not rebase staging onto the host workspace.",
                 retryable=True,
                 status=409,
             ) from exc
@@ -198,9 +244,15 @@ class GatewayService:
             ) from exc
 
     async def publication_batch(
-        self, workspace_id: str, run_id: str, publication_id: str, batch_index: int
+        self,
+        workspace_id: str,
+        run_id: str,
+        publication_id: str,
+        batch_index: int,
+        paths: list[str] | None = None,
     ) -> PublishManifest:
-        """Build the next batch of a multi-batch publication from the changes still pending."""
+        """Build the next batch of a multi-batch publication from the changes still pending;
+        a partial publication passes the same ``paths`` selection for every batch."""
         executor = self._active_executor(workspace_id)
         try:
             return await executor.manifest(
@@ -208,6 +260,7 @@ class GatewayService:
                 str(uuid.uuid4()),
                 publication_id=publication_id,
                 batch_index=batch_index,
+                paths=paths,
             )
         except Exception as exc:
             raise GatewayServiceError(
@@ -216,6 +269,129 @@ class GatewayService:
                 retryable=True,
                 status=409,
             ) from exc
+
+    async def staged_publication(
+        self, workspace_id: str, paths: list[str] | None = None
+    ) -> PublishManifest:
+        """The first batch of a publication of staged work, optionally only ``paths``.
+
+        Partial publication (plan 4.4) selects files in the review pane; unselected changes
+        stay staged.
+
+        Staging persists (plan 2.4), so changes can outlive the run that made them. The
+        manifest is built exactly as at the end of a run, and the desktop still asks the
+        user to approve it and validates every hash before writing.
+        """
+        executor = self._active_executor(workspace_id)
+        if any(not task.done() for task in self._tasks.values()):
+            raise GatewayServiceError(
+                "staging.busy",
+                "Wait for the active run to finish before publishing.",
+                status=409,
+            )
+        try:
+            return await executor.manifest(
+                f"staged-{uuid.uuid4()}",
+                str(uuid.uuid4()),
+                publication_id=str(uuid.uuid4()),
+                batch_index=1,
+                paths=paths,
+            )
+        except Exception as exc:
+            raise GatewayServiceError(
+                "staging.manifest_failed",
+                f"The executor could not build a publication of the staged changes: {exc}",
+                retryable=True,
+                status=409,
+            ) from exc
+
+    async def review_staging(
+        self, workspace_id: str, body: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Per-file diffs for the review pane, with the declared checks' latest results; a
+        result counts only while the staged fingerprint it ran on is still current (3.4)."""
+        executor = self._active_executor(workspace_id)
+        try:
+            review = await executor.review_staging(body or {})
+        except Exception as exc:
+            raise GatewayServiceError(
+                "staging.review_failed",
+                f"The executor could not list the staged changes: {exc}",
+                retryable=True,
+                status=409,
+            ) from exc
+        review["checks"] = self.check_results(
+            workspace_id, str(review.get("fingerprint") or "")
+        )
+        return review
+
+    def declared_checks(self, workspace_id: str) -> dict[str, dict[str, Any]]:
+        """The checks the confirmed workspace policy declares, by name."""
+        config = self.journal.load_workspace_config(workspace_id)
+        policy = config.get("policy") if isinstance(config, dict) else None
+        checks = policy.get("checks") if isinstance(policy, dict) else None
+        if not isinstance(checks, dict):
+            return {}
+        declared: dict[str, dict[str, Any]] = {}
+        for name, value in checks.items():
+            if isinstance(value, dict) and isinstance(value.get("command"), str):
+                declared[str(name)] = value
+            elif isinstance(value, str):
+                declared[str(name)] = {"command": value}
+        return declared
+
+    def check_results(self, workspace_id: str, fingerprint: str) -> list[dict[str, Any]]:
+        declared = self.declared_checks(workspace_id)
+        recorded = {item["name"]: item for item in self.journal.check_results(workspace_id)}
+        results = []
+        for name, check in sorted(declared.items()):
+            item = recorded.get(name)
+            current = bool(
+                item
+                and fingerprint
+                and item.get("fingerprint") == fingerprint
+                and item.get("command") == check["command"]
+            )
+            results.append(
+                {
+                    "name": name,
+                    "command": check["command"],
+                    "status": (item or {}).get("outcome", "not_run")
+                    if current
+                    else ("stale" if item else "not_run"),
+                    "current": current,
+                    "result": item,
+                }
+            )
+        return results
+
+    async def run_check(self, workspace_id: str, name: str) -> dict[str, Any]:
+        """Run one declared check in the runner against staging and record its result."""
+        executor = self._active_executor(workspace_id)
+        check = self.declared_checks(workspace_id).get(name)
+        if check is None:
+            raise GatewayServiceError(
+                "check.unknown",
+                f"The workspace policy declares no check named {name}.",
+                status=404,
+            )
+        if any(not task.done() for task in self._tasks.values()):
+            raise GatewayServiceError(
+                "staging.busy",
+                "Wait for the active run to finish before running checks.",
+                status=409,
+            )
+        timeout = check.get("timeout_seconds", DEFAULT_CHECK_TIMEOUT_SECONDS)
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1:
+            timeout = DEFAULT_CHECK_TIMEOUT_SECONDS
+        try:
+            result = await executor.run_check(name, check["command"], timeout)
+        except Exception as exc:
+            raise GatewayServiceError(
+                "check.failed", f"The check could not run: {exc}", retryable=True, status=409
+            ) from exc
+        self.journal.save_check_result(workspace_id, name, result, utc_now())
+        return result
 
     async def inspect_staging(self, workspace_id: str) -> dict[str, Any]:
         environment = await self._staging_environment(self._active_executor(workspace_id))
@@ -232,6 +408,12 @@ class GatewayService:
                 "snapshot_id": snapshot.get("snapshot_id"),
                 "file_count": int(snapshot.get("file_count") or 0),
                 "total_bytes": int(snapshot.get("total_bytes") or 0),
+                "staging_resumed": bool(environment.get("staging_resumed")),
+                "conflicts": [
+                    item
+                    for item in environment.get("conflicts") or ()
+                    if isinstance(item, dict)
+                ],
             },
         }
 
@@ -270,7 +452,7 @@ class GatewayService:
                 "Recreate the executor for the selected workspace.",
                 status=409,
             )
-        if request.approval_policy == "auto" and not request.investigation_model_id:
+        if request.approval_policy == "auto":
             assert self.executor is not None
             environment = await self._staging_environment(self.executor)
             if environment.get("unpublished_changes"):
@@ -332,7 +514,10 @@ class GatewayService:
         )
         return run_id
 
-    async def resume_agent(self, run_id: str) -> bool:
+    async def resume_agent(self, run_id: str, *, new_budget: bool = False) -> bool:
+        """Resume a paused run. A run paused because its budget ran out continues only with
+        ``new_budget`` (a fresh budget of the same profile, 3.3); any other pause keeps the
+        remaining budget."""
         if not self.openrouter_key or self.agent_runtime is None:
             raise GatewayServiceError(
                 "agent.unavailable",
@@ -352,10 +537,28 @@ class GatewayService:
             raise GatewayServiceError(
                 "run.not_resumable", "Run is not at a safe resume point.", status=409
             )
+        budget_paused = self._pause_reason(run_id) == "budget"
+        if budget_paused and not new_budget:
+            raise GatewayServiceError(
+                "run.budget_exhausted",
+                "This run used its budget. Continue it with another budget.",
+                status=409,
+            )
+        if new_budget and not budget_paused:
+            raise GatewayServiceError(
+                "run.budget_available",
+                "Only a run that used its budget continues with another one.",
+                status=409,
+            )
         # Session approval tiers never survive a resume; the user re-enables them explicitly.
-        request = replace(
-            AgentRunRequest.from_dict(snapshot["request"]), approval_policy="prompt"
-        )
+        try:
+            request = AgentRunRequest.from_dict(
+                {**snapshot["request"], "approval_policy": "prompt"}
+            )
+        except (TypeError, ValueError) as exc:
+            raise GatewayServiceError(
+                "run.not_resumable", f"The saved run cannot be resumed: {exc}", status=409
+            ) from exc
         if request.workspace_id != self.config.workspace_id:
             raise GatewayServiceError(
                 "workspace.invalid", "Resume requires the original workspace.", status=409
@@ -367,12 +570,21 @@ class GatewayService:
                 request,
                 initial_messages=[dict(item) for item in snapshot["messages"]],
                 visible_messages=[dict(item) for item in snapshot["visible_messages"]],
-                budget_state=dict(snapshot["budget"]),
+                budget_state=None if new_budget else dict(snapshot["budget"]),
                 resumed=True,
+                continuation=new_budget,
             ),
             name=f"agent-resume-{run_id}",
         )
         return True
+
+    def _pause_reason(self, run_id: str) -> str | None:
+        for event in reversed(self.journal.events_after(run_id)):
+            if event.type == "run.paused":
+                return str(event.payload.get("reason") or "")
+            if event.type in {"run.started", "run.resumed"}:
+                return None
+        return None
 
     def resolve_approval(self, run_id: str, approval_id: str, decision: str) -> bool:
         try:
@@ -393,10 +605,44 @@ class GatewayService:
                     "Publish approvals cannot become saved rules.",
                     status=422,
                 )
-            self.journal.save_permission_rule(
-                self.journal.rule_for_request(pending.request, pending.workspace_id)
-            )
+            try:
+                rule = self.journal.rule_for_request(pending.request, pending.workspace_id)
+            except ValueError as exc:
+                raise GatewayServiceError(
+                    "approval.invalid_scope", str(exc), status=422
+                ) from exc
+            self.journal.save_permission_rule(rule)
         return self.approvals.resolve(run_id, approval_id, parsed)
+
+    async def steer(self, run_id: str, content: str) -> None:
+        """Queue a user message for the next model turn of an active Plan or Agent run."""
+        run = self.journal.get_run(run_id)
+        if run is None:
+            raise GatewayServiceError("run.not_found", "Run not found.", status=404)
+        text = content.strip()
+        if not text:
+            raise GatewayServiceError("steering.empty", "Steering text is empty.", status=422)
+        if len(text) > MAX_STEERING_CHARS:
+            raise GatewayServiceError(
+                "steering.too_large",
+                f"Steering text exceeds {MAX_STEERING_CHARS} characters.",
+                status=422,
+            )
+        runtime = self.agent_runtime
+        if (
+            run.get("mode") not in {"plan", "agent"}
+            or self.journal.is_terminal(run_id)
+            or runtime is None
+            or not runtime.is_active(run_id)
+        ):
+            raise GatewayServiceError(
+                "run.not_active", "Steering needs an active Plan or Agent run.", status=409
+            )
+        if not runtime.steer(run_id, text):
+            raise GatewayServiceError(
+                "steering.queue_full", "Too many steering messages are waiting.", status=429
+            )
+        await self._append(run_id, "input.steered", {"text": text, "chars": len(text)})
 
     async def cancel(self, run_id: str) -> bool:
         if self.journal.get_run(run_id) is None:
@@ -529,6 +775,7 @@ class GatewayService:
         visible_messages: list[dict[str, Any]] | None = None,
         budget_state: dict[str, Any] | None = None,
         resumed: bool = False,
+        continuation: bool = False,
     ) -> None:
         key = self.openrouter_key
         if key is None or self.agent_runtime is None:
@@ -551,6 +798,7 @@ class GatewayService:
                 visible_messages=visible_messages,
                 budget_state=budget_state,
                 resumed=resumed,
+                continuation=continuation,
             )
         except asyncio.CancelledError:
             if not self.journal.is_terminal(run_id):

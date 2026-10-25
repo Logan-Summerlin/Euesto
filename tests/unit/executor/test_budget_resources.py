@@ -16,6 +16,7 @@ from server.agent.budgets import (
     BudgetExceededError,
     RunBudget,
     requires_budget_approval,
+    resolve_budget_profile,
 )
 from server.agent.runtime import AgentRuntime
 from shared.requests import AgentRunRequest
@@ -36,7 +37,7 @@ def test_profile_above_two_x_requires_one_time_session_approval() -> None:
     assert requires_budget_approval(LARGE_CODING_PROFILE)
 
 
-def test_checkpoint_budget_is_checked_against_staging_and_temp_headroom(
+def test_checkpoint_budget_is_checked_against_free_space_and_temp_headroom(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     work = tmp_path / "work"
@@ -44,9 +45,9 @@ def test_checkpoint_budget_is_checked_against_staging_and_temp_headroom(
     (work / "file.txt").write_bytes(b"x" * 100)
     monkeypatch.setattr(
         "executor.checkpoints.shutil.disk_usage",
-        lambda _path: SimpleNamespace(total=1_000_000_200),
+        lambda _path: SimpleNamespace(free=1_000_000_100),
     )
-    with pytest.raises(ExecutorToolError, match="combined /work resource budget"):
+    with pytest.raises(ExecutorToolError, match="free space on the state volume"):
         create_checkpoint(work, max_total_bytes=100)
 
 
@@ -105,7 +106,6 @@ class _FakeApprovals:
 async def _assert_bash_timeout_clamp() -> None:
     executor = _FakeExecutor()
     runtime = AgentRuntime(executor, _FakeApprovals(), lambda *_args: asyncio.sleep(0))
-    runtime._tool_result_bytes["run"] = 0
     request = AgentRunRequest(
         model="test-model",
         messages=({"role": "user", "content": "run bash"},),
@@ -127,6 +127,7 @@ async def _assert_bash_timeout_clamp() -> None:
         },
         [],
         budget,
+        resolve_budget_profile("coding"),
     )
     assert executor.request is not None
     assert 1 <= executor.request.arguments["timeout_seconds"] <= 17

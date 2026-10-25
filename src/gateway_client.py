@@ -133,17 +133,23 @@ class GatewayClient:
         )
         return _staging_object(response, "Gateway returned invalid staging baseline data.")
 
-    def next_publication_batch(self, manifest: PublishManifest) -> PublishManifest:
-        """Request the next batch of a multi-batch publication after ``manifest`` published."""
+    def next_publication_batch(
+        self, manifest: PublishManifest, paths: Sequence[str] | None = None
+    ) -> PublishManifest:
+        """Request the next batch of a multi-batch publication after ``manifest`` published;
+        a partial publication passes its ``paths`` selection again."""
+        body: dict[str, Any] = {
+            "run_id": manifest.run_id,
+            "publication_id": manifest.publication_id,
+            "batch_index": manifest.batch_index + 1,
+        }
+        if paths:
+            body["paths"] = list(paths)
         response = self._send(
             "POST",
             f"/v1/workspaces/{manifest.workspace_id}/staging/manifest",
             timeout=60.0,
-            json={
-                "run_id": manifest.run_id,
-                "publication_id": manifest.publication_id,
-                "batch_index": manifest.batch_index + 1,
-            },
+            json=body,
         )
         data = _staging_object(response, "Gateway returned an invalid publication batch.")
         try:
@@ -158,6 +164,62 @@ class GatewayClient:
             "POST", f"/v1/workspaces/{workspace_id}/staging/discard", timeout=30.0
         )
         return _staging_object(response, "Gateway returned invalid staging discard data.")
+
+    def rebase_staging(
+        self,
+        workspace_id: str,
+        *,
+        keep_staged: Sequence[str] = (),
+        take_host: Sequence[str] = (),
+    ) -> dict[str, Any]:
+        """Absorb host changes into staging, resolving the named conflicts (plan 2.4)."""
+        response = self._send(
+            "POST",
+            f"/v1/workspaces/{workspace_id}/staging/rebase",
+            timeout=120.0,
+            json={"keep_staged": list(keep_staged), "take_host": list(take_host)},
+        )
+        return _staging_object(response, "Gateway returned invalid staging rebase data.")
+
+    def staged_publication(
+        self, workspace_id: str, paths: Sequence[str] | None = None
+    ) -> PublishManifest:
+        """The first batch publishing staged work, or only ``paths`` (partial publication)."""
+        response = self._send(
+            "POST",
+            f"/v1/workspaces/{workspace_id}/staging/publication",
+            timeout=60.0,
+            json={"paths": list(paths)} if paths else {},
+        )
+        data = _staging_object(response, "Gateway returned an invalid publication.")
+        try:
+            return PublishManifest.from_dict(data)
+        except (TypeError, ValueError) as exc:
+            raise _invalid_staging(f"Gateway returned an invalid publication: {exc}") from exc
+
+    def review_staging(self, workspace_id: str, cursor: str | None = None) -> dict[str, Any]:
+        """Staged changes with per-file diffs, the fingerprint, and declared check results."""
+        response = self._send(
+            "POST",
+            f"/v1/workspaces/{workspace_id}/staging/review",
+            timeout=60.0,
+            json={"cursor": cursor} if cursor else {},
+        )
+        return _staging_object(response, "Gateway returned an invalid staging review.")
+
+    def run_check(self, workspace_id: str, name: str) -> dict[str, Any]:
+        """Run one declared check against staging in the runner (plan 3.4)."""
+        response = self._send(
+            "POST", f"/v1/workspaces/{workspace_id}/checks/{name}/run", timeout=1_000.0, json={}
+        )
+        return _staging_object(response, "Gateway returned an invalid check result.")
+
+    def acknowledge_notice(self, notice_id: str) -> None:
+        self._send("POST", f"/v1/notices/{notice_id}/acknowledge", timeout=5.0, json={})
+
+    def steer(self, run_id: str, text: str) -> None:
+        """Queue guidance for the active run; it arrives before the next model turn (0.8)."""
+        self._send("POST", f"/v1/runs/{run_id}/messages", timeout=5.0, json={"content": text})
 
     def stream_chat(
         self,
@@ -251,9 +313,10 @@ class GatewayClient:
         mode: str,
         workspace_id: str,
         approval_policy: str = "prompt",
+        network_mode: str = "none",
         stop_event: threading.Event | None = None,
         session_id: str | None = None,
-        context_limit_tokens: int = 100_000,
+        context_limit_tokens: int = 160_000,
         skills: Sequence[dict[str, Any]] = (),
         workspace_config: dict[str, Any] | None = None,
         investigation_model_id: str | None = None,
@@ -266,6 +329,7 @@ class GatewayClient:
             "mode": mode,
             "workspace_id": workspace_id,
             "approval_policy": approval_policy,
+            "network_mode": network_mode,
             "session_id": session_id,
             "context_limit_tokens": context_limit_tokens,
             "skills": [dict(item) for item in skills],
@@ -296,6 +360,18 @@ class GatewayClient:
             )
         return [dict(item) for item in rules if isinstance(item, dict)]
 
+    def create_permission_rule(self, workspace_id: str, spec: dict[str, Any]) -> dict[str, Any]:
+        """Save a rule from the rules screen: tool, path prefix, or Bash command prefix."""
+        response = self._send(
+            "POST", "/v1/permissions", json={**spec, "workspace_id": workspace_id}
+        )
+        rule = response.json().get("rule")
+        if not isinstance(rule, dict):
+            raise GatewayError(
+                "Gateway returned an invalid rule.", code="protocol.invalid_rules"
+            )
+        return dict(rule)
+
     def delete_permission_rule(self, rule_id: str) -> None:
         self._send("DELETE", f"/v1/permissions/{rule_id}")
 
@@ -306,10 +382,22 @@ class GatewayClient:
         self._send("PUT", f"/v1/workspaces/{workspace_id}/config", json=config)
 
     def resume_agent(
-        self, run_id: str, *, api_key: str, stop_event: threading.Event | None = None
+        self,
+        run_id: str,
+        *,
+        api_key: str,
+        stop_event: threading.Event | None = None,
+        new_budget: bool = False,
     ) -> Iterator[EventEnvelope]:
+        """Resume a paused or interrupted run; ``new_budget`` continues a run that stopped at
+        its budget with a fresh one (plan 3.3)."""
         self.configure_openrouter_key(api_key)
-        response = self._send("POST", f"/v1/runs/{run_id}/resume", timeout=15, json={})
+        response = self._send(
+            "POST",
+            f"/v1/runs/{run_id}/resume",
+            timeout=15,
+            json={"new_budget": True} if new_budget else {},
+        )
         after_event_id = int(response.json().get("after_event_id") or 0)
         yield from self._stream_agent_events(
             run_id, stop_event=stop_event, after_event_id=after_event_id

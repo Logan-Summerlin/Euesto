@@ -44,11 +44,14 @@ def test_empty_tool_allowance_declares_plan_tools_but_forbids_calls(monkeypatch)
     turn = _turn(allowed_tools=set())
     assert turn.content == "summary"
     assert sent[0]["tool_choice"] == "none"
+    assert sent[0]["stream"] is True
     assert {tool["function"]["name"] for tool in sent[0]["tools"]} == {
         "read",
         "grep",
         "find",
         "ls",
+        "investigate_repository",
+        "update_plan",
     }
 
 

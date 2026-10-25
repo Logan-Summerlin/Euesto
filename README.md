@@ -1,6 +1,6 @@
 # Euesto
 
-Euesto is a local-first Windows desktop chatbot with a contained OpenRouter agent. The desktop, gateway, executor, staging, and publication broker are separated so the agent can do useful coding work without receiving unrestricted host authority.
+Euesto is a local-first Windows desktop chatbot with a contained OpenRouter agent. The desktop, gateway, executor, runner, staging, and publication broker are separated so the agent can do useful coding work without receiving unrestricted host authority.
 
 ## Quick start — installed users
 
@@ -19,22 +19,24 @@ A portable ZIP is also supported. Docker Desktop is the required external runtim
 
 - **Chat** is a normal model conversation with no local workspace tools.
 - **Plan** can inspect one selected workspace with read-only tools.
-- **Agent** can inspect and modify an ephemeral staging copy, then request publication through the trusted desktop broker.
+- **Agent** can inspect and modify a persistent, disposable staging copy of the workspace, then request publication through the trusted desktop broker. Unpublished staging survives restarts and is removed only by an explicit discard.
 - Local SQLite stores conversation/settings data; credentials use the Windows credential store where supported.
 - The gateway is loopback-authenticated and can reach OpenRouter but has no workspace mount.
-- The executor is network-disabled, non-root, and has a read-only source mount plus bounded writable staging. An opt-in developer profile can route package installs through an allowlisted egress proxy ([docs/EGRESS.md](docs/EGRESS.md)); the default stays network-free.
+- The executor (the control plane) is network-disabled, non-root, and has a read-only source mount plus bounded writable staging. Agent Bash commands run in a separate network-disabled, non-root runner container that sees only staging and its cache: no source mount, no secrets, and no executor state. Dependency setup runs in an approved one-shot container that reaches only allowlisted registries through an audited proxy, and a session can opt into the same registry access for its runner when the workspace policy allows it ([docs/EGRESS.md](docs/EGRESS.md)); the default stays network-free.
 
 ## Modes and permissions
 
 | Mode | Local tools | Mutation | Host publication |
 |---|---|---|---|
 | Chat | none | none | none |
-| Plan | `read`, `grep`, `find`, `ls` | no | no |
-| Agent | all ten | staging only | desktop broker, after approval/validation |
+| Plan | `read`, `grep`, `find`, `ls`, `investigate_repository`, `update_plan` | no | no |
+| Agent | all thirteen (web tools when enabled) | staging only | desktop broker, after approval/validation |
 
-The ten-tool public API is `read`, `write`, `edit`, `apply_patch`, `bash`, `grep`, `find`, `ls`, `status`, and `investigate_repository`. `apply_patch` applies a multi-file change atomically and `status` reviews everything staged (with bounded diffs) before publication. Mode restrictions are enforced in code, not only in prompts. Agent mode offers three approval tiers — prompt for every change, accept staged edits (`write`/`edit`/`apply_patch` run without prompts while Bash still asks), or Auto — none of which grants network, host-path, shell, or publication authority to the executor.
+The thirteen-tool public API is `read`, `write`, `edit`, `apply_patch`, `bash`, `grep`, `find`, `ls`, `status`, `investigate_repository`, `update_plan`, `web_search`, and `fetch_url`. `apply_patch` applies a multi-file change atomically, `status` reviews everything staged (with bounded diffs) before publication, and `update_plan` keeps a short checklist the desktop shows live. Mode restrictions are enforced in code, not only in prompts. Agent mode offers three approval tiers — prompt for every change, Sandbox (edits and Bash run without prompts while the runner has no network; every publication is still reviewed), or Auto — none of which grants network, host-path, or publication authority to the executor or runner.
 
-`investigate_repository` delegates a bounded, read-only repository investigation to a separately configured cheaper model. The nested loop can use only the Plan tools through the same executor session, debits the parent run's budget, and is capped at four calls per turn.
+`investigate_repository` delegates a bounded, read-only repository investigation to a separately configured cheaper model. The nested loop can use only `read`, `grep`, `find`, `ls`, and `status` through the same executor session, debits the parent run's budget, and is capped at four calls per turn. `web_search` and `fetch_url` are off by default; a workspace can enable them for Agent sessions, and `fetch_url` asks before reading any URL off its documentation allowlist.
+
+A workspace can declare its runner image, network mode, dependency setup command, checks, extra secret names, and never-published paths in `.euesto/policy.toml`; it takes effect only after you confirm it in Settings. Dependencies install in an approved, one-shot setup container that reaches only allowlisted registries, so the agent's runner stays offline ([docs/EGRESS.md](docs/EGRESS.md)).
 
 ## Example: editing a file
 
@@ -46,7 +48,7 @@ For large files, use bounded/incremental reads and localized edits instead of as
 
 ```text
 workspace snapshot
-  -> ephemeral staging
+  -> persistent, disposable staging (rebased onto host edits on resume)
   -> checkpointed mutations
   -> manifest + approval
   -> path/hash validation
@@ -58,9 +60,9 @@ The executor cannot publish. Manifests are tied to a workspace and source snapsh
 
 ## Security and privacy
 
-Euesto is **local-first, not offline**. The desktop, gateway, executor, staging, history, and publication broker run locally, but prompts and any workspace context or command output selected for an agent request can leave the computer through OpenRouter. Provider routing defaults to denying data collection and can request ZDR where the selected provider supports it.
+Euesto is **local-first, not offline**. The desktop, gateway, executor, runner, staging, history, and publication broker run locally, but prompts and any workspace context or command output selected for an agent request can leave the computer through OpenRouter. Provider routing defaults to denying data collection and can request ZDR where the selected provider supports it.
 
-The executor cannot access the network or publish to the host. The gateway cannot read the workspace. The selected source mount is read-only. Bash runs inside the isolated executor and is bounded by command, stdin/output, time, process, and environment controls.
+The executor and runner cannot access the network or publish to the host. The gateway cannot read the workspace. The selected source mount is read-only and mounted only in the executor; secret-like files are never copied into staging. Bash runs inside the isolated runner and is bounded by command, stdin/output, time, process, and environment controls.
 
 Local SQLite data is not application-encrypted. Protect the Windows account and disk. Treat workspace contents, prompts, logs, and recovery files as local user data.
 
@@ -84,7 +86,7 @@ py -3.12 -m venv .venv
 python -m pip install -r requirements-dev.lock
 ```
 
-Run the applicable checks with `python scripts/validate.py` (`preflight`, `fast`, `slow`, `docker`, `ruff`, `compile`, `qml`, or `all`). The individual commands are listed once, in [docs/TESTING.md](docs/TESTING.md#required-checks).
+Run the applicable checks with `python scripts/validate.py` (`preflight`, `fast`, `slow`, `docker`, `ruff`, `compile`, `qml`, `qml-smoke`, or `all`). The individual commands are listed once, in [docs/TESTING.md](docs/TESTING.md#required-checks).
 
 Unit tests do not require provider credentials. Container/security checks are part of the CI workflow when container-related changes apply.
 
@@ -113,8 +115,8 @@ CHANGELOG.md        Release/change summary
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md) — current components, boundaries, and data flow.
-- [Tools](docs/TOOLS.md) — authoritative ten-tool reference.
-- [Egress](docs/EGRESS.md) — opt-in allowlisted package-install profile.
+- [Tools](docs/TOOLS.md) — authoritative thirteen-tool reference.
+- [Egress](docs/EGRESS.md) — dependency setup, network modes, and the allowlisted registry proxy.
 - [Limits](docs/LIMITS.md) — effective defaults, hard ceilings, and precedence.
 - [Publication](docs/PUBLICATION.md) — staging, approval, publication, conflicts, and recovery.
 - [Contributing](docs/CONTRIBUTING.md) — development and safe tool changes.

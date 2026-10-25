@@ -32,11 +32,13 @@ def test_client_round_trips_over_a_unix_socket() -> None:
             return JSONResponse({"request_id": body["request_id"], "ok": True, "output": "hi"})
         if request.url.path.endswith("/cancel"):
             return JSONResponse({}, status_code=500)
+        if request.url.path == "/v1/staging/rebase":
+            return JSONResponse(await request.json())
         return JSONResponse({"workspace_id": "workspace"})
 
     app = Starlette(routes=[Route("/{path:path}", handler, methods=["GET", "POST"])])
 
-    async def scenario() -> tuple[dict, str, dict]:
+    async def scenario() -> tuple[dict, str, dict, dict]:
         # Unix socket paths are length-limited, so keep the directory short.
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             socket = Path(directory) / "executor.sock"
@@ -51,23 +53,26 @@ def test_client_round_trips_over_a_unix_socket() -> None:
                     ToolRequest("r1", "run", "read", "plan", {"path": "a"})
                 )
                 discarded = await client.discard_staging()
+                rebased = await client.rebase_staging(take_host=["a.txt"])
                 await client.cancel("r1")  # cancellation is best-effort: errors are not raised
                 with pytest.raises(ExecutorUnavailable):
                     await ExecutorClient(Path(directory) / "missing.sock", "token").status()
             finally:
                 server.should_exit = True
                 await task
-            return status, result.output, discarded
+            return status, result.output, discarded, rebased
 
     assert asyncio.run(scenario()) == (
         {"workspace_id": "workspace"},
         "hi",
         {"workspace_id": "workspace"},
+        {"keep_staged": [], "take_host": ["a.txt"]},
     )
     assert [(method, path) for method, path, _ in seen] == [
         ("GET", "/v1/status"),
         ("POST", "/v1/tools"),
         ("POST", "/v1/staging/discard"),
+        ("POST", "/v1/staging/rebase"),
         ("POST", "/v1/tools/r1/cancel"),
     ]
     assert {auth for _, _, auth in seen} == {"Bearer token"}

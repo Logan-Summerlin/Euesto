@@ -14,7 +14,7 @@ python -m pip install -r requirements-dev.lock
 
 ## Required checks
 
-The canonical validation entry point is `python scripts/validate.py`. Run `python scripts/validate.py preflight --json validation-report.json` to distinguish unavailable tools from failed checks, then `fast`, `slow`, `docker`, `ruff`, `compile`, `qml`, or `all` for explicit tiers. The individual commands are listed once, in [TESTING.md](TESTING.md#required-checks); run the ones that apply to the change.
+The canonical validation entry point is `python scripts/validate.py`. Run `python scripts/validate.py preflight --json validation-report.json` to distinguish unavailable tools from failed checks (add `--require fast,docker` to make it a gate that fails), then `collect`, `fast`, `slow`, `docker`, `ruff`, `compile`, `qml`, `qml-smoke`, or `all` for explicit tiers. The individual commands are listed once, in [TESTING.md](TESTING.md#required-checks); run the ones that apply to the change.
 
 Python code is formatted with `ruff format` (run `ruff format .` before committing); the `ruff` tier fails on unformatted files. Container changes should also be checked with the repository's container workflow/scripts. QML checks apply when QML or QML-facing interfaces change.
 
@@ -39,6 +39,12 @@ The nested investigation loop lives in `server/agent/investigation.py`; its Plan
 - Prefer localized edits and incremental reads for large files.
 - If a limit changes, update the executor config, model schema where relevant, tests, and `docs/LIMITS.md` together.
 - If a publication invariant changes, update `docs/PUBLICATION.md` and its tests.
+
+## Runner images
+
+`docker/Dockerfile.runner` pins every base image by digest. Release CI builds the four runner targets with an SBOM and provenance, scans them for HIGH and CRITICAL vulnerabilities, and records their digests in `release-images.json`. Rebuild cadence: refresh the pinned digests and toolchain versions at least monthly and in every release, and immediately when a scan reports a fixable HIGH or CRITICAL vulnerability.
+
+The `Scan runtime images` workflow (`.github/workflows/vulnerability-scan.yml`) runs on every branch push, on every pull request, on `v*` release tags, in the weekly drift window, and by hand. It builds and publishes nothing, so it is safe on any of them: it scans the references of the newest *published* release manifest — the newest successful `Build Windows release` run that uploaded one, which can be older than the schema this checkout accepts (schema 2 published no egress proxy, schema 3 does) — and reports a notice instead of failing when no release has published a manifest yet. The image keys each schema declares therefore live in `scripts/release_image_refs.py`: an older manifest is scanned for the images it does publish, and a manifest whose `schema_version` is newer than that script knows fails the scan by name instead of silently leaving an image unscanned. Add a schema's new key there — and to `src/runtime_manager.py` — when the manifest grows.
 
 ## Testing without credentials
 

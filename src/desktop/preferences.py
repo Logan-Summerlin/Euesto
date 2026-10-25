@@ -13,8 +13,16 @@ from shared.requests import DEFAULT_INVESTIGATION_MODEL, WORKSPACE_CONFIG_KEYS
 
 from ..extensions import available_skills
 from ..gateway_client import DEFAULT_GATEWAY_URL, GatewayClient, GatewayError
-from ..model_catalog import ModelCatalog
+from ..model_catalog import ModelCatalog, agent_capable, model_warnings, price_text
 from ..models import RequestOptions
+from ..runtime_manager import (
+    DEFAULT_GIT_HISTORY_DEPTH,
+    DEFAULT_RETENTION_DAYS,
+    DEFAULT_RUNNER_PIDS,
+    RuntimeErrorMessage,
+    RuntimeSettings,
+    detect_runner_target,
+)
 from ..settings import app_data_dir, get_api_key, save_api_key
 from ..storage import Storage
 from ..workers import CatalogWorker
@@ -33,6 +41,12 @@ BUILTIN_COMMANDS = (
     ("stop", "Stop the active run"),
     ("pause", "Pause the agent at a safe boundary"),
 )
+RUNTIME_SETTINGS_KEY = "runtime_settings"
+# What the runner settings form saves; network mode and policy fields are applied per start.
+RUNNER_SETTING_FIELDS = ("runner_target", "cpus", "memory_gb", "pids", "git_history_depth")
+MAX_UNREDACTED_PATHS = 50
+RETENTION_DAYS_KEY = "staged_session_retention_days"
+RETENTION_DAYS_RANGE = (1, 365)
 LEGACY_INVESTIGATION_DEFAULT = "deepseek/deepseek-chat-v3-0324"
 LEGACY_INVESTIGATION_MIGRATED = "investigation_model_legacy_migrated"
 INVESTIGATION_MODEL_ENTRY = {
@@ -47,6 +61,9 @@ INVESTIGATION_MODEL_ENTRY = {
     "recent": False,
     "reasoning": True,
     "textCompatible": True,
+    "tools": True,
+    "priceText": "Prices load with the catalog",
+    "warnings": [],
 }
 
 
@@ -211,6 +228,9 @@ class SettingsService(QObject):
                 "recent": model.id in recents,
                 "reasoning": "reasoning" in model.supported_parameters,
                 "textCompatible": model.text_compatible,
+                "tools": agent_capable(model.supported_parameters),
+                "priceText": price_text(model),
+                "warnings": model_warnings(model),
             }
             for model in self.catalog.models()
         ]
@@ -359,7 +379,7 @@ class SettingsService(QObject):
             return
         config["active_skills"] = requested
         self.storage.save_workspace_config(identity, workspace, config)
-        self._sync_workspace_config(identity, config)
+        self.sync_workspace_config(identity, config)
         self.reload_skills()
 
     def save_workspace_configuration(self, instructions: str, declarations: str) -> None:
@@ -385,15 +405,59 @@ class SettingsService(QObject):
             }
         )
         self.storage.save_workspace_config(identity, workspace, config)
-        self._sync_workspace_config(identity, config)
+        self.sync_workspace_config(identity, config)
         self.host.set_status("Workspace configuration saved")
+
+    def set_web_tools(self, enabled: bool) -> None:
+        """Turn the documentation tools (web_search, fetch_url) on or off for this workspace;
+        they are off by default and offered only in Agent mode (plan 5.4)."""
+        self._update_workspace_config(
+            {"web_tools": bool(enabled)},
+            "Documentation tools enabled for Agent sessions"
+            if enabled
+            else "Documentation tools disabled",
+        )
+
+    def save_unredacted_paths(self, text: str) -> None:
+        """Files whose tool results reach the model without secret redaction: a per-file user
+        decision (plan 4.5). One workspace-relative path per line."""
+        paths: list[str] = []
+        for line in text.splitlines():
+            value = line.strip().replace("\\", "/").strip("/")
+            if not value:
+                continue
+            if value.startswith("..") or "/../" in f"/{value}/" or ":" in value:
+                self.host.errorRequested.emit(
+                    "Invalid path", f"{value} is not a relative workspace path."
+                )
+                return
+            if value not in paths:
+                paths.append(value)
+        if len(paths) > MAX_UNREDACTED_PATHS:
+            self.host.errorRequested.emit(
+                "Too many paths", f"List at most {MAX_UNREDACTED_PATHS} files."
+            )
+            return
+        self._update_workspace_config({"unredacted_paths": paths}, "Redaction exceptions saved")
+
+    def _update_workspace_config(self, values: dict[str, object], status: str) -> None:
+        workspace = self.host.runtime.workspace_path
+        if not workspace:
+            return
+        identity = self.host.runtime.identity()
+        config = self.storage.workspace_config(identity)
+        config.update(values)
+        self.storage.save_workspace_config(identity, workspace, config)
+        self.sync_workspace_config(identity, config)
+        self.host.settingsChanged.emit()
+        self.host.set_status(status)
 
     def workspace_configuration(self) -> dict[str, Any]:
         if not self.host.runtime.workspace_path:
             return {"instructions": "", "custom_tools": []}
         return dict(self.storage.workspace_config(self.host.runtime.identity()))
 
-    def _sync_workspace_config(self, identity: str, config: dict[str, object]) -> None:
+    def sync_workspace_config(self, identity: str, config: dict[str, object]) -> None:
         connection = self.host.runtime.connection()
         if not connection:
             return
@@ -402,6 +466,54 @@ class SettingsService(QObject):
             GatewayClient(connection).save_workspace_config(identity, allowed)
         except GatewayError:
             pass
+
+    # -- runner settings and staged-session retention (plan 2.2, 2.4, 2.6, 2.7) ---------
+
+    def runtime_settings(self) -> RuntimeSettings:
+        """The saved runner settings; anything unreadable or out of range falls back to defaults."""
+        try:
+            values = json.loads(self.storage.get_setting(RUNTIME_SETTINGS_KEY) or "{}")
+            return _runtime_settings(values).validated()
+        except (TypeError, ValueError, RuntimeErrorMessage):
+            return RuntimeSettings()
+
+    def runtime_settings_view(self) -> dict[str, Any]:
+        settings = self.runtime_settings()
+        workspace = self.host.runtime.workspace_path
+        return {
+            "runnerTarget": settings.runner_target,
+            "detectedTarget": detect_runner_target(Path(workspace)) if workspace else "",
+            "cpus": settings.cpus or 0,
+            "memoryGb": settings.memory_gb or 0,
+            "pids": settings.pids,
+            "gitHistoryDepth": settings.git_history_depth,
+            "retentionDays": self.retention_days(),
+        }
+
+    def save_runtime_settings(self, values: dict[str, Any]) -> bool:
+        """Validate and save runner settings; they apply when the runtime next starts."""
+        try:
+            settings = _runtime_settings(values).validated()
+            retention = int(values.get("retentionDays") or DEFAULT_RETENTION_DAYS)
+            if not RETENTION_DAYS_RANGE[0] <= retention <= RETENTION_DAYS_RANGE[1]:
+                raise RuntimeErrorMessage(
+                    "Keep staged sessions for 1 to 365 days before offering removal."
+                )
+        except (TypeError, ValueError, RuntimeErrorMessage) as exc:
+            self.host.errorRequested.emit("Invalid runner settings", str(exc))
+            return False
+        saved = {key: asdict(settings)[key] for key in RUNNER_SETTING_FIELDS}
+        self.storage.set_setting(RUNTIME_SETTINGS_KEY, json.dumps(saved))
+        self.storage.set_setting(RETENTION_DAYS_KEY, str(retention))
+        self.host.settingsChanged.emit()
+        self.host.set_status("Runner settings saved; they apply when the runtime restarts")
+        return True
+
+    def retention_days(self) -> int:
+        value = optional_int(self.storage.get_setting(RETENTION_DAYS_KEY))
+        if value is None or not RETENTION_DAYS_RANGE[0] <= value <= RETENTION_DAYS_RANGE[1]:
+            return DEFAULT_RETENTION_DAYS
+        return value
 
     # -- saved permission rules --------------------------------------------------------
 
@@ -421,6 +533,24 @@ class SettingsService(QObject):
             self.host.errorRequested.emit("Could not load permissions", str(exc))
             return
         self.host.permissionsChanged.emit()
+
+    def add_permission_rule(self, spec: dict[str, Any]) -> None:
+        """Save a rule from the rules screen: a tool, optional path prefix, and for Bash a
+        command prefix such as ``pytest`` or ``npm test`` (plan 4.2)."""
+        if not self.host.runtime.workspace_path:
+            self.host.errorRequested.emit("Workspace required", "Select a workspace first.")
+            return
+        allowed = {"tool", "mode", "decision", "path_prefix", "command"}
+        cleaned = {
+            key: str(value).strip()
+            for key, value in spec.items()
+            if key in allowed and str(value or "").strip()
+        }
+        identity = self.host.runtime.identity()
+        self._change_permission(
+            "Could not save the rule",
+            lambda client: client.create_permission_rule(identity, cleaned),
+        )
 
     def set_permission_enabled(self, rule_id: str, enabled: bool) -> None:
         self._change_permission(
@@ -448,3 +578,35 @@ class SettingsService(QObject):
     def shutdown(self) -> None:
         if self.catalog_worker:
             self.catalog_worker.wait(500)
+
+
+def _runtime_settings(values: dict[str, Any]) -> RuntimeSettings:
+    """Runner settings from saved JSON (snake_case) or the QML form (camelCase); zero or an
+    empty value means "derive from Docker's allocation" for CPUs and memory."""
+    if not isinstance(values, dict):
+        raise TypeError("Runner settings must be an object.")
+
+    def pick(snake: str, camel: str) -> Any:
+        return values.get(snake, values.get(camel))
+
+    cpus = optional_float(pick("cpus", "cpus"))
+    memory = pick("memory_gb", "memoryGb")
+    pids = pick("pids", "pids")
+    depth = pick("git_history_depth", "gitHistoryDepth")
+    return RuntimeSettings(
+        runner_target=str(pick("runner_target", "runnerTarget") or "auto"),
+        cpus=cpus or None,
+        memory_gb=_whole(memory) or None,
+        pids=DEFAULT_RUNNER_PIDS if pids in (None, "") else _whole(pids),
+        git_history_depth=(DEFAULT_GIT_HISTORY_DEPTH if depth in (None, "") else _whole(depth)),
+    )
+
+
+def _whole(value: Any) -> int:
+    """A whole number from JSON or QML (which sends numbers as floats); else ``ValueError``."""
+    if isinstance(value, bool) or value in (None, ""):
+        raise ValueError("Enter whole numbers for runner limits.")
+    number = float(value)
+    if not number.is_integer():
+        raise ValueError("Enter whole numbers for runner limits.")
+    return int(number)

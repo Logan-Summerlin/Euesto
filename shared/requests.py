@@ -10,9 +10,21 @@ DEFAULT_INVESTIGATION_MODEL = "xiaomi/mimo-v2.5"
 MAX_INVESTIGATION_CALLS = 4
 # Workspace configuration the desktop syncs to the gateway, and its serialized size bound.
 WORKSPACE_CONFIG_KEYS = frozenset(
-    {"instructions", "active_skills", "default_mode", "context_policy", "custom_tools"}
+    {
+        "instructions",
+        "active_skills",
+        "default_mode",
+        "context_policy",
+        "custom_tools",
+        # Files the user let through secret redaction (4.5), the opt-in documentation tools
+        # (5.4), and the confirmed effective workspace policy (4.6).
+        "unredacted_paths",
+        "web_tools",
+        "policy",
+    }
 )
 MAX_WORKSPACE_CONFIG_BYTES = 128_000
+NETWORK_MODES = ("none", "registries")
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +118,9 @@ def _object(value: object) -> dict[str, Any]:
     return dict(value)
 
 
+REASONING_EFFORTS = (None, "minimal", "low", "medium", "high")
+
+
 @dataclass(frozen=True, slots=True)
 class AgentRunRequest:
     model: str
@@ -113,16 +128,24 @@ class AgentRunRequest:
     mode: Literal["plan", "agent"]
     workspace_id: str
     session_id: str | None = None
-    context_limit_tokens: int = 100_000
+    context_limit_tokens: int = 160_000
     skills: tuple[dict[str, Any], ...] = ()
     workspace_config: dict[str, Any] = field(default_factory=dict)
     budget_profile: str = "coding"
     provider_preferences: dict[str, Any] = field(default_factory=dict)
     investigation_model_id: str | None = DEFAULT_INVESTIGATION_MODEL
     investigation_call_budget: int = MAX_INVESTIGATION_CALLS
-    approval_policy: Literal["prompt", "accept_edits", "auto"] = "prompt"
+    approval_policy: Literal["prompt", "sandbox", "auto"] = "prompt"
+    # The agent phase's network mode (5.3): ``none`` or ``registries``. It is fixed per
+    # session; ``registries`` requires a runtime started with the egress overlay.
+    network_mode: Literal["none", "registries"] = "none"
+    # Sent as ``reasoning.effort`` when set; the desktop sets it only for models that support
+    # reasoning, and budget presets default to "low".
+    reasoning_effort: str | None = None
 
     def __post_init__(self) -> None:
+        if self.reasoning_effort not in REASONING_EFFORTS:
+            raise ValueError("Unknown reasoning effort")
         if (
             self.mode not in {"plan", "agent"}
             or not self.model.strip()
@@ -142,6 +165,10 @@ class AgentRunRequest:
             )
         if self.approval_policy not in APPROVAL_POLICIES:
             raise ValueError("Unknown agent approval policy")
+        if self.network_mode not in NETWORK_MODES:
+            raise ValueError("Unknown agent network mode")
+        if self.mode != "agent" and self.network_mode != "none":
+            raise ValueError("Network access is available only in Agent mode")
         if self.mode != "agent" and self.approval_policy != "prompt":
             raise ValueError("Automatic approval is available only in Agent mode")
         if not self.messages or len(self.messages) > 500:
@@ -184,6 +211,7 @@ class AgentRunRequest:
             "mode": self.mode,
             "workspace_id": self.workspace_id,
             "approval_policy": self.approval_policy,
+            "network_mode": self.network_mode,
             "session_id": self.session_id,
             "context_limit_tokens": self.context_limit_tokens,
             "skills": [dict(item) for item in self.skills],
@@ -192,6 +220,7 @@ class AgentRunRequest:
             "provider_preferences": dict(self.provider_preferences),
             "investigation_model_id": self.investigation_model_id,
             "investigation_call_budget": self.investigation_call_budget,
+            "reasoning_effort": self.reasoning_effort,
         }
 
     @classmethod
@@ -202,6 +231,7 @@ class AgentRunRequest:
             "mode",
             "workspace_id",
             "approval_policy",
+            "network_mode",
             "session_id",
             "context_limit_tokens",
             "skills",
@@ -210,6 +240,7 @@ class AgentRunRequest:
             "provider_preferences",
             "investigation_model_id",
             "investigation_call_budget",
+            "reasoning_effort",
         }
         if set(data) - expected:
             raise ValueError("Unknown agent run fields")
@@ -224,8 +255,9 @@ class AgentRunRequest:
             mode=str(data.get("mode") or ""),
             workspace_id=str(data.get("workspace_id") or ""),
             approval_policy=str(data.get("approval_policy") or "prompt"),
+            network_mode=str(data.get("network_mode") or "none"),
             session_id=str(data["session_id"]) if data.get("session_id") else None,
-            context_limit_tokens=int(data.get("context_limit_tokens") or 100_000),
+            context_limit_tokens=int(data.get("context_limit_tokens") or 160_000),
             skills=tuple(
                 dict(item) for item in data.get("skills") or () if isinstance(item, dict)
             ),
@@ -237,6 +269,9 @@ class AgentRunRequest:
             investigation_call_budget=int(
                 data.get("investigation_call_budget") or MAX_INVESTIGATION_CALLS
             ),
+            reasoning_effort=str(data["reasoning_effort"])
+            if data.get("reasoning_effort")
+            else None,
         )
 
 

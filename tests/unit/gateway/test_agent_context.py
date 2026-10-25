@@ -39,7 +39,7 @@ def test_large_context_is_bounded_without_orphaning_tool_results() -> None:
     assert compacted[-1]["role"] == "tool" and compacted[-1]["tool_call_id"] == "c11"
 
 
-def test_resumed_run_refreshes_rather_than_duplicates_executor_context(monkeypatch) -> None:
+def test_resuming_a_legacy_snapshot_moves_it_into_the_cache_stable_layout(monkeypatch) -> None:
     sent: list[list[dict]] = []
 
     class Executor:
@@ -76,9 +76,8 @@ def test_resumed_run_refreshes_rather_than_duplicates_executor_context(monkeypat
         )
     )
 
-    contexts = [
-        item["content"]
-        for item in sent[0]
-        if str(item.get("content") or "").startswith("LOCAL EXECUTOR CONTEXT")
-    ]
-    assert len(contexts) == 1 and "saved before the pause" not in contexts[0]
+    contents = [str(item.get("content") or "") for item in sent[0]]
+    assert not any(item.startswith("LOCAL EXECUTOR CONTEXT") for item in contents)
+    assert [item["role"] for item in sent[0]] == ["system", "system", "user", "user"]
+    assert contents[1].startswith("SESSION CONTEXT")
+    assert contents[2] == "go" and contents[3].startswith("RUN NOTES")

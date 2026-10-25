@@ -21,8 +21,11 @@ def test_public_tool_documentation_matches_registry() -> None:
         "ls",
         "status",
         "investigate_repository",
+        "update_plan",
+        "web_search",
+        "fetch_url",
     }
-    assert "ten model-facing tools" in docs
+    assert "thirteen model-facing tools" in docs
 
 
 def test_documentation_index_and_ownership_map_exist() -> None:
@@ -146,7 +149,7 @@ def _stated_investigation_call_limits(text: str) -> set[int]:
 
 
 def test_investigation_call_limit_is_documented_consistently_with_code() -> None:
-    from server.agent import runtime
+    from server.agent.prompts import agent_prompt
     from shared.requests import MAX_INVESTIGATION_CALLS, AgentRunRequest
 
     ceiling = MAX_INVESTIGATION_CALLS
@@ -157,11 +160,8 @@ def test_investigation_call_limit_is_documented_consistently_with_code() -> None
         assert stated == {ceiling}, (
             f"{name} states {sorted(stated)} investigation calls per turn; code allows {ceiling}"
         )
-    # The runtime context shown to the agent must agree too.
-    context = runtime._render_executor_context(
-        {"environment": {"workspace_root": "."}}, "agent"
-    )
-    assert _stated_investigation_call_limits(context) == {ceiling}
+    # The static agent prompt must agree too.
+    assert _stated_investigation_call_limits(agent_prompt("agent")) == {ceiling}
 
 
 def test_call_limit_detector_catches_drift() -> None:

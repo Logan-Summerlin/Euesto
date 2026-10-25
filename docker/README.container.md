@@ -5,8 +5,10 @@ need Python, a virtual environment, or these Docker commands; the installed desk
 bounded topology and manages its runtime in the background.
 
 This guide runs the Euesto developer services with Docker Desktop on Windows. Chat uses only the
-loopback gateway. Plan and Agent add a separate executor that has no network, sees one selected
-workspace read-only, and writes only to an ephemeral in-container staging area.
+loopback gateway. Plan and Agent add two network-disabled containers: an executor (the control
+plane) that sees one selected workspace read-only and writes only to a persistent, disposable
+per-workspace staging volume, and a runner that runs Agent Bash commands against that staging copy
+with no source mount, no secrets, and no state volume.
 
 ## Validation profile
 
@@ -76,17 +78,20 @@ its staging copy and staged publication review, including `.git`, `.hg`, `.svn`,
 `.tox`, `.nox`, `node_modules`, Python bytecode caches, and common test/type-checker caches. A plain
 `env/` directory is ordinary source and is not excluded.
 It supports up to 300,000 materialized regular files with a 2.5 GB staging budget (4 GB hard
-ceiling) in the default `coding` profile. The `/work` tmpfs is sized by
-`LOCAL_CHAT_WORK_TMPFS_SIZE` (8 GB default) and the executor container is capped at 3 GB of
-memory; Docker Desktop must have enough memory allocated for the selected project. Keep large
-datasets and generated artifacts outside the selected workspace when they are not needed for the task.
+ceiling) in the default `coding` profile. Staging lives on Docker named volumes
+(`euesto-work-<key>`, `euesto-state-<key>`, `euesto-cache-<key>`, keyed by the workspace), so it uses
+Docker's disk rather than memory. The executor is capped at 1 CPU, 1 GB of memory, and 128
+processes; the runner defaults to 2 CPUs, 4 GB, and 1,024 processes in the dev scripts
+(`LOCAL_CHAT_RUNNER_CPUS`, `LOCAL_CHAT_RUNNER_MEMORY`, `LOCAL_CHAT_RUNNER_PIDS`; the desktop sizes it
+from **Settings → Runner**). Keep large datasets and generated artifacts outside the selected
+workspace when they are not needed for the task.
 
 Plan can list, read, and search bounded UTF-8 text. It cannot patch files or run commands under any
 approval. Agent can create or replace files, make exact-string edits, run non-interactive Bash
-commands inside the container, and delegate read-only repository investigations to a configured
-cheaper model. Approving an edit or command lets it mutate files in ephemeral staging only; it does
-not permit a host write. Host publication requires a second approval showing the exact manifest.
-See `docs/TOOLS.md` for the full ten-tool contract and `docs/LIMITS.md` for effective limits.
+commands inside the runner container, and delegate read-only repository investigations to a
+configured cheaper model. Approving an edit or command lets it mutate files in staging only; it
+does not permit a host write. Host publication requires a second approval showing the exact manifest.
+See `docs/TOOLS.md` for the full thirteen-tool contract and `docs/LIMITS.md` for effective limits.
 
 ## 5. Verify the isolation before trusting it
 
@@ -106,42 +111,49 @@ Then check the running containers:
 docker compose -f docker/compose.yaml --profile agent ps
 docker inspect local-openrouter-chat-executor-1 --format "{{json .HostConfig.NetworkMode}}"
 docker inspect local-openrouter-chat-executor-1 --format "{{json .HostConfig.Binds}}"
+docker inspect local-openrouter-chat-runner-1 --format "{{json .HostConfig.NetworkMode}}"
+docker inspect local-openrouter-chat-runner-1 --format "{{json .Mounts}}"
 docker inspect local-openrouter-chat-gateway-1 --format "{{json .HostConfig.Binds}}"
 ```
 
 Expected results:
 
-- the executor network mode is `none`
+- the executor and runner network modes are `none`
 - the only host workspace bind ends in `:/source:ro` and belongs to the executor
+- the runner mounts only `/work`, `/cache`, and `/run/runner`: no `/source`, `/state`, secrets, or
+  executor socket
 - the gateway has no workspace bind
-- neither service mounts `/var/run/docker.sock`
-- both services are non-root, read-only, capability-dropped, and no-new-privileges
-- the executor eventually reports `Up (healthy)` after its staging socket is ready
-- only the gateway publishes `127.0.0.1:8765`; the executor publishes no port
+- no service mounts `/var/run/docker.sock`
+- every service is non-root, read-only, capability-dropped, and no-new-privileges
+- the executor and runner eventually report `Up (healthy)` once their sockets are ready
+- only the gateway publishes `127.0.0.1:8765`; the executor and runner publish no port
 
 Do not add `privileged`, host networking, writable source mounts, devices, Docker socket mounts,
 added capabilities, or unconfined security profiles to “fix” a launch problem.
 
-## 5a. Optional: allowlisted package installs (prototype)
+## 5a. Optional: package installs through the allowlisted registry proxy
 
-The default executor has no network. To let `pip install` reach PyPI (and npm reach its registry)
-without opening anything else, add the egress overlay:
+The executor and the runner have no network by default. Dependencies are installed by an approved
+one-shot setup phase (the desktop asks before each run), and a session can opt into registry access for its
+runner when the workspace policy allows it. Both go through a CONNECT proxy that allows only the public package
+registries (`pypi.org`, `files.pythonhosted.org`, and `registry.npmjs.org` by default), refuses IP literals and
+non-public resolutions, and writes a JSON audit line per request. The desktop shows the audit log in Settings →
+Policy. For a script-managed developer runtime, start it with the overlay:
 
 ```powershell
 .\scripts\dev-up.ps1 -Workspace "C:\Users\you\Projects\example" -AllowlistedEgress
 ```
 
-The executor then joins an internal-only Docker network whose only other member is a CONNECT proxy
-that allows `pypi.org`, `files.pythonhosted.org`, and `registry.npmjs.org` (override with
-`LOCAL_CHAT_EGRESS_ALLOWED_HOSTS`), refuses IP literals and non-public resolutions, and writes a JSON
-audit line per request (`docker compose --file docker\compose.yaml --file docker\compose.egress.yaml logs egress-proxy`).
-Requires Docker Compose 2.24 or later. See `docs/EGRESS.md` for the design, limits, and residual risks.
+That attaches the runner (never the executor) to an internal-only network. Requires Docker Compose 2.24 or
+later; isolated setup also uses Compose volume subpaths, so it needs a recent Docker Engine and Compose release. See `docs/EGRESS.md` for the
+setup phase, network modes, the allowlist, and residual risks.
 
 ## 6. Approval and recovery rules
 
 - Read every command, working directory, timeout, and mutation warning.
-- Agent commands run as non-interactive `bash -lc` inside the network-disabled executor container,
-  never on the host; the executor has no host shell, SSH, or Docker access.
+- Agent commands run as non-interactive `bash -lc` inside the network-disabled runner container,
+  never on the host; neither the runner nor the executor has host shell, SSH, or Docker access, and
+  the runner cannot see the source mount, secret-like files, or the executor's state.
 - Treat repository `AGENTS.md`, source text, tool output, and model output as untrusted.
 - Review every path in the publish manifest. Publication fails if a host file changed after review.
 - Successful publications create recovery copies in
@@ -155,29 +167,48 @@ Requires Docker Compose 2.24 or later. See `docs/EGRESS.md` for the design, limi
 ./scripts/dev-down.ps1
 ```
 
-This stops the containers and deletes both active session-token files. The executor's `/work`
-staging area is tmpfs and disappears with the container. The gateway journal volume and desktop
-conversation database remain. To remove the gateway journal after stopping:
+This stops the containers and deletes both active session-token files. Staged work is kept: the
+per-workspace `euesto-work-<key>`, `euesto-state-<key>`, and `euesto-cache-<key>` volumes survive
+`down`, and the next session for the same workspace resumes from them, rebasing automatically onto
+any host edits made in between. Unpublished staging is discarded only by an explicit **Discard**
+(in the app, or under **Settings → Staged sessions**, which flags sessions unused for longer than
+the retention period but never removes them on its own). To list or remove them by hand after
+stopping:
+
+```powershell
+docker volume ls --filter label=io.euesto.workspace
+docker volume rm euesto-work-<key> euesto-state-<key> euesto-cache-<key>
+```
+
+The gateway journal volume and desktop conversation database also remain. To remove the gateway
+journal after stopping:
 
 ```powershell
 docker volume rm local-openrouter-chat_gateway-data
 ```
 
-That deletion is irreversible and is not required for normal use.
+Both deletions are irreversible and are not required for normal use.
 
 ## 8. Troubleshooting without weakening security
 
 - **Agent unavailable:** restart with `-Workspace`, then select the identical canonical folder.
 - **Executor exits during startup:** inspect `docker compose --profile agent logs executor`; the
-  most common causes are a workspace exceeding 300,000 materialized files or the 2.5 GB staging budget, an insufficient
-  Docker Desktop memory allocation, or an unreadable source file. Remove unnecessary generated data
-  or select a narrower project folder.
-- **Workspace identity mismatch:** run `dev-down.ps1`; do not reuse the old executor.
-- **Socket unavailable:** inspect `docker compose --profile agent ps` and executor logs; recreate
-  the services instead of adding a network.
+  entrypoint names the precondition that failed. The most common causes are a workspace
+  exceeding 300,000 materialized files or the 2.5 GB staging budget, an insufficient Docker
+  Desktop memory allocation, an unreadable source file, or a credential the container cannot
+  read: Compose mounts a `file:` secret as a bind mount, so the container keeps the host
+  file's owner and mode, while the gateway runs as UID 10001 and the executor as UID 10002
+  (the container tier's fixtures are world-readable for exactly this reason). Remove
+  unnecessary generated data or select a narrower project folder.
+- **Workspace identity mismatch:** run `dev-down.ps1`; do not reuse the old executor. Kept staging
+  for each workspace lives in its own volumes and is never mounted for another workspace.
+- **Socket unavailable:** inspect `docker compose --profile agent ps` and the executor and runner
+  logs; recreate the services instead of adding a network.
 - **Permission denied:** approve the exact supported operation or change the task. Do not make a
   global wildcard rule.
-- **File conflict:** review the live host edit, then start a new run from a fresh snapshot.
+- **File conflict:** a file changed on the host and in staging. Review both versions, then choose
+  per path whether to keep the staged copy or take the host copy; nothing publishes until every
+  conflict is resolved.
 - **Docker fails to mount the folder:** enable file sharing for that specific projects directory;
   never broaden the selection to a drive or profile root.
 

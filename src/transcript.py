@@ -17,9 +17,17 @@ EVENT_TITLES = {
     "approval.timeout": "Approval timed out",
     "checkpoint.created": "Checkpoint created",
     "checkpoint.restored": "Checkpoint restored",
+    "context.compacted": "Context compacted (handoff written)",
 }
+# Events whose row shows text: the model's narration between tool calls and steering.
+TEXT_EVENT_TYPES = frozenset({"model.narration", "input.steered"})
+MAX_ACTIVITY_TEXT_CHARS = 600
 ACTIVITY_EVENT_TYPES = frozenset(
     {
+        "model.narration",
+        "input.steered",
+        "model.retry",
+        "context.compacted",
         "tool.requested",
         "tool.failed",
         "approval.required",
@@ -30,8 +38,17 @@ ACTIVITY_EVENT_TYPES = frozenset(
         "checkpoint.restored",
         "mutation.rollback",
         "publication.failed",
+        # Harness Phases 3-5: the session plan, loop notes, redaction, and web requests.
+        "plan.updated",
+        "loop.note",
+        "secret.redacted",
+        "web.requested",
     }
 )
+LOOP_NOTE_TITLES = {
+    "empty_reply": "Empty reply; asked the model to continue",
+    "repeated_failure": "Repeated failure; asked the model to change approach",
+}
 # Events that expand their turn's activity so the user sees them.
 ATTENTION_EVENT_TYPES = frozenset(
     {
@@ -42,10 +59,26 @@ ATTENTION_EVENT_TYPES = frozenset(
         "run.paused",
         "publication.failed",
         "mutation.rollback",
+        "secret.redacted",
     }
 )
 # Payload keys loaded for activity; arguments only feed the file-name label and never reach QML.
-ACTIVITY_PAYLOAD_KEYS = ("tool", "request_id", "arguments", "checkpoint_id")
+ACTIVITY_PAYLOAD_KEYS = (
+    "tool",
+    "request_id",
+    "arguments",
+    "checkpoint_id",
+    "text",
+    "attempt",
+    "max_attempts",
+    "summary",
+    "kind",
+    "budget",
+    "percent",
+    "kinds",
+    "query",
+    "url",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +240,21 @@ def _activity_items(events: list[dict[str, object]]) -> list[dict[str, Any]]:
                 continue
             title = _activity_title(event_type, payload)
             attention = True
+        elif event_type in TEXT_EVENT_TYPES:
+            text = str(payload.get("text") or "")
+            if not text:
+                continue
+            title = f"Steering: {text}" if event_type == "input.steered" else text
+            attention = False
+        elif event_type == "model.retry":
+            title = (
+                f"Provider error; retrying (attempt {payload.get('attempt', '?')} "
+                f"of {payload.get('max_attempts', '?')})"
+            )
+            attention = False
+        elif event_type in HARNESS_EVENT_TYPES:
+            title = _harness_title(event_type, payload)
+            attention = event_type in ATTENTION_EVENT_TYPES
         elif event_type in EVENT_TITLES:
             title = EVENT_TITLES[event_type]
             attention = event_type in ATTENTION_EVENT_TYPES
@@ -219,9 +267,34 @@ def _activity_items(events: list[dict[str, object]]) -> list[dict[str, Any]]:
                 "eventType": event_type,
                 "rollback": event_type == "mutation.rollback",
                 "attention": attention,
+                "narration": event_type in TEXT_EVENT_TYPES,
             }
         )
     return result
+
+
+HARNESS_EVENT_TYPES = frozenset(
+    {"plan.updated", "loop.note", "secret.redacted", "web.requested"}
+)
+
+
+def _harness_title(event_type: str, payload: dict[str, object]) -> str:
+    if event_type == "plan.updated":
+        return str(payload.get("summary") or "Plan updated").capitalize()
+    if event_type == "loop.note":
+        kind = str(payload.get("kind") or "")
+        if kind == "budget_warning":
+            return (
+                f"{payload.get('budget', 'Budget')} at {payload.get('percent', '?')}%; "
+                "asked the agent to wrap up"
+            )
+        return LOOP_NOTE_TITLES.get(kind, "Loop note")
+    if event_type == "secret.redacted":
+        kinds = payload.get("kinds") if isinstance(payload.get("kinds"), dict) else {}
+        listed = ", ".join(f"{name} ×{count}" for name, count in sorted(kinds.items()))
+        return f"Redacted secrets before they reached the model: {listed or 'secret'}"
+    target = str(payload.get("query") or payload.get("url") or "")[:200]
+    return f"{payload.get('tool', 'web')}: {target}" if target else str(payload.get("tool"))
 
 
 def _activity_summary(events: list[dict[str, object]], *, legacy: bool = False) -> str:
@@ -268,6 +341,10 @@ def compact_activity_event(event: dict[str, object]) -> dict[str, object] | None
         for key in ACTIVITY_PAYLOAD_KEYS
         if key != "arguments" and payload.get(key) is not None
     }
+    if "text" in compact_payload:
+        compact_payload["text"] = " ".join(str(compact_payload["text"]).split())[
+            :MAX_ACTIVITY_TEXT_CHARS
+        ]
     file_name = _file_name(str(payload.get("tool") or ""), payload)
     if file_name:
         compact_payload["file_name"] = file_name

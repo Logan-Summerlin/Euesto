@@ -6,6 +6,7 @@ import asyncio
 
 import pytest
 
+from server.agent.budgets import resolve_budget_profile
 from server.agent.runtime import AgentRuntime
 from shared.requests import AgentRunRequest
 from shared.tools import ToolResult
@@ -39,13 +40,17 @@ def _context(mode: str) -> list[dict]:
         skills=(STATUS_SKILL,),
     )
     runtime = AgentRuntime(NoInstructionsExecutor(), object(), _no_events)
-    return asyncio.run(runtime._with_workspace_context("run", request, list(request.messages)))
+    return asyncio.run(
+        runtime._session_layout(
+            "run", request, list(request.messages), {}, resolve_budget_profile("coding")
+        )
+    )
 
 
 def test_agent_mode_renders_a_skill_that_requires_status() -> None:
     messages = _context("agent")
-    assert messages[0]["role"] == "system"
-    assert messages[0]["content"].startswith("SKILL [global] review")
+    assert [item["role"] for item in messages] == ["system", "system", "user"]
+    assert "## ACTIVE SKILLS\nSKILL [global] review" in messages[1]["content"]
     assert messages[-1] == {"role": "user", "content": "hello"}
 
 

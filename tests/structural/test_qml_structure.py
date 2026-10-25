@@ -71,3 +71,45 @@ def test_tool_checkboxes_use_compact_indicators() -> None:
     assert "leftPadding: control.indicator.width + control.spacing" in source
     assert "contentItem: Label" in source
     assert source.count("ToolCheckBox {") == 3
+
+
+def test_closing_and_switching_workspace_never_drop_staged_work_silently() -> None:
+    """Plan 0.6: the window close goes through the staging guard and its four choices."""
+    source = _qml("Main.qml")
+    closing = source[source.index("onClosing:") : source.index("Shortcut {")]
+    assert "backend.requestClose()" in closing and "backend.shutdown()" not in closing
+    dialog = source[source.index('objectName: "leaveDialog"') :]
+    for choice in ("publish", "discard", "keep", "cancel"):
+        assert f'leaveDialog.choose("{choice}")' in dialog
+    for label in ("Review and publish", "Discard", "Keep for later", "Cancel"):
+        assert f'text: "{label}"' in dialog
+    # Dismissing the dialog any other way is a cancel, never a silent proceed.
+    assert 'onClosed: if (!resolved) backend.resolveLeave("cancel")' in dialog
+    assert "function onLeaveRequested(title, message)" in source
+
+
+def test_settings_describe_workspace_instructions_and_runner_controls() -> None:
+    """Plan 0.3 help text, and the runner (2.2, 2.6, 2.7) and retention (2.4) settings."""
+    source = _qml("Main.qml")
+    help_text = source[source.index('objectName: "workspaceInstructionsHelp"') :][:700]
+    assert "user-authored" in help_text and "32,000 characters" in help_text
+    assert "AGENTS.md" in help_text and "cannot grant" in help_text
+    runner = source[source.index('objectName: "runnerSettings"') :][:2500]
+    for field in ("runnerTarget", "runnerCpus", "runnerMemory", "runnerPids", "gitDepth"):
+        assert f"id: {field}" in runner
+    assert "backend.saveRuntimeSettings(" in source
+    assert 'objectName: "stagedSessions"' in source and "backend.removeStagedSession(" in source
+    assert 'objectName: "stagingConflicts"' in source
+    assert 'backend.resolveConflict(modelData.path, "keep_staged")' in source
+    assert 'backend.resolveConflict(modelData.path, "take_host")' in source
+
+
+def test_composer_shows_the_run_meter_and_steers_active_runs() -> None:
+    """Plan 0.8: the meter while a run is active, and Steer (also Ctrl+Enter)."""
+    source = _qml("Composer.qml")
+    meter = source[source.index('objectName: "runMeter"') :][:900]
+    assert "backend.runMeter.text" in meter and "backend.runMeter.contextFraction" in meter
+    assert "root.sendRequested(prompt.text, true)" in source
+    assert "Boolean(event.modifiers & Qt.ControlModifier)" in source
+    picker = _qml("Main.qml")
+    assert "modelData.priceText" in picker and "modelData.warnings" in picker

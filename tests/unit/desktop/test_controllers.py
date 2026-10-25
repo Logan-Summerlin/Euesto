@@ -98,5 +98,9 @@ def test_run_status_and_usage_summary_use_the_same_wording() -> None:
         {"input_tokens": 1_000, "output_tokens": 234, "cached_tokens": 5, "cost": 0.0012}
     )
 
-    assert status == "Done · 1,234 tokens · 5 cached · $0.001200"
-    assert summary == "1,234 tokens · 5 cached · $0.001200"
+    assert status == "Done · 1,234 tokens · 5 cached (<1% of input) · $0.001200"
+    assert summary == "1,234 tokens · 5 cached (<1% of input) · $0.001200"
+    # The cache hit rate (plan 1.1) is the cached share of input tokens.
+    assert "800 cached (80% of input)" in GenerationController.format_usage(
+        {"prompt_tokens": 1_000, "cached_tokens": 800}, cancelled=True
+    )

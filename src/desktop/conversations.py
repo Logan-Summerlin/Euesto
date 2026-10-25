@@ -318,7 +318,7 @@ class ConversationService(QObject):
             values = assemble_transcript(
                 self.storage.list_messages(conversation.id),
                 activities,
-                live_text="",
+                live_text=generation.live_text if generation.running else "",
                 live_events=(generation.live_events if generation.running else ()),
             )
             html_cache: dict[tuple[str, str], str] = {}
@@ -354,5 +354,6 @@ def usage_text(usage: dict[str, Any]) -> str:
         float(usage.get("cost") or 0),
         int(usage.get("cached_tokens") or 0),
         int(usage.get("reasoning_tokens") or 0),
+        int(usage.get("input_tokens") or 0),
     )
     return " · ".join(labels)

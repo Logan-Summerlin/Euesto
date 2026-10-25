@@ -1,5 +1,10 @@
 from src.models import Message
-from src.transcript import TranscriptActivity, assemble_activities, assemble_transcript
+from src.transcript import (
+    TranscriptActivity,
+    assemble_activities,
+    assemble_transcript,
+    compact_activity_event,
+)
 
 
 def _message(message_id: int, role: str, parent: int | None = None) -> Message:
@@ -128,3 +133,75 @@ def test_completed_run_activity_stays_on_assistant_turn() -> None:
 
     assert transcript[0]["activity"] == []
     assert transcript[1]["activitySummary"] == "1 tool call"
+
+
+def test_narration_steering_and_retries_appear_as_activity_rows() -> None:
+    events = [
+        {
+            "run_id": "run-a",
+            "event_id": event_id,
+            "type": event_type,
+            "payload": payload,
+        }
+        for event_id, event_type, payload in (
+            (1, "model.narration", {"text": "Reading   the config\nfirst."}),
+            (2, "input.steered", {"text": "Use the v2 API", "chars": 14}),
+            (3, "model.retry", {"attempt": 2, "max_attempts": 3}),
+            (4, "context.compacted", {"tokens_after": 1000}),
+            (5, "model.narration", {"text": ""}),
+        )
+    ]
+    compact = [compact_activity_event(event) for event in events]
+    assert compact[0]["payload"]["text"] == "Reading the config first."
+    long_text = compact_activity_event(
+        {
+            "run_id": "r",
+            "event_id": 9,
+            "type": "model.narration",
+            "payload": {"text": "x" * 5000},
+        }
+    )
+    assert len(long_text["payload"]["text"]) == 600
+
+    activities = assemble_activities(
+        [{"run_id": "run-a", "assistant_message_id": 2, "parent_message_id": 1}],
+        [item for item in compact if item is not None],
+    )
+    transcript = assemble_transcript(
+        [_message(1, "user"), _message(2, "assistant", 1)], activities
+    )
+    rows = next(item["activity"] for item in transcript if item["activity"])
+    assert [(row["title"], row["narration"]) for row in rows] == [
+        ("Reading the config first.", True),
+        ("Steering: Use the v2 API", True),
+        ("Provider error; retrying (attempt 2 of 3)", False),
+        ("Context compacted (handoff written)", False),
+    ]
+
+
+def test_harness_events_have_readable_activity_rows() -> None:
+    from src.transcript import _activity_items
+
+    events = [
+        {"type": "plan.updated", "payload": {"summary": "plan: 1/3 done"}},
+        {
+            "type": "loop.note",
+            "payload": {"kind": "budget_warning", "budget": "Cost", "percent": 85},
+        },
+        {"type": "loop.note", "payload": {"kind": "repeated_failure"}},
+        {"type": "secret.redacted", "payload": {"kinds": {"github_token": 2}}},
+        {
+            "type": "web.requested",
+            "payload": {"tool": "web_search", "query": "pytest fixtures"},
+        },
+    ]
+    rows = _activity_items(events)  # type: ignore[arg-type]
+    assert [row["title"] for row in rows] == [
+        "Plan: 1/3 done",
+        "Cost at 85%; asked the agent to wrap up",
+        "Repeated failure; asked the model to change approach",
+        "Redacted secrets before they reached the model: github_token ×2",
+        "web_search: pytest fixtures",
+    ]
+    # A redaction always draws attention; the others are routine progress.
+    assert [row["attention"] for row in rows] == [False, False, False, True, False]

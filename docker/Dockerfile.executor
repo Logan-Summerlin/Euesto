@@ -2,12 +2,26 @@ FROM python:3.12.13-slim-bookworm@sha256:ac212230555ffb7ec17c214fb4cf036ced11b30
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONUTF8=1
 WORKDIR /app
+# git seeds the sandbox repository from /source once per workspace (docs/ARCHITECTURE.md).
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
 RUN groupadd --gid 10001 executor && useradd --uid 10002 --gid 10001 --no-create-home executor
 COPY requirements-gateway.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt
 COPY shared /app/shared
 COPY executor /app/executor
+COPY runner /app/runner
 COPY docker/executor-entrypoint.sh /usr/local/bin/executor-entrypoint
-RUN chmod 0555 /usr/local/bin/executor-entrypoint && mkdir -p /run/ipc /work && chown 10002:10001 /run/ipc /work
+# A CRLF entrypoint cannot start: the kernel reads the carriage return as part of the interpreter
+# path, so the container exits before uvicorn runs. The committed file is LF (and the structural
+# test enforces it); normalize here too, so the image does not depend on the line endings of
+# whatever checkout built it.
+RUN sed -i 's/\r$//' /usr/local/bin/executor-entrypoint \
+    && chmod 0555 /usr/local/bin/executor-entrypoint \
+    && mkdir -p /run/ipc /run/runner /work /state \
+    && chown 10002:10001 /run/ipc /run/runner /work /state \
+    && chmod 2770 /work /run/runner \
+    && chmod 0700 /state
 USER 10002:10001
 ENTRYPOINT ["/usr/local/bin/executor-entrypoint"]

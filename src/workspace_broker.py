@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from executor.paths import UnsafePath, assert_unique_paths, normalize_relative
+from shared.policy import matches_publish_glob
 from shared.tools import PUBLISH_BATCH_MAX_BYTES, PUBLISH_BATCH_MAX_OPERATIONS, PublishManifest
 
 # Per-batch ceilings. Larger changesets arrive as ordered batches (see PublicationLedger).
@@ -71,8 +72,11 @@ class PublishResult:
 
 
 class WorkspaceBroker:
-    def __init__(self, root: Path, recovery_root: Path):
+    def __init__(self, root: Path, recovery_root: Path, *, never_publish: tuple[str, ...] = ()):
         self.root = canonical_workspace(root)
+        # The confirmed workspace policy's never-publish globs (plan 4.6), checked again here
+        # although the executor already leaves those paths out of every manifest.
+        self.never_publish = tuple(never_publish)
         self.recovery_root = recovery_root.resolve()
         self.recovery_root.mkdir(parents=True, exist_ok=True)
         if self.recovery_root.is_relative_to(self.root):
@@ -96,6 +100,12 @@ class WorkspaceBroker:
         assert_unique_paths(paths)
         if set(paths) != {normalize_relative(item) for item in approved_paths}:
             raise BrokerError("Approved paths do not exactly match the manifest")
+        withheld = [path for path in paths if matches_publish_glob(path, self.never_publish)]
+        if withheld:
+            raise BrokerError(
+                f"The workspace policy never publishes {withheld[0]}"
+                + (f" and {len(withheld) - 1} more path(s)" if len(withheld) > 1 else "")
+            )
         if sum(item.payload_bytes() for item in manifest.operations) > MAX_PUBLISH_BYTES:
             raise BrokerError("Publish manifest exceeds the byte limit")
         checkpoint_id = str(uuid.uuid4())

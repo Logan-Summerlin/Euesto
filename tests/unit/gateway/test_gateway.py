@@ -18,6 +18,10 @@ from shared.permissions import PermissionDecision, PermissionRule
 from shared.requests import AgentRunRequest, ChatRequest
 
 TOKEN = "t" * 43
+# Every rendezvous below is bounded: pytest-timeout's thread method cannot interrupt a task
+# parked on an event nobody sets, so an unbounded wait would wedge the tier instead of failing
+# the test that stopped signalling (docs/TESTING.md, "Async test policy").
+RENDEZVOUS_TIMEOUT_SECONDS = 5
 
 
 class FakeProvider:
@@ -41,7 +45,10 @@ class SlowProvider:
     async def stream_chat(self, _request, _key, cancel_event):
         yield ProviderEvent(text="partial")
         self.started.set()
-        await cancel_event.wait()
+        try:
+            await asyncio.wait_for(cancel_event.wait(), RENDEZVOUS_TIMEOUT_SECONDS)
+        except TimeoutError as exc:
+            raise AssertionError("the gateway never cancelled the run") from exc
         self.finished.set()
 
 
@@ -147,9 +154,9 @@ def test_cancellation_preserves_partial_events(tmp_path: Path) -> None:
             {"model": "vendor/model", "messages": [{"role": "user", "content": "work"}]}
         )
         run_id = await service.start_chat(request)
-        await started.wait()
+        await asyncio.wait_for(started.wait(), RENDEZVOUS_TIMEOUT_SECONDS)
         assert await service.cancel(run_id)
-        await finished.wait()
+        await asyncio.wait_for(finished.wait(), RENDEZVOUS_TIMEOUT_SECONDS)
         events = service.journal.events_after(run_id)
         assert any(
             event.type == "model.delta" and event.payload["text"] == "partial"
@@ -327,7 +334,8 @@ def test_v05_workspace_config_capabilities_and_permission_rule_management(
             status = await client.get("/v1/status", headers=auth_headers())
             capabilities = {item["name"]: item for item in status.json()["capabilities"]}
             assert capabilities["lint.report"]["executable"] is False
-            for policy in ("agent_accept_edits", "agent_auto"):
+            assert "agent_accept_edits" not in capabilities
+            for policy in ("agent_sandbox", "agent_auto"):
                 assert capabilities[policy]["kind"] == "approval_policy"
                 assert capabilities[policy]["modes"] == ["agent"]
 
@@ -359,10 +367,22 @@ def test_agent_payload_offers_tools_by_mode_and_honours_an_empty_allow_list() ->
     agent = agent_payload("m", [], "agent")
     plan = agent_payload("m", [], "plan")
     assert "write" in names(agent) and agent["tool_choice"] == "auto"
-    assert names(plan) == {"read", "grep", "find", "ls"}
+    assert "update_plan" in names(agent) and not {"web_search", "fetch_url"} & names(agent)
+    assert names(plan) == {
+        "read",
+        "grep",
+        "find",
+        "ls",
+        "investigate_repository",
+        "update_plan",
+    }
     assert names(agent_payload("m", [], "agent", allowed_tools={"read"})) == {"read"}
     synthesis = agent_payload("m", [], "plan", allowed_tools=set())
-    assert synthesis["tool_choice"] == "none"
+    assert synthesis["tool_choice"] == "none" and names(synthesis) == names(plan)
+    web = agent_payload(
+        "m", [], "agent", offered_tools={"read", "web_search", "fetch_url"}, stream=False
+    )
+    assert names(web) == {"read", "web_search", "fetch_url"} and web["stream"] is False
 
 
 def test_approval_endpoint_reports_bad_json_and_unknown_decisions_as_422(
