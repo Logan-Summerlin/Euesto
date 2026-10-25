@@ -4,7 +4,7 @@ Status: implemented (see §8).
 
 Scope: `investigate_repository` only. The nine executor tools, the four gateway tools other
 than investigation, approvals, staging, and publication are unchanged. The contract that the
-parent always receives a `summary` ([TOOLS.md](TOOLS.md), investigation section) is kept, not
+parent always receives a `summary` ([TOOLS.md](../docs/TOOLS.md), investigation section) is kept, not
 relaxed: the fix makes that promise hold on every failure path instead of only on the happy
 one.
 
@@ -125,7 +125,7 @@ context.
 
 ### 3.7 The documented error code is never emitted
 
-[TOOLS.md](TOOLS.md) and [TROUBLESHOOTING.md](TROUBLESHOOTING.md) promise
+[TOOLS.md](../docs/TOOLS.md) and [TROUBLESHOOTING.md](../docs/TROUBLESHOOTING.md) promise
 `investigation.failed` and a fallback instruction; the code returns bare
 `{"error", "fallback"}`, and `runtime._investigate_repository` returns bare
 `{"error", "remaining", "fallback"}` for the per-turn call cap instead of the documented
@@ -206,7 +206,7 @@ losses; steps 4–6 make a degraded result useful; step 7 aligns documentation.
   `investigation.executor_unavailable`, `investigation.call_limit`. Add `stop_reason` to
   natural completions too, so the field is always present.
 - Make `runtime._investigate_repository`'s call-cap payload structured (code, used, limit,
-  `fallback`) instead of the bare dict, matching [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+  `fallback`) instead of the bare dict, matching [TROUBLESHOOTING.md](../docs/TROUBLESHOOTING.md).
 - Files: `shared/investigation.py`, `server/agent/investigation.py`,
   `server/agent/runtime.py`.
 
@@ -234,10 +234,10 @@ Update the existing assertions that encode today's text:
 
 ### Step 7 — Documentation
 
-- [TOOLS.md](TOOLS.md) investigation section: result contract including `error_code`,
+- [TOOLS.md](../docs/TOOLS.md) investigation section: result contract including `error_code`,
   `stop_cause`, `degraded`, and the guarantee that `summary` is always present.
-- [LIMITS.md](LIMITS.md) investigation paragraph: how the synthesis reserve is derived.
-- [TROUBLESHOOTING.md](TROUBLESHOOTING.md): degraded synthesis (a summary with a stop cause)
+- [LIMITS.md](../docs/LIMITS.md) investigation paragraph: how the synthesis reserve is derived.
+- [TROUBLESHOOTING.md](../docs/TROUBLESHOOTING.md): degraded synthesis (a summary with a stop cause)
   vs. hard failure, and the three error codes.
 - `CHANGELOG.md` entry when the change lands.
 

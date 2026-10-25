@@ -20,7 +20,7 @@ Python code is formatted with `ruff format` (run `ruff format .` before committi
 
 ## Tool/schema synchronization
 
-The ten public tools are defined in three places that must agree:
+The thirteen public tools are defined in three places that must agree:
 
 1. `shared/tools.py` — public names, request/result protocol, tool sets (`EXECUTOR_TOOLS`, `PLAN_TOOLS`, `READ_TOOLS`, `MUTATION_TOOLS`, `STAGED_EDIT_TOOLS`, `PARALLEL_SAFE_TOOLS`), and publish data structures;
 2. `server/openrouter/agent.py` — model-facing JSON schemas and Plan/Agent tool selection;
@@ -30,7 +30,7 @@ The nested investigation loop lives in `server/agent/investigation.py`; its Plan
 
 ## Safely modifying tools
 
-- Keep the public vocabulary exactly the ten registered tools unless the project plan explicitly changes it.
+- Keep the public vocabulary exactly the thirteen registered tools unless the project plan explicitly changes it.
 - Do not add legacy aliases or compatibility wrappers for removed public tools.
 - Keep Plan read-only in code, not just in prompts.
 - Keep Agent mutations in staging; never give the executor host publication authority.
@@ -52,4 +52,4 @@ Unit tests should use fake provider responses or dependency injection. No test s
 
 ## Documentation
 
-Use `docs/ARCHITECTURE.md`, `docs/TOOLS.md`, `docs/LIMITS.md`, and `docs/PUBLICATION.md` as authoritative references. `docs/ROADMAP.md` is a status roadmap, `AGENTS.md` contains only durable agent invariants, and living plans live only in `docs/` (see the plan index in `docs/README.md`); completed plans move to `archived-doc/`.
+Authoritative references: `docs/ARCHITECTURE.md`, `docs/TOOLS.md`, `docs/LIMITS.md`, `docs/PUBLICATION.md`, `docs/EGRESS.md`, and `docs/TESTING.md`. `AGENTS.md` holds only durable invariants, `docs/ROADMAP.md` holds status, and living plans live in `docs/` (indexed in `docs/README.md`). Completed or superseded plans move to `archived-doc/`.

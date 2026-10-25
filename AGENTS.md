@@ -1,90 +1,88 @@
 # AGENTS.md
 
-Read this file before editing. It contains durable invariants only; detailed behavior belongs in `docs/`.
+Durable invariants for anyone changing this repository. Detailed behavior lives in `docs/`; this file does not repeat it. Read it before editing.
 
 ## Mission
 
-Euesto is a local-first Windows chatbot with a network-disabled executor. Prefer a small, auditable core over features that weaken security, privacy, cost control, or maintainability.
+Euesto is a local-first Windows chatbot with a contained OpenRouter agent. Prefer a small, auditable core. Do not add features that weaken security, privacy, cost control, or maintainability.
 
 ## System boundary
 
 ```text
-Desktop -> authenticated gateway -> Unix-socket executor -> runner (commands) -> persistent, disposable staging -> reviewed publication
+Desktop -> loopback gateway -> Unix-socket executor -> runner (Bash) -> staging -> reviewed publication (desktop broker)
 ```
 
-- Desktop owns UI, history, approvals, runtime management, and host publication.
-- Gateway owns provider calls, agent loops, budgets, sessions, journals, skills, and events; it has no workspace mount.
-- Executor is the control plane: bounded workspace access, file tools, staging, checkpoints, baselines, and manifests; it has no network, runs no commands, and never publishes to the host.
-- Runner runs Bash commands against staging only; it has no network, source mount, state volume, secrets, or executor credential, and never publishes to the host.
-- `shared/` owns framework-neutral protocol structures.
+- **Desktop** (`app.py`, `src/`, `qml/`): UI, history, approvals, runtime management, and the only host publication path.
+- **Gateway** (`server/`): provider calls, agent loop, budgets, sessions, journal, skills. No workspace mount.
+- **Executor** (`executor/`): control plane for file tools, staging, checkpoints, baselines, and manifests. No network, runs no commands, never publishes.
+- **Runner** (`runner/`): runs Bash against staging only. No network, source mount, state volume, secrets, or executor credential. Never publishes.
+- **`shared/`**: framework-neutral protocol. Must not import `src/` or `server/`.
+- **`egress/`**: opt-in allowlisted CONNECT proxy (`docs/EGRESS.md`).
 
 ## Public tools
 
-The model-facing tools are the nine executor tools `read`, `write`, `edit`, `apply_patch`, `bash`, `grep`, `find`, `ls`, and `status`, and the four gateway tools `investigate_repository`, `update_plan`, `web_search`, and `fetch_url` (thirteen in all).
+The model-facing surface is exactly thirteen tools:
 
-- Plan: `read`, `grep`, `find`, `ls`, `investigate_repository`, and `update_plan` only.
-- Agent: all thirteen, with `web_search` and `fetch_url` offered only when the workspace opts in; mutations (`write`, `edit`, `apply_patch`, `bash`) remain in staging; `status` is read-only staged-change review.
-- Consecutive read-only executor calls in one turn may run concurrently; mutations and gateway tools stay serialized in call order.
-- `investigate_repository` is read-only, capped at four calls per turn, and restricted to `read`, `grep`, `find`, `ls`, and `status` inside its nested loop.
-- `update_plan` is gateway-local session state and never prompts; the web tools never reach the executor or runner, return untrusted bounded text, and `fetch_url` asks per URL off its documentation allowlist.
-- Agent approval tiers are `prompt`, `sandbox`, and `auto`; with registry access on, Bash asks under every tier unless a saved rule matches.
-- Do not add aliases, legacy compatibility tools, hidden capabilities, or alternate public vocabularies.
+- Executor (nine): `read`, `write`, `edit`, `apply_patch`, `bash`, `grep`, `find`, `ls`, `status`.
+- Gateway (four): `investigate_repository`, `update_plan`, `web_search`, `fetch_url`.
 
-See `docs/TOOLS.md` for the contract and `docs/LIMITS.md` for limits.
+- **Plan** mode: `read`, `grep`, `find`, `ls`, `investigate_repository`, `update_plan` only; read-only.
+- **Agent** mode: all thirteen; `web_search` and `fetch_url` only when the workspace opts in. Mutations (`write`, `edit`, `apply_patch`, `bash`) affect staging only.
+- Consecutive read-only executor calls in one turn may run concurrently; mutations and gateway tools run serialized in call order.
+- `investigate_repository` is read-only, capped at four calls per turn, and restricted to `read`, `grep`, `find`, `ls`, `status` inside its nested loop.
+- `update_plan` is gateway-local and never prompts. The web tools never reach the executor or runner; `fetch_url` asks per URL off its documentation allowlist.
+- Approval tiers: `prompt`, `sandbox`, `auto`. Bash asks under every tier when registry access is on, unless a saved rule matches.
+- Do not add aliases, legacy compatibility tools, hidden capabilities, or alternate vocabularies. Do not keep compatibility code for old callers.
+
+Reference: `docs/TOOLS.md` (contract), `docs/LIMITS.md` (limits).
 
 ## Security invariants
 
-- Normalize and contain paths beneath the selected workspace.
-- Preserve link/device/reparse-point protections and UTF-8 text semantics.
-- Keep executor and runner non-root, network-disabled, capability-restricted, and without host publication authority. The only exceptions use the allowlisted-egress overlay (`docs/EGRESS.md`), which attaches a container (never the executor) to an internal-only network with a CONNECT proxy that allows named registries: the approved one-shot dependency setup container, and the runner in a session that opted into the `registries` network mode. The default keeps `network_mode: none` for both executor and runner.
-- Keep the source mount read-only and mounted only in the executor; keep mutations in persistent, disposable per-workspace staging that is removed only by an explicit discard, and never destroy staged work silently.
-- Checkpoint mutations and roll them back on failure, cancellation, or timeout; Bash may explicitly retain partial progress on a non-zero exit only when `rollback_on_failure: false` is requested, while timeouts and cancellation always roll back.
-- Keep Bash non-interactive and bounded (fixed base environment; user env is filtered and bounded).
-- Require approved, path-bounded, hash-validated publication through the desktop broker; larger changesets publish as separately approved, all-or-nothing batches, and binary files travel byte-exact as `content_base64`.
-- Read the workspace policy (`.euesto/policy.toml`) from the host only, apply it only after the user confirms exactly what was reviewed, and fail closed when it is invalid; Auto never publishes a host-executable, dependency, or policy change without explicit confirmation.
-- Redact high-confidence secrets from every tool result before it enters the provider-bound history.
+- Normalize and contain every path beneath the selected workspace. Preserve link, device, and reparse-point rejection, and UTF-8 text semantics.
+- Executor and runner stay non-root, network-disabled, capability-restricted, and without host publication authority. The only exception is the allowlisted-egress overlay (`docs/EGRESS.md`): the approved one-shot setup container, and the runner in a session that opted into the `registries` network mode. The executor never joins that network.
+- The source mount is read-only and mounted only in the executor. Mutations go to persistent, disposable per-workspace staging, removed only by an explicit discard. Never destroy staged work silently.
+- Checkpoint every mutation and roll back on failure, cancellation, or timeout. Bash may keep partial progress on a non-zero exit only when `rollback_on_failure: false` is requested; timeouts and cancellation always roll back.
+- Bash is non-interactive and bounded: fixed base environment, filtered and bounded user environment.
+- Publication requires approval, path bounds, and hash validation through the desktop broker. Larger changesets publish as separately approved, all-or-nothing batches. Binary files travel byte-exact as `content_base64`.
+- Read the workspace policy (`.euesto/policy.toml`) from the host only. Apply it only after the user confirms exactly what was reviewed, and fail closed when it is invalid. Auto never publishes a host-executable, dependency, or policy change without explicit confirmation.
+- Redact high-confidence secrets from every tool result before it enters provider-bound history.
 
 ## Change discipline
 
-When changing a public tool, update `shared/tools.py`, `server/openrouter/agent.py`, executor dispatch/permissions, relevant tests, and the corresponding `docs/TOOLS.md`/`docs/LIMITS.md` sections together. Do not preserve stale compatibility code merely for old callers.
-
-When changing publication or security behavior, update the authoritative documentation and regression/security tests in the same change.
-
-Keep one authoritative copy of each document. Planning documents and the roadmap live in `docs/` with `UPPER_SNAKE_CASE.md` names (no spaces or dates) and are indexed in `docs/README.md`; superseded plans move to `archived-doc/` instead of staying beside a newer copy. The root holds only `README.md`, `AGENTS.md`, and `CHANGELOG.md` as documentation.
+- Changing a public tool means updating together: `shared/tools.py`, `server/openrouter/agent.py`, executor dispatch and permissions, the relevant tests, and the matching sections of `docs/TOOLS.md` and `docs/LIMITS.md`.
+- Changing publication or security behavior means updating the authoritative doc (`docs/PUBLICATION.md` or `docs/ARCHITECTURE.md`) and the regression or security tests in the same change.
+- Each fact has one authoritative home. Link to it; do not restate it in a second file.
+- Documents: `README.md`, `AGENTS.md`, and `CHANGELOG.md` at the root only. Living plans and the roadmap live in `docs/` as `UPPER_SNAKE_CASE.md`, indexed in `docs/README.md`. Superseded or completed plans move to `archived-doc/`. No dates in document names.
 
 ## Checks
 
-The canonical validation entry point is `python scripts/validate.py`; use `preflight` to report missing dependencies explicitly and the named tiers (`collect`, `fast`, `slow`, `docker`, `ruff`, `compile`, `qml`, `qml-smoke`, `all`) for execution. Run the applicable checks after changes; the command list lives once, in `docs/TESTING.md` ("Required checks").
+- Canonical entry point: `python scripts/validate.py <tier>`. The one authoritative list of commands is in `docs/TESTING.md` ("Required checks").
+- Python is `ruff format`-formatted; the `ruff` tier checks it.
+- Tests live in `tests/unit/<domain>/`, `tests/ui/`, `tests/docker/`, or `tests/structural/`, never in `tests/` directly. Test file names are unique across folders.
+- Unit tests must not need provider credentials or network. Container and security tests must keep verifying non-root execution, blocked egress, mounts, resource limits, traversal and link rejection, staging recovery, and exact tool-mode boundaries.
+- Run the checks that apply to your change, then report results verbatim. Never claim a check passed without running it.
 
-Python code is `ruff format`-formatted; the `ruff` tier checks it. Tests live in `tests/unit/<domain>/` or a tier folder (`ui`, `docker`, `structural`), never the `tests/` root.
+## Scope
 
-Unit tests must not require provider credentials. Container/security checks must continue to verify non-root execution, blocked egress, mounts, resource limits, traversal/link rejection, staging recovery, and exact tool-mode boundaries.
-
-## Scoped investigation
-
-Read-only repository investigation delegation is in scope through `investigate_repository`. It uses the parent executor session and budget, has no mutation, command, or publication authority, and is limited to four calls per turn. General multi-agent orchestration, independent sessions, and concurrent staging remain out of scope.
+- Read-only investigation delegation through `investigate_repository` is in scope. It has no mutation, command, or publication authority.
+- Independent sub-agents, multi-agent orchestration, and concurrent staging are out of scope.
 
 ## Repository map
 
-Concise guide to each top-level folder:
-
 | Path | Contents |
 |---|---|
-| `.github/` | CI workflows: container security checks and release packaging. |
-| `archived-doc/` | Superseded or fully implemented historical documents. Not normative. |
-| `assets/` | Application icon used by the desktop app, packaging, and installer. |
-| `build/` | PyInstaller spec and version metadata for Windows packaging. |
-| `docker/` | Gateway/executor images, Compose topology, secrets wiring, and the container operator guide (`README.container.md`). |
-| `docs/` | Authoritative architecture, tools, limits, publication, contributor, and troubleshooting references, plus the roadmap and every living plan (indexed in `docs/README.md`). |
-| `egress/` | Opt-in allowlisted HTTPS egress proxy (standard library only) for the install-capable executor profile. |
-| `executor/` | The sandboxed control plane: tool dispatch, path safety, staging, checkpoints, drift rebase, sandbox git, resource limits. |
-| `installer/` | Inno Setup script for the Windows installer. |
-| `qml/` | Qt Quick UI (main window, sidebar, transcript, composer). |
-| `runner/` | Standard-library command server the runner container uses to run Bash against staging. |
-| `scripts/` | Developer helpers: locked bootstrap, the validation harness, dev up/down, QML smoke check, and Docker test fixtures. |
-| `server/` | Loopback gateway: HTTP API, auth, agent runtime, budgets, journal store, OpenRouter client, skills/capabilities extensions. |
-| `shared/` | Framework-neutral protocol: tool registry, requests/responses, permissions, events, publish manifests. |
-| `src/` | Desktop application code: thin QML adapter (`qml_backend.py`) over the services in `src/desktop/`, controllers, storage/migrations, gateway client, runtime manager, publication broker. |
-| `tests/` | Unit, integration, contract, regression, and security tests (no provider credentials required). |
-
-Root files: `app.py` (desktop entry point), `AGENTS.md` (durable invariants), `README.md` (product overview), `CHANGELOG.md` (release summary), `pyproject.toml` / `requirements*.txt` (Python configuration).
+| `app.py` | Desktop entry point. Wires the application; holds no domain policy. |
+| `src/` | Desktop adapter (`qml_backend.py`), `src/desktop/` services, storage and migrations, gateway client, runtime manager, publication broker. |
+| `qml/` | Qt Quick UI. No security or persistence policy. |
+| `server/` | Gateway: HTTP API, auth, agent loop (`server/agent/`), OpenRouter client, journal, skills and extensions. |
+| `executor/` | Control plane: tool implementations, path safety, staging, checkpoints, drift rebase, sandbox git, limits. |
+| `runner/` | Standard-library Bash command server for the runner container. |
+| `shared/` | Protocol: tool registry, requests and responses, permissions, policy, events, secret scanning. |
+| `egress/` | Allowlisted HTTPS egress proxy (standard library only). |
+| `docker/` | Images, Compose files, entrypoint, and `README.container.md` (operator guide). |
+| `scripts/` | `validate.py` (checks), bootstrap, dev up/down, QML smoke, Docker fixtures. |
+| `tests/` | Unit, UI, Docker, and structural tests. |
+| `docs/` | Authoritative references, roadmap, and living plans (see `docs/README.md`). |
+| `archived-doc/` | Completed or superseded documents. Not normative. |
+| `.github/` | CI workflows: container and validation tiers, Windows release, image vulnerability scan. |
+| `build/`, `installer/`, `assets/` | PyInstaller spec and version metadata, Inno Setup script, application icon. |
