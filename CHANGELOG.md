@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — checkpoint pruning on Windows
+
+`Build Windows release` failed in `tests/unit/executor/test_visible_files_cache.py` on `assert len(stored) == 2`: a prune could leave an unreferenced blob behind and could drop the wrong checkpoint. The public tool surface, approval tiers, and sandbox are unchanged.
+
+- Deleting an unreferenced blob retries a few times through a Windows sharing violation (a scanner still holding the blob a mutation just wrote) and only then leaves it for the next prune, instead of leaking it silently on the first failure.
+- Every manifest records `created_ns` at full resolution and pruning orders checkpoints by it instead of by the directory's `st_mtime`, which Windows quantizes to the system clock tick so that checkpoints created in the same few milliseconds all share one. A store written before the field existed still orders by the directory timestamp.
+
 ## Unreleased — larger context windows and a synthesis that cannot be lost
 
 Implements [docs/CONTEXT_LIMIT_PLAN.md](docs/CONTEXT_LIMIT_PLAN.md) and [docs/INVESTIGATE_REPOSITORY_SUMMARY_PLAN.md](docs/INVESTIGATE_REPOSITORY_SUMMARY_PLAN.md). The tool surface, approval tiers, and sandbox are unchanged.

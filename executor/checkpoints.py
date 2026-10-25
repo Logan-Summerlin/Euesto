@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import shutil
+import stat
 import tempfile
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -102,9 +105,11 @@ def create_checkpoint(
                 continue
             _store_object(work_root / relative, objects / digest, digest)
             stored.add(digest)
+        created_ns = time.time_ns()
         manifest = {
             "version": 2,
             "checkpoint_id": checkpoint_id,
+            "created_ns": created_ns,
             "files": {
                 relative: {"sha256": digest, "size_bytes": size, "mode": mode}
                 for relative, (digest, size, mode) in sorted(files.items())
@@ -115,8 +120,10 @@ def create_checkpoint(
         }
         manifest_path = directory / "manifest.json"
         manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
-        _remember_references(
-            manifest_path, {digest: size for digest, size, _mode in files.values()}
+        _remember_manifest(
+            manifest_path,
+            created_ns,
+            {digest: size for digest, size, _mode in files.values()},
         )
         _remember_files(checkpoint_id, files)
         _prune(root, checkpoint_id, max_checkpoints, max_total_bytes)
@@ -126,18 +133,26 @@ def create_checkpoint(
         raise
 
 
-# Parsed-manifest caches. _prune needs every retained checkpoint's referenced digests on each
-# mutation, and the executor's post-mutation status can start from the file listing the
-# checkpoint just walked; both are keyed so that a rewritten manifest is never reused.
+# Parsed-manifest caches. _prune needs every retained checkpoint's referenced digests and its
+# creation order on each mutation, and the executor's post-mutation status can start from the
+# file listing the checkpoint just walked; both are keyed so that a rewritten manifest is never
+# reused.
 _MAX_REMEMBERED_FILES = 4
-_reference_cache: dict[str, tuple[int, dict[str, int]]] = {}
+# manifest path -> (manifest mtime_ns, creation time_ns, {digest: size_bytes})
+_manifest_cache: dict[str, tuple[int, int, dict[str, int]]] = {}
 _recent_files: dict[str, dict[str, tuple[str, int, int]]] = {}
 _cache_lock = threading.Lock()
 
 
-def _remember_references(manifest_path: Path, references: dict[str, int]) -> None:
+def _remember_manifest(
+    manifest_path: Path, created_ns: int, references: dict[str, int]
+) -> None:
     with _cache_lock:
-        _reference_cache[str(manifest_path)] = (manifest_path.stat().st_mtime_ns, references)
+        _manifest_cache[str(manifest_path)] = (
+            manifest_path.stat().st_mtime_ns,
+            created_ns,
+            references,
+        )
 
 
 def _remember_files(checkpoint_id: str, files: dict[str, tuple[str, int, int]]) -> None:
@@ -346,7 +361,7 @@ def _prune(root: Path, current_id: str, max_count: int, max_storage_bytes: int) 
             for path in root.iterdir()
             if path.is_dir() and _CHECKPOINT_ID.fullmatch(path.name)
         ),
-        key=lambda path: path.stat().st_mtime,
+        key=_checkpoint_order,
     )
     keep = {path.name for path in directories[-max(1, max_count) :]} | {current_id}
     for directory in directories:
@@ -368,7 +383,7 @@ def _prune(root: Path, current_id: str, max_count: int, max_storage_bytes: int) 
         # never statted blob-by-blob.
         referenced: dict[str, int] = {}
         for directory in kept_directories:
-            referenced.update(_manifest_references(directory))
+            referenced.update(_manifest_state(directory)[1])
         if sum(referenced.values()) <= max_storage_bytes:
             if objects.exists():
                 with os.scandir(objects) as iterator:
@@ -376,10 +391,7 @@ def _prune(root: Path, current_id: str, max_count: int, max_storage_bytes: int) 
                         entry.path for entry in iterator if entry.name not in referenced
                     ]
                 for path in unreferenced:
-                    try:
-                        os.unlink(path)
-                    except (FileNotFoundError, IsADirectoryError, PermissionError):
-                        pass
+                    _discard_object(path)
             return
         removable = [path for path in kept_directories if path.name != current_id]
         if not removable:
@@ -387,45 +399,105 @@ def _prune(root: Path, current_id: str, max_count: int, max_storage_bytes: int) 
                 LIMIT_EXCEEDED,
                 "Checkpoint storage budget is exhausted by the current checkpoint set.",
             )
-        _remove_checkpoint(min(removable, key=lambda path: path.stat().st_mtime))
+        _remove_checkpoint(min(removable, key=_checkpoint_order))
 
 
 def _remove_checkpoint(directory: Path) -> None:
     shutil.rmtree(directory, ignore_errors=True)
     with _cache_lock:
-        _reference_cache.pop(str(directory / "manifest.json"), None)
+        _manifest_cache.pop(str(directory / "manifest.json"), None)
 
 
-def _manifest_references(directory: Path) -> dict[str, int]:
+def _checkpoint_order(directory: Path) -> tuple[int, str]:
+    """Oldest-first order that coarse filesystem timestamps cannot reorder.
+
+    Windows stamps every directory created inside one system clock tick with the same time, so
+    a store whose checkpoints were created within a few milliseconds sorts by nothing and the
+    prune keeps or drops an arbitrary one. Each manifest records its creation time at full
+    resolution, which is the order the store was actually written in.
+    """
+    return _manifest_state(directory)[0], directory.name
+
+
+def _manifest_state(directory: Path) -> tuple[int, dict[str, int]]:
+    """Creation time and referenced objects of one checkpoint, from a cached manifest."""
     manifest_path = directory / "manifest.json"
     try:
         mtime = manifest_path.stat().st_mtime_ns
     except OSError:
-        return {}
+        return 0, {}
     key = str(manifest_path)
     with _cache_lock:
-        cached = _reference_cache.get(key)
+        cached = _manifest_cache.get(key)
     if cached is not None and cached[0] == mtime:
-        return cached[1]
+        return cached[1], cached[2]
+    data = _manifest_json(manifest_path)
+    created = _recorded_creation(data.get("created_ns"))
+    references = _referenced_objects(data)
+    if not created:
+        # A store written before manifests recorded their creation time has only the directory
+        # timestamp to order it by.
+        try:
+            created = directory.stat().st_mtime_ns
+        except OSError:
+            created = 0
+    with _cache_lock:
+        _manifest_cache[key] = (mtime, created, references)
+    return created, references
+
+
+def _manifest_json(manifest_path: Path) -> dict[str, object]:
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _recorded_creation(value: object) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _referenced_objects(data: dict[str, object]) -> dict[str, int]:
+    files = data.get("files")
     references: dict[str, int] = {}
-    for item in _manifest_files(directory).values():
+    if not isinstance(files, dict):
+        return references
+    for item in files.values():
         if isinstance(item, dict) and item.get("sha256"):
             try:
                 references[str(item["sha256"])] = max(0, int(item.get("size_bytes") or 0))
             except (TypeError, ValueError):
                 references[str(item["sha256"])] = 0
-    with _cache_lock:
-        _reference_cache[key] = (mtime, references)
     return references
 
 
-def _manifest_files(directory: Path) -> dict[str, object]:
-    try:
-        data = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return {}
-    value = data.get("files") if isinstance(data, dict) else None
-    return value if isinstance(value, dict) else {}
+# Windows reports a blob that another process still has open (a scanner reading what the
+# mutation just wrote) as a sharing violation and refuses the delete while that handle lives.
+# It clears on its own, so a bounded retry reclaims the blob instead of leaking it until the
+# next prune; the delay only elapses when a lock is actually there.
+_UNLINK_ATTEMPTS = 6
+_UNLINK_DELAY_SECONDS = 0.05
+
+
+def _discard_object(path: str) -> None:
+    """Delete one unreferenced blob, as far as the platform allows right now."""
+    for attempt in range(_UNLINK_ATTEMPTS):
+        if attempt:
+            time.sleep(_UNLINK_DELAY_SECONDS)
+        try:
+            os.unlink(path)
+            return
+        except (FileNotFoundError, IsADirectoryError):
+            return
+        except PermissionError:
+            # Only a Windows read-only attribute outlives the other process's handle.
+            if os.name == "nt":
+                with contextlib.suppress(OSError):
+                    os.chmod(path, stat.S_IWRITE)
 
 
 def _store_object(source: Path, object_path: Path, digest: str) -> None:
