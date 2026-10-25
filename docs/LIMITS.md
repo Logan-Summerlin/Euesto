@@ -40,15 +40,15 @@ The gateway bounds each tool result it gives the model, independently of the exe
 | `read` | 32,000 bytes | 48,000 bytes | 64,000 bytes |
 | Every other tool | 24,000 bytes | 32,000 bytes | 48,000 bytes |
 | `bash` output shown | 8,000 characters | 12,000 characters | 16,000 characters |
-| Ceiling for any result | 10% of the working set (38,400 bytes) | 64,000 bytes | 102,400 bytes |
+| Ceiling for any result | 40% of the working set in tokens (60,000 bytes) | 96,000 bytes | 160,000 bytes |
 
-The ceiling counts four bytes per token. `investigate_repository` keeps its own, separate allowance (below).
+The ceiling counts four bytes per token: 40% of the working set in tokens equals 10% of it in bytes at four bytes per token. `investigate_repository` keeps its own, separate allowance (below).
 
 ## Context, output, and steering
 
 | Bound | Value | Notes |
 |---|---:|---|
-| Working set (compaction high-water) | 96,000 tokens (`coding`), 160,000 (`extended-coding`), 256,000 (`large-coding`) | The smaller of this and 60% of the model's window applies; compaction returns to a third of it, and never leaves more than 90% of the window. |
+| Working set (compaction high-water) | 150,000 tokens (`coding`), 240,000 (`extended-coding`), 400,000 (`large-coding`) | The smallest of this, 75% of the request's prompt budget, and the room left after one full output turn plus a 32,000-token growth reserve applies (floor 4,000); compaction returns to a third of it, and never leaves more than 90% of the prompt budget. The default prompt budget is 160,000 tokens (a 200k-class window); the desktop sends 80% of the model's published window. |
 | Handoff summary | 2,500 tokens | One tool-free turn at low reasoning effort. |
 | Output per model turn (`max_tokens`) | 16,000 tokens | Per profile; a cut-off turn gets a note to write large files in parts. |
 | Static system prompt | 4,800 bytes | Per mode; no dynamic values. |
@@ -145,4 +145,4 @@ The effective limits reported by `/v1/status` are intended to make the active pr
 
 ## Investigation delegation
 
-Investigation delegation accepts up to 50 `inspected_paths` per call and returns at most 50 structured findings. It is bounded to four calls per turn (reset at every parent model turn) and half of the parent run's remaining cost per call, with 36-iteration, 36-tool-call, and 300-second wall-time nested caps (the wall time is the parent's remaining time clamped to 10–300 seconds). Within that, exploration stops early enough to keep a synthesis reserve of 60 seconds (or a third of a shorter nested budget), each nested model request is limited to 15–180 seconds, nested results are bounded to 40,000 characters each and 512,000 bytes per call in their own ledger, and nested context is compacted to about 64,000 tokens. It never creates an executor, staging, or publication authority.
+Investigation delegation accepts up to 50 `inspected_paths` per call and returns at most 50 structured findings. It is bounded to four calls per turn (reset at every parent model turn) and half of the parent run's remaining cost per call, with 36-iteration, 36-tool-call, and 300-second wall-time nested caps (the wall time is the parent's remaining time clamped to 10–300 seconds). Within that, exploration stops early enough to keep a synthesis reserve of 60 seconds plus one second per 2,500 tokens of nested context (capped at a third of a shorter nested budget) and the synthesis turn gets the wall time left after that reserve, each exploration model request is limited to 15–180 seconds while synthesis is capped at 180, nested results are bounded to 40,000 characters each and 512,000 bytes per call in their own ledger, and nested context is compacted to about 64,000 tokens of exploration and 96,000 before the synthesis turn. It never creates an executor, staging, or publication authority.

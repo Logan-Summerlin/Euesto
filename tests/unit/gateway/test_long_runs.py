@@ -502,3 +502,36 @@ def test_plan_mode_can_delegate_an_investigation(monkeypatch) -> None:
     assert nested[0]["offered_tools"] == frozenset({"read", "grep", "find", "ls", "status"})
     result = json.loads(tool_contents(provider.payloads[-1])[0])
     assert result["summary"] == "The parser lives in src/parser.py."
+
+
+# -- long-run compaction ---------------------------------------------------------------------
+
+
+def test_a_large_window_run_compacts_at_the_working_set_and_keeps_going(monkeypatch) -> None:
+    # Twenty-four reads at the 32,000-byte read cap put about 154,000 tokens of live context in
+    # the window, which crosses the 400k-window request's mark: the profile cap, 150,000.
+    turns = [
+        tools_turn(call(f"r{index}", "read", {"path": f"f{index}.py"})) for index in range(24)
+    ]
+    turns.insert(21, final_turn("HANDOFF\nObjective: finish.\nNext steps: read f99.py."))
+    provider, events, _saved, _runtime = run(
+        monkeypatch,
+        [*turns, final_turn()],
+        executor=ScriptedExecutor(read_bytes=32_000),
+        request=make_request(context_limit_tokens=320_000),
+    )
+    inspections = [payload for kind, payload in events if kind == "context.inspected"]
+    assert [item["high_water_tokens"] for item in inspections] == [150_000]
+    compactions = [payload for kind, payload in events if kind == "context.compacted"]
+    assert len(compactions) == 1
+    journal = compactions[0]
+    assert journal["high_water_tokens"] == 150_000
+    assert journal["low_water_tokens"] == 50_000
+    assert journal["method"] == "summary"
+    assert journal["tokens_before"] > 150_000 >= journal["tokens_after"]
+    assert journal["low_water_tokens"] >= journal["tokens_after"]
+    # The compaction turn is the only extra model call, and the run still finishes normally.
+    assert len(provider.payloads) == 26
+    assert kinds(events)[-1] == "run.completed"
+    resumed = provider.payloads[-1]["messages"]
+    assert any(str(item.get("content", "")).startswith("HANDOFF") for item in resumed)

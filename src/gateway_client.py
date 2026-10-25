@@ -316,7 +316,7 @@ class GatewayClient:
         network_mode: str = "none",
         stop_event: threading.Event | None = None,
         session_id: str | None = None,
-        context_limit_tokens: int = 100_000,
+        context_limit_tokens: int = 160_000,
         skills: Sequence[dict[str, Any]] = (),
         workspace_config: dict[str, Any] | None = None,
         investigation_model_id: str | None = None,

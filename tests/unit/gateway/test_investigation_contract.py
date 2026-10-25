@@ -305,3 +305,36 @@ def test_agent_requests_default_a_missing_or_blank_investigation_model(supplied:
         }
     )
     assert request.investigation_model_id == DEFAULT_INVESTIGATION_MODEL
+
+
+def test_a_blank_report_summary_is_derived_from_its_findings(monkeypatch) -> None:
+    report = json.dumps(
+        {
+            "summary": "",
+            "findings": [
+                {"file": "src/app.py", "line": 12, "justification": "defines the entry point"}
+            ],
+        }
+    )
+    result, _prompts, _events, _executor = _run(
+        monkeypatch, [_turn(report)], {"query": "how does this work"}
+    )
+
+    assert result["summary"]
+    assert "src/app.py:12" in result["summary"]
+    assert "defines the entry point" in result["summary"]
+
+
+def test_a_natural_completion_carries_the_status_fields(monkeypatch) -> None:
+    turns = [_turn(calls=(_call("read-1", "read", {"path": "README.md"}),)), _turn("Answer.")]
+    result, _prompts, _events, _executor = _run(
+        monkeypatch, turns, {"query": "how does this work"}
+    )
+
+    assert result["summary"] == "Answer."
+    assert result["stop_reason"] == "complete"
+    assert result["stop_cause"] is None
+    assert result["budget_exhausted"] is False
+    assert result["degraded"] is False
+    assert result["parent_budget_exceeded"] is False
+

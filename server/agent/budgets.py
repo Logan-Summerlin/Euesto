@@ -10,9 +10,11 @@ from shared.coercion import optional_float, optional_int
 class BudgetProfile:
     """Resource budgets plus the model-facing context and result bounds of one profile.
 
-    ``working_set_tokens`` is the compaction high-water cap (the smaller of it and 60% of the
-    model's window applies). Result caps bound each model-facing tool result; none may exceed
-    10% of the working set (four bytes per token). ``max_output_tokens`` caps one model turn.
+    ``working_set_tokens`` is the compaction high-water cap: the high water is the smallest of
+    it, 75% of the request's prompt budget, and what the prompt budget can hold once one
+    output turn and one large result are subtracted. Result caps bound each model-facing tool result; none may
+    exceed 40% of the working set in tokens (10% of it in bytes, at four bytes per token).
+    ``max_output_tokens`` caps one model turn.
     """
 
     name: str
@@ -41,6 +43,7 @@ STANDARD_CODING_PROFILE = BudgetProfile(
     max_tool_calls=900,
     max_wall_seconds=1_800,
     max_cost=2.0,
+    working_set_tokens=150_000,
 )
 EXTENDED_CODING_PROFILE = BudgetProfile(
     "extended-coding",
@@ -48,7 +51,7 @@ EXTENDED_CODING_PROFILE = BudgetProfile(
     max_tool_calls=1_800,
     max_wall_seconds=3_600,
     max_cost=4.0,
-    working_set_tokens=160_000,
+    working_set_tokens=240_000,
     result_bytes=32_000,
     read_result_bytes=48_000,
     bash_result_chars=12_000,
@@ -59,7 +62,7 @@ LARGE_CODING_PROFILE = BudgetProfile(
     max_tool_calls=2_700,
     max_wall_seconds=5_400,
     max_cost=8.0,
-    working_set_tokens=256_000,
+    working_set_tokens=400_000,
     result_bytes=48_000,
     read_result_bytes=64_000,
     bash_result_chars=16_000,

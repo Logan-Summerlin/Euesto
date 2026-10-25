@@ -1,6 +1,6 @@
 # `investigate_repository` summary handoff: diagnosis and fix plan
 
-Status: proposed (diagnosis complete, no code changed yet).
+Status: implemented (see §8).
 
 Scope: `investigate_repository` only. The nine executor tools, the four gateway tools other
 than investigation, approvals, staging, and publication are unchanged. The contract that the
@@ -255,3 +255,38 @@ The contract stays "always a summary" (steps above add `error_code` alongside it
 alternative is to return a hard error the parent must retry, which is simpler to reason about
 but loses the partial evidence that the nested loop already paid for. Only step 5's payload
 shape changes if that alternative is chosen.
+
+## 8. Outcome
+
+All seven steps are implemented in `server/agent/investigation.py`, `shared/investigation.py`,
+and `server/agent/runtime.py`.
+
+- **Paid summaries survive.** `_charge_parent` turns a `BudgetExceededError` into
+  `parent_budget_exceeded: true` instead of raising, so a synthesis that already cost money is
+  returned; the parent loop's own limit stops the run at its next step.
+- **The reserve follows the prompt.** `investigation_synthesis_reserve` is 60 seconds plus one
+  second per 2,500 tokens of nested context, capped at a third of a short nested budget. The
+  synthesis turn's timeout is `min(180, remaining − reserve)`, and a non-positive result
+  raises `provider.timeout` without spending a turn; exploration keeps its 15-second floor and
+  subtracts the same reserve, so retries cannot spend the wall clock twice.
+- **Executor failures are answered in-loop.** Any exception from the executor becomes a
+  `ToolResult` with `investigation.executor_unavailable`, journaled as `subagent.executor_error`;
+  the loop keeps going, `degraded` is set, and `subagent.failed` is not emitted.
+- **The fallback is a digest.** `_digest(stop_cause, files, observed, listed, error)` names the
+  specific stop cause, the provider error text if any, the files it examined, the paths it
+  listed but never read, and the next `read` to run. `_observed_files` reads `read`, `grep`,
+  `find`, `ls`, and `status` results, so a listing-only investigation is no longer "no
+  evidence".
+- **`stop_cause` and `stop_reason` are separate.** `stop_cause` is one of `tool_calls`,
+  `iterations`, `cost`, `wall_time`, `evidence_limit`, `empty_answer`, `provider_error`;
+  `stop_reason` is `budget` for the four budget causes, otherwise the same value, and
+  `complete` for a natural finish.
+- **The payload shape is guaranteed.** `InvestigationResult.failed(...)` always carries an
+  `error_code` (`investigation.failed`, `investigation.executor_unavailable`,
+  `investigation.call_limit`), a non-empty summary (derived from the findings when the model
+  returns a blank one), and a `fallback` hint; `_extra()` always adds `stop_reason`,
+  `stop_cause`, `budget_exhausted`, `degraded`, and `parent_budget_exceeded`.
+
+Tests: `tests/unit/gateway/test_investigation_budget.py` (parent charge, executor failure,
+listing-only provider error, retry and synthesis bounds, wall-time digest, payload shape) and
+`tests/unit/gateway/test_investigation_contract.py` (derived summary, status fields).

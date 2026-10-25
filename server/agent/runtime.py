@@ -24,6 +24,7 @@ from shared.permissions import (
     resolve_permission,
     rule_scope,
 )
+from shared.investigation import INVESTIGATION_CALL_LIMIT, InvestigationResult
 from shared.requests import AgentRunRequest
 from shared.tools import (
     MUTATION_TOOLS,
@@ -71,11 +72,16 @@ MAX_PARALLEL_TOOL_CALLS = 8
 PROVIDER_ATTEMPTS = 3
 RETRY_BASE_DELAY = 1.0
 RETRY_MULTIPLIER = 3.0
-# Compaction: the high-water mark is the smaller of this share of the window and the profile's
-# working-set cap; compaction returns to a third of it.
-HIGH_WATER_WINDOW_SHARE = 0.6
+# Compaction: the high-water mark is the smallest of the profile's working-set cap, this share
+# of the window, and what the window can still hold after one full output turn and one large
+# result; compaction returns to a third of it.
+HIGH_WATER_WINDOW_SHARE = 0.75
 LOW_WATER_SHARE = 1 / 3
 HARD_CEILING_WINDOW_SHARE = 0.9
+# Room for one turn's output plus one large result (the ``read`` cap in tokens) below the high
+# water, so a single over-large turn can never fill the request budget.
+TURN_GROWTH_RESERVE_TOKENS = 32_000
+MIN_HIGH_WATER_TOKENS = 4_000
 SUMMARY_MAX_TOKENS = 2_500
 MAX_STEERING_MESSAGES = 16
 # Prefixes of system messages written by earlier gateway versions; dropped when a stored session
@@ -1581,12 +1587,19 @@ class AgentRuntime:
         self._investigation_calls[run_id] = count + 1
         limit = request.investigation_call_budget
         if count >= limit:
+            # A structured refusal, not a bare error dict: the parent branches on ``error_code``
+            # and still has a summary telling it how to continue.
             content = json.dumps(
-                {
-                    "error": f"Investigation call budget exhausted ({limit} calls per turn).",
-                    "remaining": 0,
-                    "fallback": "Continue with the repository tools directly.",
-                }
+                InvestigationResult.failed(
+                    INVESTIGATION_CALL_LIMIT,
+                    f"Investigation call budget exhausted ({limit} calls per turn).",
+                    summary=(
+                        f"No investigation ran: this turn already used its {limit} "
+                        "investigate_repository calls. Continue with read, grep, find, and ls "
+                        "directly, or ask again next turn."
+                    ),
+                    extra={"used": count, "limit": limit, "remaining": 0},
+                ).to_dict()
             )
         else:
             investigation = RepositoryInvestigation(
@@ -1648,13 +1661,23 @@ def recent_exchanges(history: list[Message], budget_tokens: int) -> list[Message
 
 
 def _high_water(request: AgentRunRequest, profile: BudgetProfile) -> int:
-    return max(
-        4_000,
-        min(
-            int(request.context_limit_tokens * HIGH_WATER_WINDOW_SHARE),
-            profile.working_set_tokens,
-        ),
+    """The compaction high-water mark: every bound visible in one place.
+
+    The smallest of the profile's working-set cap, ``HIGH_WATER_WINDOW_SHARE`` of the request's
+    prompt budget, and the room the window has left after one full output turn and one large
+    result (``TURN_GROWTH_RESERVE_TOKENS``). The capacity bound is what keeps a small window
+    from being pushed past what it can actually hold; the floor keeps compaction meaningful on
+    a tiny window.
+    """
+    capacity = (
+        request.context_limit_tokens - profile.max_output_tokens - TURN_GROWTH_RESERVE_TOKENS
     )
+    high = min(
+        profile.working_set_tokens,
+        int(request.context_limit_tokens * HIGH_WATER_WINDOW_SHARE),
+        capacity,
+    )
+    return max(MIN_HIGH_WATER_TOKENS, high)
 
 
 def _prefix_length(messages: list[Message]) -> int:

@@ -20,6 +20,36 @@ MAX_FINDINGS = 50
 MAX_FINDING_JUSTIFICATION_CHARS = 1_000
 MAX_SUMMARY_CHARS = 32_000
 MAX_FILES_EXAMINED = 200
+# A failure message is echoed back to the parent and journaled; bound it once, here.
+MAX_ERROR_CHARS = 2_000
+
+# Error codes a failed investigation returns alongside its summary. The parent branches on
+# ``error_code``; the summary is never empty, so a degraded handoff is still usable.
+INVESTIGATION_FAILED = "investigation.failed"
+INVESTIGATION_EXECUTOR_UNAVAILABLE = "investigation.executor_unavailable"
+INVESTIGATION_CALL_LIMIT = "investigation.call_limit"
+FAILED_FALLBACK = "Continue with read, grep, find, and ls directly."
+
+# The specific reason exploration stopped (``stop_cause``) and the documented grouping the
+# parent sees (``stop_reason``): every budget-shaped cause reports as ``budget``.
+STOP_CAUSES = (
+    "tool_calls",
+    "iterations",
+    "cost",
+    "wall_time",
+    "evidence_limit",
+    "empty_answer",
+    "provider_error",
+)
+BUDGET_STOP_CAUSES = frozenset({"tool_calls", "iterations", "cost", "wall_time"})
+
+
+def stop_reason_for(cause: str | None) -> str:
+    """The documented ``stop_reason`` for a specific ``stop_cause``."""
+    if cause is None:
+        return "complete"
+    return "budget" if cause in BUDGET_STOP_CAUSES else cause
+
 
 # Plan tools whose call on an already-inspected path would only repeat what the parent has.
 REINSPECTION_TOOLS = frozenset({"read", "ls"})
@@ -97,7 +127,7 @@ class InvestigationResult:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "summary": self.summary[:MAX_SUMMARY_CHARS],
+            "summary": _bounded_summary(self.summary, self.findings),
             "findings": [item.to_dict() for item in self.findings[:MAX_FINDINGS]],
             "structured": self.structured,
             "files_examined": list(self.files_examined[:MAX_FILES_EXAMINED]),
@@ -105,6 +135,66 @@ class InvestigationResult:
             "truncated": self.truncated,
             **self.extra,
         }
+
+    @classmethod
+    def failed(
+        cls,
+        error_code: str,
+        error: str,
+        *,
+        summary: str = "",
+        findings: tuple[InvestigationFinding, ...] = (),
+        files_examined: tuple[str, ...] = (),
+        skipped_paths: tuple[str, ...] = (),
+        stop_cause: str | None = None,
+        truncated: bool = False,
+        extra: dict[str, Any] | None = None,
+    ) -> InvestigationResult:
+        """A degraded or refused call: a summary, a code to branch on, and a fallback.
+
+        Callers never hand-build an error dict, so every failure carries the same shape and
+        the parent always has a ``summary`` to work from.
+        """
+        return cls(
+            summary,
+            findings,
+            files_examined,
+            skipped_paths,
+            False,
+            truncated,
+            {
+                "error_code": error_code,
+                "error": str(error)[:MAX_ERROR_CHARS],
+                "failed": True,
+                "fallback": FAILED_FALLBACK,
+                "stop_reason": stop_reason_for(stop_cause),
+                "stop_cause": stop_cause,
+                "degraded": True,
+                **(extra or {}),
+            },
+        )
+
+
+def _bounded_summary(summary: str, findings: tuple[InvestigationFinding, ...]) -> str:
+    """A non-empty summary: the model's text, else one derived from the first findings."""
+    text = str(summary or "").strip()
+    if text:
+        return text[:MAX_SUMMARY_CHARS]
+    return _summary_from_findings(findings)[:MAX_SUMMARY_CHARS]
+
+
+def _summary_from_findings(findings: tuple[InvestigationFinding, ...]) -> str:
+    """A summary derived from the report's findings when the model's own text is blank."""
+    if not findings:
+        return (
+            "The investigation returned no summary and no findings. Continue with read, grep, "
+            "find, and ls directly."
+        )
+    lines = ["The investigation returned no summary text; its findings were:"]
+    for item in findings[:5]:
+        where = f"{item.file}:{item.line}" if item.line else item.file
+        lines.append(f"- {where}: {item.justification}" if item.justification else f"- {where}")
+    return "\n".join(lines)
 
 
 def parse_investigation_report(

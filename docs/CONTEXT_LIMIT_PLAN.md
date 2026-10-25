@@ -1,6 +1,6 @@
 # The 96,000-token working set: what it is today, and a plan to raise it to 150,000
 
-Status: proposed (investigation complete, no code changed yet).
+Status: implemented (see §8).
 
 Scope: the agent loop's compaction high-water mark for the `coding` budget profile. It changes
 one profile value, one share constant, the derivation that ties them to the model window, and
@@ -228,3 +228,34 @@ is the one item here that needs a product decision (§7).
   0.8 window share but is about chat history, not the agent loop.
 - The investigation loop's own 64,000-token nested context.
 - Provider-specific window quirks and per-model overrides; the change stays provider-agnostic.
+
+## 8. Outcome
+
+Implemented as steps 1–5 above, with one measured correction to the table in step 2.
+
+- `BudgetProfile.working_set_tokens`: 150,000 (`coding`), 240,000 (`extended-coding`),
+  400,000 (`large-coding`); the dataclass default is unchanged.
+- `HIGH_WATER_WINDOW_SHARE = 0.75`, `TURN_GROWTH_RESERVE_TOKENS = 32_000`,
+  `MIN_HIGH_WATER_TOKENS = 4_000`, and `_high_water` names all three bounds.
+- `context_limit_tokens` defaults to 160,000 in `shared/requests.py` and in
+  `GatewayClient.stream_agent`.
+
+The capacity bound subtracts the output cap from the *prompt budget*, so on the default
+160,000-token budget it binds before the 75% share:
+
+| Window | Prompt budget | High water | Bound |
+|---:|---:|---:|---|
+| 8,000 | 6,400 | 4,000 | floor |
+| 128,000 | 102,400 | 54,400 | capacity |
+| 163,840 | 131,072 | 83,072 | capacity |
+| 200,000 | 160,000 | 112,000 | capacity |
+| 250,000 | 200,000 | 150,000 | profile cap |
+| 400,000 | 320,000 | 150,000 | profile cap |
+| 1,048,576 | 838,860 | 150,000 | profile cap |
+
+`tests/unit/gateway/test_context_limits.py` pins every row and the invariants
+(high water below the 90% safety clamp, one output turn plus the growth reserve fitting
+above the mark, the derived low water holding the prefix and one exchange, the three tiers
+staying distinct, and the 160,000 default). `test_harness_loop.py` zeroes
+`TURN_GROWTH_RESERVE_TOKENS` for its 8,000-token scenarios, and
+`test_long_runs.py` compacts at 150,000 on a 400k-window request.

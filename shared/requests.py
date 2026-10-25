@@ -128,7 +128,7 @@ class AgentRunRequest:
     mode: Literal["plan", "agent"]
     workspace_id: str
     session_id: str | None = None
-    context_limit_tokens: int = 100_000
+    context_limit_tokens: int = 160_000
     skills: tuple[dict[str, Any], ...] = ()
     workspace_config: dict[str, Any] = field(default_factory=dict)
     budget_profile: str = "coding"
@@ -257,7 +257,7 @@ class AgentRunRequest:
             approval_policy=str(data.get("approval_policy") or "prompt"),
             network_mode=str(data.get("network_mode") or "none"),
             session_id=str(data["session_id"]) if data.get("session_id") else None,
-            context_limit_tokens=int(data.get("context_limit_tokens") or 100_000),
+            context_limit_tokens=int(data.get("context_limit_tokens") or 160_000),
             skills=tuple(
                 dict(item) for item in data.get("skills") or () if isinstance(item, dict)
             ),

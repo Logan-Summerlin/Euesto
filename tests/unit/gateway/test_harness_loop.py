@@ -531,8 +531,11 @@ def test_cache_breakpoints_only_for_providers_that_need_them(model, expected) ->
 def test_compaction_happens_only_at_the_high_water_mark_and_keeps_tool_pairs(
     monkeypatch,
 ) -> None:
-    # An 8,000-token window gives a 4,800-token high-water mark (60%, below the 96,000-token
-    # working set); each read adds about 1,500 tokens, so the fourth request compacts.
+    # A 20,800-token window with the growth reserve suppressed holds 4,800 tokens once the
+    # 16,000-token output cap is set aside, so the high-water mark is the readable 4,800 this
+    # scenario was written around; each read adds about 1,500 tokens and the fourth request
+    # compacts.
+    monkeypatch.setattr(runtime_module, "TURN_GROWTH_RESERVE_TOKENS", 0)
     turns = [tools_turn(call(f"r{index}", "read", {"path": f"f{index}"})) for index in range(4)]
     handoff = final_turn("Objective: finish.\nNext steps: read f6.")
     turns.insert(3, handoff)
@@ -540,10 +543,11 @@ def test_compaction_happens_only_at_the_high_water_mark_and_keeps_tool_pairs(
         monkeypatch,
         [*turns, final_turn()],
         executor=ScriptedExecutor(read_bytes=6_000),
-        request=make_request(context_limit_tokens=8_000),
+        request=make_request(context_limit_tokens=20_800),
     )
     compactions = [payload for kind, payload in events if kind == "context.compacted"]
     assert len(compactions) == 1 and compactions[0]["method"] == "summary"
+    assert compactions[0]["high_water_tokens"] == 4_800
     assert compactions[0]["tokens_after"] < compactions[0]["tokens_before"]
     summary_request = provider.payloads[3]
     assert summary_request["tool_choice"] == "none"
@@ -561,13 +565,14 @@ def test_compaction_happens_only_at_the_high_water_mark_and_keeps_tool_pairs(
 
 
 def test_a_failed_summary_turn_falls_back_to_deterministic_compaction(monkeypatch) -> None:
+    monkeypatch.setattr(runtime_module, "TURN_GROWTH_RESERVE_TOKENS", 0)
     turns = [tools_turn(call(f"r{index}", "read", {"path": f"f{index}"})) for index in range(4)]
     turns.insert(3, ProviderError("provider.agent_error", "context too long", retryable=False))
     _provider, events, _saved, _runtime = run(
         monkeypatch,
         [*turns, final_turn()],
         executor=ScriptedExecutor(read_bytes=6_000),
-        request=make_request(context_limit_tokens=8_000),
+        request=make_request(context_limit_tokens=20_800),
     )
     compactions = [payload for kind, payload in events if kind == "context.compacted"]
     assert compactions and compactions[0]["method"] == "deterministic"

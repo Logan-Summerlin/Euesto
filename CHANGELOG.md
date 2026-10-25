@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased — larger context windows and a synthesis that cannot be lost
+
+Implements [docs/CONTEXT_LIMIT_PLAN.md](docs/CONTEXT_LIMIT_PLAN.md) and [docs/INVESTIGATE_REPOSITORY_SUMMARY_PLAN.md](docs/INVESTIGATE_REPOSITORY_SUMMARY_PLAN.md). The tool surface, approval tiers, and sandbox are unchanged.
+
+**Context**
+
+- The `coding` working set is 150,000 tokens (240,000 and 400,000 for `extended-coding` and `large-coding`), up from 96,000 / 160,000 / 256,000.
+- Compaction triggers at the smallest of the profile cap, 75% of the prompt budget (`HIGH_WATER_WINDOW_SHARE`, up from 0.6), and the room left after one output turn plus a 32,000-token growth reserve, with a 4,000-token floor. On a 128k window that is deliberately lower than before (54,400 vs 61,440): one maximum-size `read` plus a full output turn can no longer overrun the window.
+- The default `context_limit_tokens` is 160,000 (a 200k-class window) instead of 100,000, in `shared/requests.py` and `GatewayClient.stream_agent`. Result caps and cost budgets are unchanged.
+
+**`investigate_repository`**
+
+- A summary the model already paid for is returned even when charging it crosses the parent's remaining budget (`parent_budget_exceeded: true`); the parent loop then stops at its own limit.
+- The synthesis reserve follows the context it has to send (60 seconds plus one second per 2,500 nested tokens) and the synthesis turn gets the wall time left after it, so a retry cannot spend the wall clock twice.
+- An executor failure mid-loop is answered in-loop as `investigation.executor_unavailable`, journaled as `subagent.executor_error`; the investigation still synthesizes.
+- Every degraded or failed call returns a digest: a specific `stop_cause` (`tool_calls`, `iterations`, `cost`, `wall_time`, `evidence_limit`, `empty_answer`, `provider_error`), the files it examined, the paths it listed but never read, and the next `read` to run.
+- Every payload carries `stop_reason`, `stop_cause`, `budget_exhausted`, `degraded`, and `parent_budget_exceeded`; failures add `error_code` (`investigation.failed`, `investigation.executor_unavailable`, `investigation.call_limit`) and a non-empty summary.
+
 ## Unreleased — CI validation hardening
 
 Implements all four phases of [docs/CI_VALIDATION_REMEDIATION_PLAN.md](docs/CI_VALIDATION_REMEDIATION_PLAN.md). The public tool surface, approval tiers, and the executor/runner sandbox are unchanged: this is CI, the validation harness, and the test suite only.

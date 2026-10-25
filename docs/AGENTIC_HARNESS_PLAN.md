@@ -504,10 +504,10 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 1.3 Compaction as rare, planned events (C6, E1, E2), size M
 
-- **Status:** implemented (working sets 96,000 / 160,000 / 256,000 tokens; 2,500-token handoff).
+- **Status:** implemented (working sets 150,000 / 240,000 / 400,000 tokens; 2,500-token handoff).
 - **Change:**
-  - **High-water mark:** compact when the context reaches the smaller of 60% of the window and the profile's working-set cap. The window limit stays a hard ceiling.
-    - Proposed caps: 96,000 tokens for `coding`, larger for `extended-coding` and `large-coding`.
+  - **High-water mark:** compact when the context reaches the smallest of the profile's working-set cap, 75% of the request's prompt budget, and the room left after one output turn plus a 32,000-token growth reserve. The window limit stays a hard ceiling.
+    - Caps: 150,000 tokens for `coding`, 240,000 for `extended-coding`, 400,000 for `large-coding`.
     - This replaces today's threshold of 64% of the window, which lets a 1M-token model carry about 640,000 tokens per turn.
   - **Summary turn:** append one tool-free summary turn to the current history.
     - It uses the same model, the same tool list, and `tool_choice: "none"`, so the whole request is a cache hit and only the handoff is new output. A cheaper summarizer model would start from a cold cache.
@@ -524,7 +524,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
   - **Fallback:** if the summary turn fails, apply today's deterministic rules, but once per event, down to the low-water mark.
   - **Journal:** record `context.compacted` with token counts before and after, and the cost of the summary turn.
 - **Worked example (`coding` profile):**
-  - **Setup:** the static prefix and session context total 10,000 tokens. Compaction runs at 96,000 tokens and returns to 32,000. Each turn adds about 1,500 new tokens: the previous reply plus lean results (1.4).
+  - **Setup:** the static prefix and session context total 10,000 tokens. Compaction runs at 150,000 tokens and returns to 50,000. Each turn adds about 1,500 new tokens: the previous reply plus lean results (1.4).
   - **One compaction cycle:** about 43 turns, averaging 64,000 prompt tokens, for about 2.75 million prompt tokens.
   - **Misses:** about 65,000 new tokens, plus about 22,000 from re-reading the handoff and recent exchanges after compaction.
   - **Result:** about 97% cached.
