@@ -58,7 +58,7 @@ RUNTIME_SETTINGS_KEY = "runtime_settings"
 RUNNER_SETTING_FIELDS = ("runner_target", "cpus", "memory_gb", "pids", "git_history_depth")
 MAX_UNREDACTED_PATHS = 50
 CONTEXT_COMPACTION_KEY = "context_compaction_share"
-# A percentage of the model's window; the gateway still clamps the resulting mark.
+# A percentage of the model's window; the gateway still clamps the resulting mark to its limit.
 COMPACTION_SHARE_RANGE = (10, 60)
 RETENTION_DAYS_KEY = "staged_session_retention_days"
 RETENTION_DAYS_RANGE = (1, 365)
