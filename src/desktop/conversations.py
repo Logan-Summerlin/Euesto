@@ -6,7 +6,11 @@ from typing import Any
 from PySide6.QtCore import QObject, QTimer, QUrl
 
 from ..context_utils import compact_messages, context_source, estimate_tokens
-from ..controllers import ConversationController
+from ..controllers import (
+    CONTEXT_WINDOW_SHARE,
+    ConversationController,
+    compaction_threshold_tokens,
+)
 from ..import_export import ImportExportError, export_to_file, import_from_file
 from ..markdown_renderer import render_markdown
 from ..models import DEFAULT_MODELS, Conversation, model_context_length, usage_labels
@@ -243,13 +247,13 @@ class ConversationService(QObject):
         conversation = self.current()
         if not conversation:
             return
-        limit = max(
-            4_000,
-            int(
-                model_context_length(conversation.model, self.host.settings.catalog.models())
-                * 0.4
-            ),
+        # Manual compaction targets half the configured threshold; Automatic (no share) is half
+        # the submission limit, which is today's 40% of the window.
+        threshold = self._compaction_threshold(conversation.model)
+        base = (
+            threshold if threshold is not None else self._submission_limit(conversation.model)
         )
+        limit = max(4_000, int(base * 0.5))
         _context, summary, covered = compact_messages(
             context_source(
                 conversation.system_prompt, self.storage.list_messages(conversation.id)
@@ -266,15 +270,25 @@ class ConversationService(QObject):
         )
         self.host.set_status(f"Compacted {len(covered)} older message(s)")
 
+    def _submission_limit(self, model: str) -> int:
+        window = model_context_length(model, self.host.settings.catalog.models())
+        return int(window * CONTEXT_WINDOW_SHARE)
+
+    def _compaction_threshold(self, model: str) -> int | None:
+        window = model_context_length(model, self.host.settings.catalog.models())
+        return compaction_threshold_tokens(
+            window, self.host.settings.context_compaction_share()
+        )
+
     def inspect_context(self) -> None:
         conversation = self.current()
         if not conversation:
             return
         messages = self.storage.list_messages(conversation.id)
         estimate = sum(estimate_tokens(item.content) for item in messages)
-        limit = int(
-            model_context_length(conversation.model, self.host.settings.catalog.models()) * 0.8
-        )
+        limit = self._submission_limit(conversation.model)
+        threshold = self._compaction_threshold(conversation.model)
+        threshold_text = f"{threshold:,} tokens" if threshold is not None else "Automatic"
         compactions = self.storage.list_compactions(conversation.id)
         latest = compactions[-1]["summary"] if compactions else "No saved compaction."
         self.host.infoRequested.emit(
@@ -282,6 +296,7 @@ class ConversationService(QObject):
             f"Active branch: {len(messages)} messages\n"
             f"Estimated text tokens: {estimate:,}\n"
             f"Submission limit: {limit:,}\n"
+            f"Compaction threshold: {threshold_text}\n"
             f"Saved compactions: {len(compactions)}\n\n"
             f"{str(latest)[:6000]}",
         )

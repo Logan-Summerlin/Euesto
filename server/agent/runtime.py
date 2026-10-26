@@ -14,7 +14,7 @@ from typing import Any
 from server.executor import ExecutorClient
 from server.extensions.skills import render_skill_context
 from server.openrouter.agent import AgentTurn, agent_turn, tool_schemas
-from server.openrouter.errors import ProviderError
+from server.openrouter.errors import REASONING_EFFORT_REJECTED, ProviderError
 from shared.investigation import INVESTIGATION_CALL_LIMIT, InvestigationResult
 from shared.permissions import (
     PermissionDecision,
@@ -25,7 +25,7 @@ from shared.permissions import (
     resolve_permission,
     rule_scope,
 )
-from shared.requests import AgentRunRequest
+from shared.requests import AgentRunRequest, reasoning_fallback, reasoning_payload_effort
 from shared.tools import (
     MUTATION_TOOLS,
     PARALLEL_SAFE_TOOLS,
@@ -156,6 +156,8 @@ class RunState:
     streamed_turns: int = 0
     seen_results: set[str] = field(default_factory=set)
     failures: dict[str, int] = field(default_factory=dict)
+    # The selection sent on this run's turns; a provider rejection steps it down (3.2).
+    effort: str | None = None
 
 
 class _DeltaJournal:
@@ -299,6 +301,8 @@ class AgentRuntime:
                     "approval_policy": request.approval_policy,
                     "network_mode": request.network_mode,
                     "network": state.network,
+                    "reasoning_effort": reasoning_payload_effort(state.effort),
+                    "compaction_threshold_tokens": _high_water(request, profile),
                     "prompt_version": PROMPT_VERSION,
                     "budget": budget.snapshot(),
                     "plan": state.plan.to_dict() if not state.plan.empty else None,
@@ -398,6 +402,7 @@ class AgentRuntime:
             PlanState.from_dict(self.plan_loader(plan_key)),
             plan_key,
             shape,
+            effort=request.reasoning_effort,
         )
 
     # -- layout --------------------------------------------------------------------------------
@@ -540,7 +545,7 @@ class AgentRuntime:
                         api_key,
                         messages,
                         max_tokens=profile.max_output_tokens,
-                        reasoning_effort=request.reasoning_effort,
+                        reasoning_effort=state.effort,
                         stream=True,
                     )
                 except ProviderError as exc:
@@ -809,6 +814,7 @@ class AgentRuntime:
         state = self._get_state(run_id, request)
         profile = resolve_budget_profile(request.budget_profile)
         delay = RETRY_BASE_DELAY
+        stepped = False
         for attempt in range(1, PROVIDER_ATTEMPTS + 1):
             if stream and attempt == 1:
                 state.streamed_turns += 1
@@ -839,6 +845,27 @@ class AgentRuntime:
                     await deltas.flush()
                 return turn
             except ProviderError as exc:
+                lower = reasoning_fallback(reasoning_effort)
+                if (
+                    exc.code == REASONING_EFFORT_REJECTED
+                    and lower is not None
+                    and not stepped
+                    and attempt < PROVIDER_ATTEMPTS
+                ):
+                    # Retry once a level down; the lower level holds for the rest of the run.
+                    stepped = True
+                    await self.append(
+                        run_id,
+                        "reasoning.effort_clamped",
+                        {
+                            "requested": reasoning_payload_effort(reasoning_effort),
+                            "sent": reasoning_payload_effort(lower),
+                            "selection": lower,
+                            "message": str(exc)[:500],
+                        },
+                    )
+                    reasoning_effort = state.effort = lower
+                    continue
                 if not exc.retryable or attempt == PROVIDER_ATTEMPTS:
                     raise
                 wait = delay * random.uniform(0.5, 1.5)
@@ -1672,8 +1699,9 @@ def _high_water(request: AgentRunRequest, profile: BudgetProfile) -> int:
     capacity = (
         request.context_limit_tokens - profile.max_output_tokens - TURN_GROWTH_RESERVE_TOKENS
     )
+    threshold = request.compaction_threshold_tokens
     high = min(
-        profile.working_set_tokens,
+        profile.working_set_tokens if threshold is None else threshold,
         int(request.context_limit_tokens * HIGH_WATER_WINDOW_SHARE),
         capacity,
     )

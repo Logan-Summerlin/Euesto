@@ -321,9 +321,11 @@ class GatewayClient:
         workspace_config: dict[str, Any] | None = None,
         investigation_model_id: str | None = None,
         provider_preferences: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
+        compaction_threshold_tokens: int | None = None,
     ) -> Iterator[EventEnvelope]:
         self.configure_openrouter_key(api_key)
-        payload = {
+        payload: dict[str, Any] = {
             "model": model,
             "messages": _public_messages(messages),
             "mode": mode,
@@ -337,6 +339,10 @@ class GatewayClient:
             "investigation_model_id": investigation_model_id,
             "provider_preferences": dict(provider_preferences or {}),
         }
+        if reasoning_effort:
+            payload["reasoning_effort"] = reasoning_effort
+        if compaction_threshold_tokens is not None:
+            payload["compaction_threshold_tokens"] = compaction_threshold_tokens
         run_id = str(
             self._send("POST", "/v1/runs", timeout=15, json=payload).json().get("run_id") or ""
         )

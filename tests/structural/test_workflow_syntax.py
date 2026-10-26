@@ -490,12 +490,13 @@ SCAN_WORKFLOW = "vulnerability-scan.yml"
 
 
 def test_the_build_and_scan_workflows_run_before_merge() -> None:
-    """Both must run from a branch and from a pull request, not only after a merge.
+    """Both must run from a pull request; the scan also runs on branch pushes.
 
     GitHub only lists a workflow and offers it to `workflow_dispatch` once the file is on the
-    default branch, so a new workflow is otherwise unexercisable until it is merged. A push to
-    a branch and a pull request both use the workflow file from that commit, which is what
-    makes the first run possible.
+    default branch, so a new workflow is otherwise unexercisable until it is merged. A pull
+    request uses the workflow file from that commit, which is what makes the first run possible.
+    The release build does not run on branch pushes; it runs on pull requests, `v*` tags, and
+    by hand.
     """
     problems = []
     for filename in (SCAN_WORKFLOW, "release.yml"):
@@ -510,8 +511,12 @@ def test_the_build_and_scan_workflows_run_before_merge() -> None:
         if "pull_request" not in triggers:
             problems.append(f"{filename}: a pull request must run it")
         push = triggers.get("push")
-        if not isinstance(push, dict) or not _as_list(push.get("branches")):
-            problems.append(f"{filename}: a branch push must run it")
+        if filename == SCAN_WORKFLOW:
+            branch_push = isinstance(push, dict) and _as_list(push.get("branches"))
+            if not branch_push:
+                problems.append(f"{filename}: a branch push must run it")
+        if filename == "release.yml" and isinstance(push, dict) and "branches" in push:
+            problems.append(f"{filename}: commit pushes must not start the release build")
         if "workflow_dispatch" not in triggers:
             problems.append(f"{filename}: keep workflow_dispatch")
     assert not problems, problems

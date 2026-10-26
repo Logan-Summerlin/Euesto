@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased — context compaction threshold
+
+Implements Phase 1 of [docs/MODEL_CONTROLS_PLAN.md](docs/MODEL_CONTROLS_PLAN.md). No tool, permission, or sandbox behaviour changes.
+
+- Settings → Conversation has a *Compact context at* control (10–60% of the model's window) with an *Automatic* default that reproduces today's numbers.
+- The gateway accepts an optional `compaction_threshold_tokens` on agent runs (4,000–2,000,000). The high water is the smallest of the profile cap, the threshold, 75% of the prompt budget, and the capacity bound, with a 4,000-token floor. `run.started` records the resolved mark.
+- Chat compaction and manual compaction follow the same setting; context inspection reports the configured limit and threshold.
+
+## Unreleased — thinking levels
+
+Implements Phase 3 of [docs/MODEL_CONTROLS_PLAN.md](docs/MODEL_CONTROLS_PLAN.md). The tool surface, approval tiers, and sandbox are unchanged.
+
+- The thinking control offers Default, Low, Medium, High, Extra high, and Max. `minimal` is removed; a stored `minimal` loads as Low.
+- Extra high sends `reasoning.effort: "xhigh"` and Max sends `"max"`. The mapping and the fallback chain (`max` → `extra_high` → `high`) live in `shared/requests.py`.
+- Agent runs now send the thinking level (previously they never sent one). Chat and agent requests send it only for models that list `reasoning`; the control is greyed out for other models and keeps the stored choice.
+- A provider 400 that names the effort retries once one level down, journals `reasoning.effort_clamped`, and holds for the rest of the run. A second rejection fails the run with the provider error.
+- The run journal's `run.started` records the effort sent.
+
 ## Unreleased — documentation rationalized
 
 - `AGENTS.md`, `README.md`, `docs/ARCHITECTURE.md`, and `docs/TESTING.md` rewritten to state only what each owns; the duplicated repository map, command lists, and CI minutiae were removed and now link to their single authoritative home.

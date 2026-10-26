@@ -56,7 +56,7 @@ The gateway owns one versioned system prompt per mode (`server/agent/prompts.py`
 
 - **Result bounds:** each tool result is bounded on its own; a shortened result emits `tool.result_bounded`. Results are lean plain text (`server/agent/results.py`).
 - **Full output:** every Bash command's complete output is written to `.euesto-output/` in staging (never published) and named in the result. Test, lint, and compiler output leads with a structured summary.
-- **Compaction:** runs only at a high-water mark derived from the profile's working-set cap, the request budget, and the remaining window. The model writes a structured handoff; a deterministic summary is the fallback. Journaled as `context.compacted`.
+- **Compaction:** runs only at a high-water mark derived from the profile's working-set cap, the request budget, and the remaining window. The high water is the smallest of the profile cap, the user's compaction threshold (when set, sent as `compaction_threshold_tokens`), and the request-derived bounds. The model writes a structured handoff; a deterministic summary is the fallback. Journaled as `context.compacted`.
 - **Retries and pauses:** retryable provider failures are retried with jittered backoff. A final failure pauses the run (`provider_error`) so it can be resumed.
 - **Budget wind-down:** at 85% of any budget the agent is asked to wrap up. When a budget is exhausted, a tool-free summary turn runs from a reserved slice, and the run pauses (`budget` or `no_progress`). The user can continue with a fresh budget of the same profile.
 - **Redaction:** every tool result is scanned for high-confidence secrets before it enters history (`server/agent/redaction.py`, patterns in `shared/secret_scan.py`).

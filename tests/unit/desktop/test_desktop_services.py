@@ -326,6 +326,44 @@ def test_settings_preferences_round_trip(host, storage) -> None:
     assert host.statuses[-1] == "Model and privacy controls saved"
 
 
+def test_a_stored_minimal_loads_as_low_and_every_level_round_trips(host, storage) -> None:
+    settings = SettingsService(host, storage)
+    storage.set_setting("model_options:vendor/model", '{"reasoning_effort": "minimal"}')
+    assert settings.request_options("vendor/model").reasoning_effort == "low"
+    for level in ("low", "medium", "high", "extra_high", "max"):
+        settings.set_reasoning_effort("vendor/model", level)
+        assert settings.request_options("vendor/model").reasoning_effort == level
+    settings.set_reasoning_effort("vendor/model", "default")
+    assert settings.request_options("vendor/model").reasoning_effort is None
+
+
+def test_the_thinking_control_offers_five_levels_with_their_wire_values(host, storage) -> None:
+    levels = SettingsService(host, storage).reasoning_levels()
+    assert [item["value"] for item in levels] == [
+        "default",
+        "low",
+        "medium",
+        "high",
+        "extra_high",
+        "max",
+    ]
+    assert [item["wire"] for item in levels] == ["", "low", "medium", "high", "xhigh", "max"]
+    assert [item["text"] for item in levels] == [
+        "Default",
+        "Low",
+        "Medium",
+        "High",
+        "Extra high",
+        "Max",
+    ]
+
+
+def test_reasoning_support_follows_the_catalog(host, storage) -> None:
+    settings = SettingsService(host, storage)
+    assert settings.reasoning_supported("xiaomi/mimo-v2.5")
+    assert not settings.reasoning_supported("vendor/plain-model")
+
+
 def test_settings_toggle_favorite_model_round_trips(host, storage) -> None:
     settings = SettingsService(host, storage)
     settings.toggle_favorite_model("vendor/model")
@@ -1136,3 +1174,83 @@ def test_review_selection_publishes_only_the_selected_paths(host, staging) -> No
     assert calls[-1] == ("publish", ("src/a.py",)) and host.statuses[-1].startswith("Select")
     service.close_review()
     assert service.review_view() == {"open": False}
+
+
+# -- context compaction threshold (MODEL_CONTROLS_PLAN 1.5) -----------------------------------
+
+
+def _large_window_catalog() -> SimpleNamespace:
+    from src.models import ModelOption
+
+    model = ModelOption("vendor/big", "Big", context_length=1_048_576)
+    return SimpleNamespace(is_stale=lambda: False, models=lambda: [model])
+
+
+def test_the_context_compaction_share_is_validated_saved_and_viewed(host, storage) -> None:
+    settings = SettingsService(host, storage, catalog=_large_window_catalog())
+    assert settings.context_compaction_share() is None
+    assert settings.context_compaction_view("vendor/big") == {
+        "share": 0,
+        "automatic": True,
+        "windowTokens": 1_048_576,
+        "resolvedTokens": 0,
+    }
+
+    assert settings.save_context_compaction_share(30)
+    assert settings.context_compaction_share() == 30
+    assert settings.context_compaction_view("vendor/big") == {
+        "share": 30,
+        "automatic": False,
+        "windowTokens": 1_048_576,
+        "resolvedTokens": 314_572,
+    }
+
+    # Out-of-range and non-integer input is refused with an error, not clamped.
+    for bad in (9, 61, True, 30.5, "junk"):
+        assert not settings.save_context_compaction_share(bad), bad
+        assert host.errorRequested.calls[-1][0] == "Invalid compaction threshold"
+    assert settings.context_compaction_share() == 30  # unchanged
+
+    # A stored value outside the range, or unreadable, loads as Automatic.
+    storage.set_setting("context_compaction_share", "99")
+    assert settings.context_compaction_share() is None
+    storage.set_setting("context_compaction_share", "junk")
+    assert settings.context_compaction_share() is None
+
+    assert settings.save_context_compaction_share(None)
+    assert storage.get_setting("context_compaction_share") == ""
+    assert settings.context_compaction_share() is None
+
+
+def test_manual_compaction_and_inspection_follow_the_saved_threshold(
+    host, storage, monkeypatch
+) -> None:
+    from src.desktop import conversations as conversations_module
+
+    settings = SettingsService(host, storage, catalog=_large_window_catalog())
+    host.settings = settings
+    conversation = storage.create_conversation("Chat", "vendor/big", "System")
+    storage.add_message(conversation.id, "user", "Question")
+    history = ConversationService(host, storage)
+    host.history = history
+    history.load(select_id=conversation.id)
+
+    targets: list[int] = []
+
+    def record(messages, limit):
+        targets.append(limit)
+        return messages, "", []
+
+    monkeypatch.setattr(conversations_module, "compact_messages", record)
+    history.compact_context()
+    assert targets == [419_430]  # Automatic: half of the 80% submission limit, as before
+
+    settings.save_context_compaction_share(30)
+    history.compact_context()
+    assert targets[-1] == 157_286  # half of the configured 30% threshold
+
+    history.inspect_context()
+    title, text = host.infoRequested.calls[-1][:2]
+    assert title == "Context inspection"
+    assert "Submission limit: 838,860" in text
+    assert "Compaction threshold: 314,572 tokens" in text

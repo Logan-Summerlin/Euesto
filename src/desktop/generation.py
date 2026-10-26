@@ -376,7 +376,11 @@ class GenerationService(QObject):
             return
         settings = self.host.settings
         prepared = self.controller.prepare(
-            conversation, context_messages, model, settings.catalog.models()
+            conversation,
+            context_messages,
+            model,
+            settings.catalog.models(),
+            settings.context_compaction_share(),
         )
         self.controller.begin(conversation.id, parent_message_id, model, self.mode)
         self.live_events = []
@@ -418,10 +422,15 @@ class GenerationService(QObject):
                 network_mode=self.network_mode(),
                 session_id=conversation.id,
                 context_limit_tokens=prepared.context_limit,
+                compaction_threshold_tokens=prepared.compaction_threshold,
                 skills=skills,
                 workspace_config=config,
                 provider_preferences=privacy,
                 investigation_model_id=settings.investigation_model or None,
+                # Sent only where the model takes reasoning, as the chat path does (3.3).
+                reasoning_effort=options.reasoning_effort
+                if "reasoning" in prepared.supported_parameters
+                else None,
             )
             worker.eventReceived.connect(self.on_agent_event)
         self._attach(worker)

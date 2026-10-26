@@ -174,11 +174,26 @@ ApplicationWindow {
                     }
 
                     ComboBox {
-                        model: ["default", "minimal", "low", "medium", "high"]
-                        currentIndex: Math.max(0, model.indexOf(backend.reasoningEffort))
-                        displayText: "Think: " + currentText.charAt(0).toUpperCase() + currentText.slice(1)
-                        onActivated: backend.setReasoningEffort(currentText)
-                        enabled: !backend.generating
+                        id: reasoningCombo
+                        model: backend.reasoningLevels
+                        textRole: "text"
+                        valueRole: "value"
+                        currentIndex: Math.max(0, indexOfValue(backend.reasoningEffort))
+                        displayText: "Think: " + currentText
+                        onActivated: backend.setReasoningEffort(currentValue)
+                        // A model without reasoning keeps its stored choice, greyed out.
+                        enabled: !backend.generating && backend.reasoningSupported
+                        opacity: backend.reasoningSupported ? 1 : 0.5
+                        hoverEnabled: true
+                        ToolTip.visible: hovered
+                        ToolTip.text: {
+                            const level = backend.reasoningLevels[currentIndex]
+                            if (!backend.reasoningSupported)
+                                return "This model does not take a reasoning setting."
+                            return level && level.wire
+                                ? "Sends reasoning.effort: " + level.wire
+                                : "Sends no reasoning setting; the provider's default applies."
+                        }
                     }
 
                     Item { Layout.fillWidth: true }
@@ -443,8 +458,11 @@ ApplicationWindow {
                             Item { Layout.fillWidth: true }
                             Label {
                                 text: modelData.price === null || modelData.price === undefined
-                                    ? "" : "$" + Number(modelData.price).toFixed(3) + "/M avg"
+                                    ? "" : "$" + Number(modelData.price).toFixed(3) + "/M est."
                                 color: window.mutedColor
+                                HoverHandler { id: priceHover }
+                                ToolTip.visible: priceHover.hovered
+                                ToolTip.text: "Estimated at 95% input, 5% output, 95% cache hits"
                             }
                         }
                         Label {
@@ -534,6 +552,9 @@ ApplicationWindow {
             stopSequences.text = (options.stop || []).join("\n")
             privacyDeny.checked = options.data_collection !== "allow"
             zdr.checked = options.zero_data_retention === true
+            let threshold = backend.contextThreshold
+            compactionAuto.checked = threshold.automatic === true
+            compactionShare.value = threshold.share > 0 ? threshold.share : 50
             let runner = backend.runtimeSettings
             runnerTarget.currentIndex = Math.max(0, runnerTarget.model.indexOf(runner.runnerTarget))
             runnerCpus.text = runner.cpus ? String(runner.cpus) : ""
@@ -690,6 +711,44 @@ ApplicationWindow {
                         Button {
                             text: "Save model controls"
                             onClicked: settingsDialog.saveModelOptions()
+                        }
+                        Label { text: "Context compaction"; font.pixelSize: 16; font.weight: Font.DemiBold }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Label { text: "Compact context at" }
+                            SpinBox {
+                                id: compactionShare
+                                objectName: "compactionShare"
+                                from: 10
+                                to: 60
+                                stepSize: 5
+                                editable: true
+                                enabled: !compactionAuto.checked
+                                textFromValue: function(value) { return value + "%" }
+                                valueFromText: function(text) { return parseInt(text) || 10 }
+                                ToolTip.visible: hovered
+                                ToolTip.text: "Share of the model's context window at which compaction starts"
+                            }
+                            CheckBox {
+                                id: compactionAuto
+                                objectName: "compactionAutomatic"
+                                text: "Automatic"
+                            }
+                            Button {
+                                text: "Save context threshold"
+                                onClicked: backend.saveContextCompactionShare(compactionAuto.checked ? 0 : compactionShare.value)
+                            }
+                        }
+                        Label {
+                            objectName: "compactionHelp"
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            color: window.mutedColor
+                            text: backend.contextThreshold.automatic
+                                ? "Automatic: compaction starts at the profile's working-set cap, never above 75% of the model's window."
+                                : "About " + String(Math.round(backend.contextThreshold.resolvedTokens)).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+                                    + " tokens of a " + String(Math.round(backend.contextThreshold.windowTokens)).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+                                    + "-token window for the current model. Runs never exceed 75% of the window."
                         }
                         RowLayout {
                             Button { text: backend.theme === "dark" ? "Use light theme" : "Use dark theme"; onClicked: backend.setTheme(backend.theme === "dark" ? "light" : "dark") }

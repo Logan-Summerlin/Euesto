@@ -77,7 +77,7 @@ A command past its deadline has its whole process tree killed (`SIGTERM` then `S
 - `Validate local gateway` (`.github/workflows/test-containers.yml`) runs one job per group: `fast` (collect, fast, ruff, compile), `slow` (collect, slow), `qml` (qml, qml-smoke), and `containers` (docker). A hang in one group cannot cancel the others. Branch protection must require these four job names.
 - `Build Windows release` (`.github/workflows/release.yml`) runs the same tiers inside `build-windows`. It publishes only on a `v*` tag or a manual dispatch.
 - Every validation step runs through `scripts/validation-step.sh`, which writes a log under `validation-logs/`, sends heartbeats, and uploads the logs as an artifact even on failure.
-- GitHub lists a workflow only once its file is on the default branch. The build workflows also declare `pull_request` and branch `push` filters, and neither writes on those events.
+- GitHub lists a workflow only once its file is on the default branch. The build workflows also declare `pull_request` filters, and neither writes on those events. `Build Windows release` declares no branch `push` filter, so commit pushes do not start it.
 - `tests/structural/test_workflow_syntax.py` and `test_workflow_budgets.py` enforce valid YAML and workflow keys, a `name`, the deadline arithmetic, the logging wrapper, and the absence of security assertions in YAML. Keep them passing before pushing.
 
 ## Policies

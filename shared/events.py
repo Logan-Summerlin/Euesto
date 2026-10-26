@@ -19,6 +19,7 @@ EVENT_TYPES = frozenset(
         "model.completed",
         "model.failed",
         "model.retry",
+        "reasoning.effort_clamped",
         "model.narration",
         "model.stream",
         "plan.updated",

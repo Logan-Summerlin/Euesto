@@ -7,6 +7,8 @@ must hold at every window size and profile.
 
 from __future__ import annotations
 
+import pytest
+
 from server.agent import runtime as runtime_module
 from server.agent.budgets import BUDGET_PROFILES, BudgetProfile
 from server.agent.context import estimate_message_tokens
@@ -161,3 +163,79 @@ def test_the_default_prompt_budget_is_the_200k_class_window() -> None:
     legacy = {key: value for key, value in request.to_dict().items()}
     legacy.pop("context_limit_tokens")
     assert AgentRunRequest.from_dict(legacy).context_limit_tokens == 160_000
+
+
+# -- user compaction threshold (MODEL_CONTROLS_PLAN 1.5) -----------------------------------
+
+
+def request_with_threshold(window: int, threshold: int | None) -> AgentRunRequest:
+    return AgentRunRequest(
+        model="openai/test-model",
+        messages=({"role": "user", "content": "do the task"},),
+        mode="agent",
+        workspace_id="workspace",
+        approval_policy="auto",
+        session_id="session-1",
+        context_limit_tokens=int(window * 0.8),
+        compaction_threshold_tokens=threshold,
+    )
+
+
+def test_a_user_threshold_above_the_profile_cap_binds_on_a_large_window() -> None:
+    # 240,000 is above the coding cap of 150,000, so the setting is what moves the mark.
+    request = request_with_threshold(1_048_576, 240_000)
+    assert runtime_module._high_water(request, CODING) == 240_000
+
+
+def test_a_user_threshold_is_clamped_by_the_share_of_the_budget() -> None:
+    request = request_with_threshold(1_048_576, 700_000)
+    limit = request.context_limit_tokens  # 838,860
+    high = runtime_module._high_water(request, CODING)
+    share = int(limit * runtime_module.HIGH_WATER_WINDOW_SHARE)
+    capacity = limit - CODING.max_output_tokens - runtime_module.TURN_GROWTH_RESERVE_TOKENS
+    assert high == min(700_000, share, capacity) == share == 629_145
+    assert high + CODING.max_output_tokens + runtime_module.TURN_GROWTH_RESERVE_TOKENS <= limit
+
+
+def test_a_user_threshold_on_a_small_window_stays_capacity_bound() -> None:
+    request = request_with_threshold(128_000, 200_000)
+    assert request.context_limit_tokens == 102_400
+    assert runtime_module._high_water(request, CODING) == 54_400
+
+
+def test_the_mark_never_reaches_the_safety_clamp_with_a_threshold_set() -> None:
+    reserve = runtime_module.TURN_GROWTH_RESERVE_TOKENS
+    for window in SHIPPED_WINDOWS:
+        for threshold in (4_000, 60_000, 300_000, 2_000_000):
+            request = request_with_threshold(window, threshold)
+            limit = request.context_limit_tokens
+            for profile in BUDGET_PROFILES.values():
+                high = runtime_module._high_water(request, profile)
+                assert high < limit * runtime_module.HARD_CEILING_WINDOW_SHARE, (
+                    window,
+                    threshold,
+                    profile.name,
+                )
+                assert high + profile.max_output_tokens + reserve <= limit or (
+                    high == runtime_module.MIN_HIGH_WATER_TOKENS
+                ), (window, threshold, profile.name, high)
+                assert high >= runtime_module.MIN_HIGH_WATER_TOKENS
+
+
+def test_the_threshold_round_trips_and_defaults_to_the_profile_cap() -> None:
+    request = request_with_threshold(1_048_576, 240_000)
+    data = request.to_dict()
+    assert data["compaction_threshold_tokens"] == 240_000
+    assert AgentRunRequest.from_dict(data).compaction_threshold_tokens == 240_000
+    # A snapshot without the field defaults to None, which is the profile cap.
+    legacy = dict(data)
+    legacy.pop("compaction_threshold_tokens")
+    restored = AgentRunRequest.from_dict(legacy)
+    assert restored.compaction_threshold_tokens is None
+    assert runtime_module._high_water(restored, CODING) == 150_000
+
+
+@pytest.mark.parametrize("bad", [3_999, 2_000_001, True, "240000"])
+def test_out_of_range_thresholds_are_rejected(bad) -> None:
+    with pytest.raises(ValueError, match="Compaction threshold"):
+        request_with_threshold(1_048_576, bad)

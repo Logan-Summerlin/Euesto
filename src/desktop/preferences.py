@@ -9,12 +9,18 @@ from typing import Any
 from PySide6.QtCore import QObject, Slot
 
 from shared.coercion import optional_float, optional_int, optional_string
-from shared.requests import DEFAULT_INVESTIGATION_MODEL, WORKSPACE_CONFIG_KEYS
+from shared.requests import (
+    DEFAULT_INVESTIGATION_MODEL,
+    REASONING_EFFORTS,
+    WORKSPACE_CONFIG_KEYS,
+    reasoning_payload_effort,
+)
 
+from ..controllers import compaction_threshold_tokens
 from ..extensions import available_skills
 from ..gateway_client import DEFAULT_GATEWAY_URL, GatewayClient, GatewayError
 from ..model_catalog import ModelCatalog, agent_capable, model_warnings, price_text
-from ..models import RequestOptions
+from ..models import RequestOptions, model_context_length
 from ..runtime_manager import (
     DEFAULT_GIT_HISTORY_DEPTH,
     DEFAULT_RETENTION_DAYS,
@@ -29,7 +35,13 @@ from ..workers import CatalogWorker
 from .host import BridgeHost
 
 SERVER_TOOLS = ("web_search", "web_fetch", "datetime")
-REASONING_EFFORTS = frozenset({"minimal", "low", "medium", "high"})
+REASONING_LABELS = {
+    "low": "Low",
+    "medium": "Medium",
+    "high": "High",
+    "extra_high": "Extra high",
+    "max": "Max",
+}
 BUILTIN_COMMANDS = (
     ("new", "Start a new conversation"),
     ("mode", "Switch Chat, Plan, or Agent mode"),
@@ -45,6 +57,9 @@ RUNTIME_SETTINGS_KEY = "runtime_settings"
 # What the runner settings form saves; network mode and policy fields are applied per start.
 RUNNER_SETTING_FIELDS = ("runner_target", "cpus", "memory_gb", "pids", "git_history_depth")
 MAX_UNREDACTED_PATHS = 50
+CONTEXT_COMPACTION_KEY = "context_compaction_share"
+# A percentage of the model's window; the gateway still clamps the resulting mark to its limit.
+COMPACTION_SHARE_RANGE = (10, 60)
 RETENTION_DAYS_KEY = "staged_session_retention_days"
 RETENTION_DAYS_RANGE = (1, 365)
 LEGACY_INVESTIGATION_DEFAULT = "deepseek/deepseek-chat-v3-0324"
@@ -54,7 +69,7 @@ INVESTIGATION_MODEL_ENTRY = {
     "label": "MiMo-V2.5",
     "description": "Xiaomi MiMo-V2.5",
     "contextLength": 1_000_000,
-    "price": 0.21,
+    "price": None,
     "rank": None,
     "year": 2026,
     "favorite": False,
@@ -82,6 +97,9 @@ def _saved_investigation_entry(model_id: str) -> dict[str, Any]:
 def _request_options(values: dict[str, Any]) -> RequestOptions:
     """Per-model request options from saved JSON or the QML options dialog."""
     effort = optional_string(values.get("reasoning_effort"))
+    # ``minimal`` was removed (3.2); a saved value loads as the closest remaining level.
+    if effort == "minimal":
+        effort = "low"
     stop = values.get("stop")
     return RequestOptions(
         max_tokens=optional_int(values.get("max_tokens")),
@@ -132,6 +150,53 @@ class SettingsService(QObject):
         if name in SERVER_TOOLS:
             self.storage.set_setting(f"server_tool:{name}", "1" if enabled else "0")
             self.host.settingsChanged.emit()
+
+    def context_compaction_share(self) -> int | None:
+        """The saved compaction threshold as a percentage of the window, or ``None`` for
+        Automatic. Anything unreadable or out of range loads as Automatic."""
+        value = optional_int(self.storage.get_setting(CONTEXT_COMPACTION_KEY))
+        if value is None or not COMPACTION_SHARE_RANGE[0] <= value <= COMPACTION_SHARE_RANGE[1]:
+            return None
+        return value
+
+    def save_context_compaction_share(self, share: int | None) -> bool:
+        """Save the threshold share, or Automatic for ``None``. Out-of-range input is rejected
+        with an error rather than clamped (as the runner settings are)."""
+        if share is None:
+            stored = ""
+        else:
+            low, high = COMPACTION_SHARE_RANGE
+            if (
+                isinstance(share, bool)
+                or not isinstance(share, int)
+                or not low <= share <= high
+            ):
+                self.host.errorRequested.emit(
+                    "Invalid compaction threshold",
+                    f"Enter a whole percentage from {low} to {high} of the model's window.",
+                )
+                return False
+            stored = str(share)
+        self.storage.set_setting(CONTEXT_COMPACTION_KEY, stored)
+        self.host.settingsChanged.emit()
+        self.host.set_status(
+            "Context compaction set to Automatic"
+            if share is None
+            else f"Context compaction threshold saved: {share}% of the model window"
+        )
+        return True
+
+    def context_compaction_view(self, model: str) -> dict[str, Any]:
+        """The Settings form's view: the requested threshold in tokens for ``model``'s window.
+        The gateway's effective mark (its profile cap) is journaled on the run, not shown here."""
+        share = self.context_compaction_share()
+        window = model_context_length(model, self.catalog.models())
+        return {
+            "share": share or 0,
+            "automatic": share is None,
+            "windowTokens": window,
+            "resolvedTokens": compaction_threshold_tokens(window, share) or 0,
+        }
 
     @property
     def investigation_model(self) -> str:
@@ -201,6 +266,26 @@ class SettingsService(QObject):
         options.reasoning_effort = effort if effort in REASONING_EFFORTS else None
         self._save_model_options(model, options)
 
+    def reasoning_levels(self) -> list[dict[str, str]]:
+        """The thinking control's choices: the stored token, its label, and the wire value."""
+        levels = [{"text": "Default", "value": "default", "wire": ""}]
+        for level in REASONING_EFFORTS[1:]:
+            levels.append(
+                {
+                    "text": REASONING_LABELS[level],
+                    "value": level,
+                    "wire": reasoning_payload_effort(level) or "",
+                }
+            )
+        return levels
+
+    def reasoning_supported(self, model: str) -> bool:
+        """Whether the model takes ``reasoning``; a stored choice is kept, only greyed out."""
+        return any(
+            item.id == model and "reasoning" in item.supported_parameters
+            for item in self.catalog.models()
+        )
+
     def save_model_options(self, model: str, values: dict[str, Any]) -> None:
         self._save_model_options(model, _request_options(values))
 
@@ -221,7 +306,7 @@ class SettingsService(QObject):
                 "label": model.label,
                 "description": model.description,
                 "contextLength": model.context_length,
-                "price": model.average_price_per_million,
+                "price": model.blended_price_per_million,
                 "rank": model.artificial_analysis_rank,
                 "year": model.release_year,
                 "favorite": model.id in favorites,
@@ -351,10 +436,8 @@ class SettingsService(QObject):
         if not workspace:
             self.skills = []
         else:
-            active = set(
-                self.storage.workspace_config(self.host.runtime.identity()).get("active_skills")
-                or ()
-            )
+            config = self.storage.workspace_config(self.host.runtime.identity())
+            active = set(config.get("active_skills") or ())
             self.skills = [
                 {
                     "name": skill.name,
@@ -560,7 +643,8 @@ class SettingsService(QObject):
 
     def delete_permission(self, rule_id: str) -> None:
         self._change_permission(
-            "Could not delete permission", lambda client: client.delete_permission_rule(rule_id)
+            "Could not delete permission",
+            lambda client: client.delete_permission_rule(rule_id),
         )
 
     def _change_permission(
@@ -598,7 +682,7 @@ def _runtime_settings(values: dict[str, Any]) -> RuntimeSettings:
         cpus=cpus or None,
         memory_gb=_whole(memory) or None,
         pids=DEFAULT_RUNNER_PIDS if pids in (None, "") else _whole(pids),
-        git_history_depth=(DEFAULT_GIT_HISTORY_DEPTH if depth in (None, "") else _whole(depth)),
+        git_history_depth=DEFAULT_GIT_HISTORY_DEPTH if depth in (None, "") else _whole(depth),
     )
 
 

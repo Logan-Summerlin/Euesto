@@ -10,7 +10,7 @@ from typing import Any
 import httpx
 
 from shared.coercion import optional_float, optional_int
-from shared.requests import ChatRequest
+from shared.requests import REASONING_EFFORT_PAYLOADS, ChatRequest, reasoning_payload_effort
 
 from .errors import ProviderError
 
@@ -122,8 +122,13 @@ def build_payload(request: ChatRequest) -> dict[str, Any]:
         and {"max_tokens", "max_completion_tokens"} & supported
     ):
         payload["max_tokens"] = max(1, int(options["max_tokens"]))
-    if options.get("reasoning_effort") and "reasoning" in supported:
-        payload["reasoning"] = {"effort": str(options["reasoning_effort"])}
+    effort = options.get("reasoning_effort")
+    # Only known selections are mapped; anything else is left to the provider's default.
+    wire_effort = (
+        reasoning_payload_effort(effort) if effort in REASONING_EFFORT_PAYLOADS else None
+    )
+    if wire_effort and "reasoning" in supported:
+        payload["reasoning"] = {"effort": wire_effort}
     if options.get("temperature") is not None and "temperature" in supported:
         payload["temperature"] = min(2.0, max(0.0, float(options["temperature"])))
     if options.get("top_p") is not None and "top_p" in supported:

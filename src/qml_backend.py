@@ -262,6 +262,14 @@ class DesktopBridge(QObject):
             or "default"
         )
 
+    @Property("QVariantList", notify=settingsChanged)
+    def reasoningLevels(self) -> list[dict[str, str]]:
+        return self.settings.reasoning_levels()
+
+    @Property(bool, notify=settingsChanged)
+    def reasoningSupported(self) -> bool:
+        return self.settings.reasoning_supported(self.history.current_model())
+
     @Property("QVariantMap", notify=settingsChanged)
     def modelOptions(self) -> dict[str, Any]:
         return asdict(self.settings.request_options(self.history.current_model()))
@@ -285,6 +293,15 @@ class DesktopBridge(QObject):
     @Property("QVariantList", notify=settingsChanged)
     def stagedSessions(self) -> list[dict[str, Any]]:
         return [dict(item) for item in self.runtime.staged_sessions]
+
+    @Property("QVariantMap", notify=settingsChanged)
+    def contextThreshold(self) -> dict[str, Any]:
+        return self.settings.context_compaction_view(self.history.current_model())
+
+    @Slot(int)
+    def saveContextCompactionShare(self, share: int) -> None:
+        """Save the threshold percentage; 0 selects Automatic."""
+        self.settings.save_context_compaction_share(share or None)
 
     @Slot("QVariantMap", result=bool)
     def saveRuntimeSettings(self, values: dict[str, Any]) -> bool:

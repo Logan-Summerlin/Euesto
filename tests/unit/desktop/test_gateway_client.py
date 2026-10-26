@@ -166,6 +166,42 @@ def test_steering_rebase_publication_and_notice_requests(monkeypatch) -> None:
     ]
 
 
+def _agent_run_body(monkeypatch, **kwargs) -> dict:
+    """The body ``stream_agent`` posts to ``/v1/runs``; the event stream is never opened."""
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/runs":
+            bodies.append(json.loads(request.content))
+            return httpx.Response(202, json={"run_id": "run-1"})
+        if request.method == "PUT":
+            return httpx.Response(200, json={"ok": True})
+        return httpx.Response(500, json={"error": {"code": "test", "message": "stop"}})
+
+    gateway, _calls = _gateway(monkeypatch, handler)
+    stream = gateway.stream_agent(
+        api_key="key",
+        model="vendor/model",
+        messages=[{"role": "user", "content": "hi"}],
+        mode="agent",
+        workspace_id="workspace",
+        **kwargs,
+    )
+    with pytest.raises(GatewayError):
+        next(stream)
+    return bodies[0]
+
+
+def test_stream_agent_sends_the_thinking_level_when_set(monkeypatch) -> None:
+    assert _agent_run_body(monkeypatch, reasoning_effort="extra_high")["reasoning_effort"] == (
+        "extra_high"
+    )
+
+
+def test_stream_agent_omits_the_thinking_level_when_unset(monkeypatch) -> None:
+    assert "reasoning_effort" not in _agent_run_body(monkeypatch)
+
+
 def test_steering_rejected_by_the_gateway_raises(monkeypatch) -> None:
     gateway, _calls = _gateway(
         monkeypatch,
@@ -175,3 +211,12 @@ def test_steering_rejected_by_the_gateway_raises(monkeypatch) -> None:
     )
     with pytest.raises(GatewayError):
         gateway.steer("run-1", "late")
+
+
+def test_stream_agent_sends_the_compaction_threshold_when_set(monkeypatch) -> None:
+    body = _agent_run_body(monkeypatch, compaction_threshold_tokens=240_000)
+    assert body["compaction_threshold_tokens"] == 240_000
+
+
+def test_stream_agent_omits_the_compaction_threshold_when_automatic(monkeypatch) -> None:
+    assert "compaction_threshold_tokens" not in _agent_run_body(monkeypatch)
