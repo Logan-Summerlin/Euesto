@@ -12,11 +12,8 @@ name: Build Windows release
 
 on:
   pull_request:
+  # Tags only: commit pushes do not start this workflow. Release builds run on a `v*` tag or by hand.
   push:
-    # Every branch: the repository records no default branch name, and a filter that misses it
-    # disables the workflow after every merge with no error anywhere.
-    branches:
-      - "**"
     tags:
       - "v*"
   workflow_dispatch:

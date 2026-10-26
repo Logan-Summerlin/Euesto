@@ -123,8 +123,9 @@ trigger in this branch` has two causes, and the wording describes only the first
 Nothing in the repository can lift that rule, so run it before merge through an event that reads
 the workflow from the commit rather than the default branch:
 
-- push a commit to the branch: `Build Windows release` and `Scan runtime images` filter `push` on
-  `**`, so any branch runs them (an empty commit is enough to re-run one);
+- push a commit to the branch: `Scan runtime images` filters `push` on `**`, so any branch runs it
+  (an empty commit is enough to re-run it). `Build Windows release` does not run on commit pushes;
+  start it with a `v*` tag or `gh workflow run`;
 - open a pull request, or push to an existing one: `pull_request` reads the workflow from that
   commit, so a PR that adds the workflow runs it once without being merged.
 

@@ -155,7 +155,10 @@ class SettingsService(QObject):
         """The saved compaction threshold as a percentage of the window, or ``None`` for
         Automatic. Anything unreadable or out of range loads as Automatic."""
         value = optional_int(self.storage.get_setting(CONTEXT_COMPACTION_KEY))
-        if value is None or not COMPACTION_SHARE_RANGE[0] <= value <= COMPACTION_SHARE_RANGE[1]:
+        if (
+            value is None
+            or not COMPACTION_SHARE_RANGE[0] <= value <= COMPACTION_SHARE_RANGE[1]
+        ):
             return None
         return value
 
@@ -166,7 +169,11 @@ class SettingsService(QObject):
             stored = ""
         else:
             low, high = COMPACTION_SHARE_RANGE
-            if isinstance(share, bool) or not isinstance(share, int) or not low <= share <= high:
+            if (
+                isinstance(share, bool)
+                or not isinstance(share, int)
+                or not low <= share <= high
+            ):
                 self.host.errorRequested.emit(
                     "Invalid compaction threshold",
                     f"Enter a whole percentage from {low} to {high} of the model's window.",
@@ -432,10 +439,8 @@ class SettingsService(QObject):
         if not workspace:
             self.skills = []
         else:
-            active = set(
-                self.storage.workspace_config(self.host.runtime.identity()).get("active_skills")
-                or ()
-            )
+            config = self.storage.workspace_config(self.host.runtime.identity())
+            active = set(config.get("active_skills") or ())
             self.skills = [
                 {
                     "name": skill.name,
@@ -519,7 +524,9 @@ class SettingsService(QObject):
                 "Too many paths", f"List at most {MAX_UNREDACTED_PATHS} files."
             )
             return
-        self._update_workspace_config({"unredacted_paths": paths}, "Redaction exceptions saved")
+        self._update_workspace_config(
+            {"unredacted_paths": paths}, "Redaction exceptions saved"
+        )
 
     def _update_workspace_config(self, values: dict[str, object], status: str) -> None:
         workspace = self.host.runtime.workspace_path
@@ -641,7 +648,8 @@ class SettingsService(QObject):
 
     def delete_permission(self, rule_id: str) -> None:
         self._change_permission(
-            "Could not delete permission", lambda client: client.delete_permission_rule(rule_id)
+            "Could not delete permission",
+            lambda client: client.delete_permission_rule(rule_id),
         )
 
     def _change_permission(
@@ -679,7 +687,9 @@ def _runtime_settings(values: dict[str, Any]) -> RuntimeSettings:
         cpus=cpus or None,
         memory_gb=_whole(memory) or None,
         pids=DEFAULT_RUNNER_PIDS if pids in (None, "") else _whole(pids),
-        git_history_depth=(DEFAULT_GIT_HISTORY_DEPTH if depth in (None, "") else _whole(depth)),
+        git_history_depth=(
+            DEFAULT_GIT_HISTORY_DEPTH if depth in (None, "") else _whole(depth)
+        ),
     )
 
 

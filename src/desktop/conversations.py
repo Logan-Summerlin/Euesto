@@ -250,7 +250,9 @@ class ConversationService(QObject):
         # Manual compaction targets half the configured threshold; Automatic (no share) is half
         # the submission limit, which is today's 40% of the window.
         threshold = self._compaction_threshold(conversation.model)
-        base = threshold if threshold is not None else self._submission_limit(conversation.model)
+        base = (
+            threshold if threshold is not None else self._submission_limit(conversation.model)
+        )
         limit = max(4_000, int(base * 0.5))
         _context, summary, covered = compact_messages(
             context_source(
