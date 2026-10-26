@@ -622,9 +622,11 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
 
 #### 1.8 Output-token and reasoning discipline (E8), size S
 
-- **Status:** implemented. The payload carries the request's reasoning effort and a 16,000-token output cap; summary turns use `low`. Per-preset defaults arrive with 7.4.
+- **Status:** implemented. The payload carries the request's thinking level, mapped to `reasoning.effort`, and a 16,000-token output cap; summary turns use `low`. Per-preset defaults arrive with 7.4.
 - **Change:**
   - **Reasoning effort:**
+    - The levels are low, medium, high, extra high, and max (`extra_high` sends `xhigh`, `max` sends `max`); the mapping and the one-step fallback live in `shared/requests.py`. Unset omits the field.
+    - Agent runs send the effort only for models that list `reasoning`, on both the Plan and Agent paths. A 400 that names the effort retries once one level down (`max` → `extra_high` → `high`), journals `reasoning.effort_clamped`, and holds for the rest of the run.
     - Each model preset (7.4) sets `reasoning.effort` where the model supports it.
     - Budget presets default to `low`.
     - The compaction and wind-down summary turns always use `low`.
@@ -633,7 +635,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
     - A per-profile `max_tokens` per turn (proposed 16,000) stops runaway generations.
     - A turn that ends with `finish_reason: "length"` gets a short corrective note: write large files in parts, with `write` followed by `apply_patch`.
   - **Fewer emitted tokens:** the terse-narration rules (0.2) and harness-filled hashes (1.4) remove routine output.
-- **Tests:** the payload carries the effort and the cap; a length-truncated turn gets the note.
+- **Tests:** the payload carries the mapped effort for each level and the cap; a rejected effort steps down once; a length-truncated turn gets the note.
 
 #### 1.9 Compact tool contract and a prefix budget, size S
 

@@ -28,6 +28,13 @@ def utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+# Blended picker estimate (MODEL_CONTROLS_PLAN §2): a typical agent workload is mostly input,
+# and most of that input is served from the prompt cache.
+ESTIMATED_INPUT_SHARE = 0.95
+ESTIMATED_OUTPUT_SHARE = 0.05
+ESTIMATED_CACHE_HIT_SHARE = 0.95
+
+
 @dataclass(slots=True)
 class Conversation:
     id: str
@@ -96,11 +103,37 @@ class ModelOption:
             return None
 
     @property
-    def average_price_per_million(self) -> float | None:
-        prices = [
-            price for price in (self.prompt_price, self.completion_price) if price is not None
-        ]
-        return (sum(prices) / len(prices)) * 1_000_000 if prices else None
+    def blended_price_per_million(self) -> float | None:
+        """Estimated USD per million tokens at 95% input, 5% output, and 95% cache hits.
+
+        Blend: ``0.95 * (0.95 * cached + 0.05 * prompt) + 0.05 * completion``, which is
+        ``0.9025·cached + 0.0475·prompt + 0.05·completion`` per million tokens.
+
+        Missing prices fall back to the nearest published one; a model without any input price
+        has no estimate and returns ``None``:
+
+        - no ``cached_prompt_price``: all input at ``prompt_price``;
+        - no ``prompt_price``: uncached input at the cached price;
+        - no ``completion_price``: output at the cached-input price, else the prompt price;
+        - none of the three: ``None``.
+        """
+        cached, prompt, completion = (
+            self.cached_prompt_price,
+            self.prompt_price,
+            self.completion_price,
+        )
+        # Input prices present, cached first: rates[0] is the cached price, or the prompt price
+        # when no cached price is published; rates[-1] is the prompt price, or the cached one.
+        input_rates = [price for price in (cached, prompt) if price is not None]
+        if not input_rates:
+            return None
+        output_rate = completion if completion is not None else input_rates[0]
+        input_rate = (
+            ESTIMATED_CACHE_HIT_SHARE * input_rates[0]
+            + (1 - ESTIMATED_CACHE_HIT_SHARE) * input_rates[-1]
+        )
+        blended = ESTIMATED_INPUT_SHARE * input_rate + ESTIMATED_OUTPUT_SHARE * output_rate
+        return blended * 1_000_000
 
     def to_json(self) -> dict[str, Any]:
         data = asdict(self)

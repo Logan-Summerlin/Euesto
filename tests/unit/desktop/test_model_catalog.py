@@ -1,3 +1,5 @@
+import pytest
+
 from src.model_catalog import (
     AGENT_MIN_CONTEXT,
     agent_capable,
@@ -73,6 +75,53 @@ def test_picker_warns_on_small_windows_and_missing_cached_prices() -> None:
     assert (
         model_warnings(offline) == [] and price_text(offline) == "Prices load with the catalog"
     )
+
+
+def test_blended_estimate_uses_the_95_5_95_mix() -> None:
+    """Model controls 2.2: 0.9025·cached + 0.0475·prompt + 0.05·completion, per million."""
+    cached = ModelOption(
+        "a/cached",
+        "Cached",
+        prompt_price=0.3 / 1_000_000,
+        completion_price=2.5 / 1_000_000,
+        cached_prompt_price=0.03 / 1_000_000,
+    )
+    assert cached.blended_price_per_million == pytest.approx(0.166325)
+    assert f"{cached.blended_price_per_million:.3f}" == "0.166"
+
+
+def test_blended_estimate_falls_back_when_prices_are_missing() -> None:
+    per_million = 1 / 1_000_000
+    # No cached-input price: all input at the prompt price.
+    uncached = ModelOption(
+        "a/uncached", "Uncached", prompt_price=1 * per_million, completion_price=2 * per_million
+    )
+    assert uncached.blended_price_per_million == pytest.approx(0.95 * 1 + 0.05 * 2)
+    # No completion price: output at the cached-input price.
+    no_completion = ModelOption(
+        "a/no-completion",
+        "No completion",
+        prompt_price=1 * per_million,
+        cached_prompt_price=0.1 * per_million,
+    )
+    assert no_completion.blended_price_per_million == pytest.approx(
+        0.95 * (0.95 * 0.1 + 0.05 * 1) + 0.05 * 0.1
+    )
+    # No prompt price: uncached input at the cached price.
+    no_prompt = ModelOption(
+        "a/no-prompt",
+        "No prompt",
+        completion_price=2 * per_million,
+        cached_prompt_price=0.1 * per_million,
+    )
+    assert no_prompt.blended_price_per_million == pytest.approx(0.95 * 0.1 + 0.05 * 2)
+    # Completion-only pricing gives no input estimate.
+    completion_only = ModelOption("a/out", "Out", completion_price=2 * per_million)
+    assert completion_only.blended_price_per_million is None
+
+
+def test_blended_estimate_is_none_for_an_all_unknown_model() -> None:
+    assert ModelOption("a/offline", "Offline", 200_000).blended_price_per_million is None
 
 
 def test_offline_defaults_are_tool_capable_with_large_windows() -> None:

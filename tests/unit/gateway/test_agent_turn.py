@@ -8,7 +8,7 @@ import pytest
 
 from server.openrouter import agent as agent_module
 from server.openrouter.agent import agent_turn
-from server.openrouter.errors import ProviderError
+from server.openrouter.errors import REASONING_EFFORT_REJECTED, ProviderError
 
 
 def _serve(monkeypatch, handler) -> list[dict]:
@@ -37,6 +37,30 @@ def _ok(message: dict) -> httpx.Response:
     return httpx.Response(
         200, json={"choices": [{"message": message}], "usage": {"total_tokens": 3}}
     )
+
+
+def test_a_400_naming_the_effort_is_a_reasoning_rejection(monkeypatch):
+    sent = _serve(
+        monkeypatch,
+        lambda _request: httpx.Response(
+            400, json={"error": {"message": "Invalid reasoning.effort: xhigh"}}
+        ),
+    )
+    with pytest.raises(ProviderError) as caught:
+        _turn(reasoning_effort="extra_high")
+    assert sent[0]["reasoning"] == {"effort": "xhigh"}
+    assert caught.value.code == REASONING_EFFORT_REJECTED
+    assert caught.value.retryable is False
+
+
+def test_other_400s_keep_the_generic_agent_error(monkeypatch):
+    _serve(
+        monkeypatch,
+        lambda _request: httpx.Response(400, json={"error": {"message": "bad tool schema"}}),
+    )
+    with pytest.raises(ProviderError) as caught:
+        _turn()
+    assert caught.value.code == "provider.agent_error"
 
 
 def test_empty_tool_allowance_declares_plan_tools_but_forbids_calls(monkeypatch):

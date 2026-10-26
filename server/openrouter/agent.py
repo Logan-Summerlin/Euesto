@@ -17,10 +17,11 @@ from typing import Any
 
 import httpx
 
+from shared.requests import reasoning_payload_effort
 from shared.tools import mode_tools
 
 from .client import APP_TITLE, OPENROUTER_URL, normalize_usage, provider_routing
-from .errors import ProviderError
+from .errors import REASONING_EFFORT_REJECTED, ProviderError
 
 RETRYABLE_STATUS = frozenset({408, 409, 425, 429})
 # Defaults for one streamed turn; budget profiles may set their own (``BudgetProfile``).
@@ -360,8 +361,9 @@ def agent_payload(
         payload["session_id"] = session_id
     if max_tokens:
         payload["max_tokens"] = max(1, int(max_tokens))
-    if reasoning_effort:
-        payload["reasoning"] = {"effort": reasoning_effort}
+    wire_effort = reasoning_payload_effort(reasoning_effort) if reasoning_effort else None
+    if wire_effort:
+        payload["reasoning"] = {"effort": wire_effort}
     return payload
 
 
@@ -430,10 +432,16 @@ async def agent_turn(
                     if response.status_code >= 400:
                         await response.aread()
                         status = response.status_code
+                        detail = _error_detail(_json_or_empty(response))
+                        # A 400 that names the effort lets the run step down one level (3.2).
+                        code = (
+                            REASONING_EFFORT_REJECTED
+                            if status == 400 and "effort" in detail.lower()
+                            else "provider.agent_error"
+                        )
                         raise ProviderError(
-                            "provider.agent_error",
-                            f"OpenRouter agent request failed ({status})"
-                            f"{_error_detail(_json_or_empty(response))}.",
+                            code,
+                            f"OpenRouter agent request failed ({status}){detail}.",
                             retryable=status in RETRYABLE_STATUS or status >= 500,
                         )
                     content_type = response.headers.get("content-type", "")

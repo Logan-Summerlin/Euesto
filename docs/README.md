@@ -24,6 +24,7 @@ Each living plan and the roadmap live only in this directory, one authoritative 
 |---|---|
 | [ROADMAP.md](ROADMAP.md) | Completed, active, planned, deferred, and non-goal status, including open items carried from archived plans. |
 | [AGENTIC_HARNESS_PLAN.md](AGENTIC_HARNESS_PLAN.md) | Phased plan to widen agent capability inside the sandbox. Phases 0–5 are implemented; Phases 6–7 (long-running projects, simple setup) are proposed. |
+| [MODEL_CONTROLS_PLAN.md](MODEL_CONTROLS_PLAN.md) | Proposed plan for three desktop model-control changes: a user-set context compaction threshold, a blended per-million-token cost estimate in the model picker, and the five thinking levels with their provider mapping. |
 
 ## Naming and ownership rules
 

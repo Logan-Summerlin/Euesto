@@ -244,6 +244,25 @@ def test_gateway_payload_keeps_hosted_tools_explicit() -> None:
     assert json.dumps(payload)
 
 
+def test_chat_payload_maps_the_thinking_level_only_for_reasoning_models() -> None:
+    def chat(effort, supported):
+        request = ChatRequest.from_dict(
+            {
+                "model": "vendor/model",
+                "messages": [{"role": "user", "content": "hi"}],
+                "options": {"reasoning_effort": effort},
+                "supported_parameters": supported,
+            }
+        )
+        return build_payload(request)
+
+    assert chat("extra_high", ["reasoning"])["reasoning"] == {"effort": "xhigh"}
+    assert chat("max", ["reasoning"])["reasoning"] == {"effort": "max"}
+    assert chat("low", ["reasoning"])["reasoning"] == {"effort": "low"}
+    assert "reasoning" not in chat("extra_high", [])
+    assert "reasoning" not in chat(None, ["reasoning"])
+
+
 def test_gateway_catalog_normalizes_and_reuses_durable_cache(tmp_path: Path) -> None:
     calls = 0
 

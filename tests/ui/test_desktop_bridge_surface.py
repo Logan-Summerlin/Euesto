@@ -46,6 +46,8 @@ PROPERTIES = {
     "permissions": ("QVariantList", "permissionsChanged", False),
     "presets": ("QVariantList", "presetsChanged", False),
     "reasoningEffort": ("QString", "settingsChanged", False),
+    "reasoningLevels": ("QVariantList", "settingsChanged", False),
+    "reasoningSupported": ("bool", "settingsChanged", False),
     "registriesAllowed": ("bool", "policyChanged", False),
     "runMeter": ("QVariantMap", "meterChanged", False),
     "runtimeBusy": ("bool", "stateChanged", False),

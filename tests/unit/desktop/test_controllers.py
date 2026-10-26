@@ -104,3 +104,28 @@ def test_run_status_and_usage_summary_use_the_same_wording() -> None:
     assert "800 cached (80% of input)" in GenerationController.format_usage(
         {"prompt_tokens": 1_000, "cached_tokens": 800}, cancelled=True
     )
+
+
+def test_preparation_passes_the_saved_threshold_and_bounds_chat_compaction(
+    tmp_path: Path,
+) -> None:
+    storage = Storage(tmp_path / "chat.sqlite3")
+    conversation = storage.create_conversation("Chat", "model/a", "System")
+    storage.add_message(conversation.id, "user", "Question")
+    controller = GenerationController(storage)
+    messages = storage.list_messages(conversation.id)
+    catalog = [ModelOption("model/a", "A", context_length=1_048_576)]
+
+    automatic = controller.prepare(conversation, messages, "model/a", catalog)
+    assert automatic.context_limit == 838_860
+    assert automatic.compaction_threshold is None  # the gateway's profile cap alone
+
+    chosen = controller.prepare(conversation, messages, "model/a", catalog, 30)
+    assert chosen.context_limit == 838_860
+    assert chosen.compaction_threshold == 314_572
+
+    # A small window's threshold is raised to the protocol floor and never sent below it.
+    small = [ModelOption("model/a", "A", context_length=8_000)]
+    floored = controller.prepare(conversation, messages, "model/a", small, 10)
+    assert floored.compaction_threshold == 4_000
+    storage.close()

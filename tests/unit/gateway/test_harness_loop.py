@@ -12,7 +12,7 @@ from server.agent import runtime as runtime_module
 from server.agent.prompts import PROMPT_VERSION, agent_prompt
 from server.agent.runtime import AgentRuntime, recent_exchanges
 from server.openrouter.agent import AgentTurn, agent_payload, serialize_payload
-from server.openrouter.errors import ProviderError
+from server.openrouter.errors import REASONING_EFFORT_REJECTED, ProviderError
 from shared.requests import AgentRunRequest
 from shared.tools import ToolResult
 
@@ -650,6 +650,80 @@ def test_reasoning_effort_and_the_length_note(monkeypatch) -> None:
     )
 
 
+# -- 3.2 thinking levels --------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "selection,wire",
+    [
+        (None, None),
+        ("low", "low"),
+        ("medium", "medium"),
+        ("high", "high"),
+        ("extra_high", "xhigh"),
+        ("max", "max"),
+    ],
+)
+def test_agent_payload_sends_the_mapped_effort_for_each_level(
+    monkeypatch, selection, wire
+) -> None:
+    provider, _events, _saved, _runtime = run(
+        monkeypatch, [final_turn()], request=make_request(reasoning_effort=selection)
+    )
+    if wire is None:
+        assert "reasoning" not in provider.payloads[0]
+    else:
+        assert provider.payloads[0]["reasoning"] == {"effort": wire}
+
+
+def test_a_rejected_effort_steps_down_once_and_holds_for_the_run(monkeypatch) -> None:
+    message = "reasoning.effort 'max' is not supported"
+    rejected = ProviderError(REASONING_EFFORT_REJECTED, message, retryable=False)
+    provider, events, _saved, _runtime = run(
+        monkeypatch,
+        [rejected, tools_turn(call("r1", "read", {"path": "a"})), final_turn()],
+        request=make_request(reasoning_effort="max"),
+    )
+    assert [item.get("reasoning") for item in provider.payloads] == [
+        {"effort": "max"},
+        {"effort": "xhigh"},
+        {"effort": "xhigh"},
+    ]
+    clamps = [payload for kind, payload in events if kind == "reasoning.effort_clamped"]
+    assert clamps == [
+        {"requested": "max", "sent": "xhigh", "selection": "extra_high", "message": message}
+    ]
+    started = next(payload for kind, payload in events if kind == "run.started")
+    assert started["reasoning_effort"] == "max"
+    assert kinds(events)[-1] == "run.completed"
+
+
+def test_a_second_rejection_fails_the_run_with_the_typed_error(monkeypatch) -> None:
+    rejected = [
+        ProviderError(REASONING_EFFORT_REJECTED, "not supported", retryable=False)
+        for _ in range(2)
+    ]
+    _provider, events, _saved, _runtime = run(
+        monkeypatch,
+        [*rejected, final_turn()],
+        request=make_request(reasoning_effort="max"),
+    )
+    assert kinds(events).count("reasoning.effort_clamped") == 1
+    assert kinds(events)[-1] == "run.failed"
+
+
+def test_a_level_with_no_lower_step_fails_without_a_retry(monkeypatch) -> None:
+    rejected = ProviderError(REASONING_EFFORT_REJECTED, "not supported", retryable=False)
+    provider, events, _saved, _runtime = run(
+        monkeypatch,
+        [rejected, final_turn()],
+        request=make_request(reasoning_effort="high"),
+    )
+    assert len(provider.payloads) == 1
+    assert "reasoning.effort_clamped" not in kinds(events)
+    assert kinds(events)[-1] == "run.failed"
+
+
 # -- 1.7 snapshot ---------------------------------------------------------------------------
 
 
@@ -658,3 +732,23 @@ def test_the_workspace_snapshot_is_in_the_first_request(monkeypatch) -> None:
     context = provider.payloads[0]["messages"][1]["content"]
     assert "## WORKSPACE SNAPSHOT" in context and "detected checks: python -m pytest" in context
     assert "Installed: python3, git." in context
+
+
+def test_a_saved_threshold_changes_where_an_agent_run_compacts(monkeypatch) -> None:
+    # The same scenario as above, with the user's threshold set below the window's own mark.
+    # The run compacts at the threshold, and the journal records the mark it actually used.
+    monkeypatch.setattr(runtime_module, "TURN_GROWTH_RESERVE_TOKENS", 0)
+    turns = [tools_turn(call(f"r{index}", "read", {"path": f"f{index}"})) for index in range(4)]
+    turns.insert(3, final_turn("Objective: finish.\nNext steps: read f6."))
+    _provider, events, _saved, _runtime = run(
+        monkeypatch,
+        [*turns, final_turn()],
+        executor=ScriptedExecutor(read_bytes=6_000),
+        request=make_request(context_limit_tokens=20_800, compaction_threshold_tokens=4_000),
+    )
+    started = [payload for kind, payload in events if kind == "run.started"]
+    assert started[0]["compaction_threshold_tokens"] == 4_000
+    compactions = [payload for kind, payload in events if kind == "context.compacted"]
+    assert len(compactions) >= 1
+    assert compactions[0]["high_water_tokens"] == 4_000
+    assert kinds(events)[-1] == "run.completed"

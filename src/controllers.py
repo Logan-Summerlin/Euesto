@@ -19,6 +19,23 @@ from .models import (
 )
 from .storage import Storage
 
+# The prompt budget as a share of the model's published window (the submission limit).
+CONTEXT_WINDOW_SHARE = 0.8
+# Bounds of a user compaction threshold in tokens: the gateway protocol's own range.
+COMPACTION_THRESHOLD_RANGE = (4_000, 2_000_000)
+
+
+def compaction_threshold_tokens(window: int, share: int | None) -> int | None:
+    """The user's compaction threshold in tokens, or ``None`` for Automatic.
+
+    The share is a percentage of the model's window; the result stays inside the protocol's
+    token range. The gateway still clamps it to its own bounds (``_high_water``).
+    """
+    if share is None:
+        return None
+    low, high = COMPACTION_THRESHOLD_RANGE
+    return max(low, min(high, int(window * share / 100)))
+
 
 @dataclass(frozen=True, slots=True)
 class PreparedGeneration:
@@ -27,6 +44,7 @@ class PreparedGeneration:
     estimated_tokens: int
     removed_messages: int
     supported_parameters: frozenset[str]
+    compaction_threshold: int | None = None
 
 
 @dataclass(slots=True)
@@ -140,10 +158,15 @@ class GenerationController:
         context_messages: list[Message],
         model: str,
         catalog: list[ModelOption],
+        compaction_share: int | None = None,
     ) -> PreparedGeneration:
-        context_limit = int(model_context_length(model, catalog) * 0.8)
+        window = model_context_length(model, catalog)
+        context_limit = int(window * CONTEXT_WINDOW_SHARE)
+        threshold = compaction_threshold_tokens(window, compaction_share)
+        # One setting governs both modes: chat compacts to the threshold, never past the budget.
+        target = context_limit if threshold is None else min(threshold, context_limit)
         messages, summary, covered = compact_messages(
-            context_source(conversation.system_prompt, context_messages), context_limit
+            context_source(conversation.system_prompt, context_messages), target
         )
         if covered:
             existing = self.storage.list_compactions(conversation.id)
@@ -164,6 +187,7 @@ class GenerationController:
             supported_parameters=(
                 model_metadata.supported_parameters if model_metadata else frozenset()
             ),
+            compaction_threshold=threshold,
         )
 
     def begin(

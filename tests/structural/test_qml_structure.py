@@ -113,3 +113,28 @@ def test_composer_shows_the_run_meter_and_steers_active_runs() -> None:
     assert "Boolean(event.modifiers & Qt.ControlModifier)" in source
     picker = _qml("Main.qml")
     assert "modelData.priceText" in picker and "modelData.warnings" in picker
+    assert '"/M est."' in picker and "95% input, 5% output, 95% cache hits" in picker
+
+
+def test_the_thinking_control_offers_the_five_levels_from_the_backend() -> None:
+    """Model controls 3.3: the combo reads backend.reasoningLevels and never offers minimal."""
+    source = _qml("Main.qml")
+    combo = source[source.index("id: reasoningCombo") :][:1200]
+    assert "model: backend.reasoningLevels" in combo
+    assert 'valueRole: "value"' in combo
+    assert "backend.setReasoningEffort(currentValue)" in combo
+    assert "backend.reasoningSupported" in combo
+    assert "minimal" not in combo
+    assert '"minimal"' not in source
+
+
+def test_settings_offer_the_context_compaction_threshold() -> None:
+    """MODEL_CONTROLS_PLAN 1.3: the Conversation tab sets the compaction share with an
+    Automatic option and saves it through the backend, which names the resolved mark."""
+    source = _qml("Main.qml")
+    form = source[source.index('objectName: "compactionShare"') :][:900]
+    assert "from: 10" in form and "to: 60" in form
+    assert 'objectName: "compactionAutomatic"' in source
+    assert "backend.saveContextCompactionShare(" in source
+    assert "backend.contextThreshold" in source
+    assert 'objectName: "compactionHelp"' in source

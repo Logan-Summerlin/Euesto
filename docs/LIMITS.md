@@ -48,7 +48,7 @@ The ceiling counts four bytes per token: 40% of the working set in tokens equals
 
 | Bound | Value | Notes |
 |---|---:|---|
-| Working set (compaction high-water) | 150,000 tokens (`coding`), 240,000 (`extended-coding`), 400,000 (`large-coding`) | The smallest of this, 75% of the request's prompt budget, and the room left after one full output turn plus a 32,000-token growth reserve applies (floor 4,000); compaction returns to a third of it, and never leaves more than 90% of the prompt budget. The default prompt budget is 160,000 tokens (a 200k-class window); the desktop sends 80% of the model's published window. |
+| Working set (compaction high-water) | 150,000 tokens (`coding`), 240,000 (`extended-coding`), 400,000 (`large-coding`) | The smallest of this, 75% of the request's prompt budget, and the room left after one full output turn plus a 32,000-token growth reserve applies (floor 4,000); compaction returns to a third of it, and never leaves more than 90% of the prompt budget. The default prompt budget is 160,000 tokens (a 200k-class window); the desktop sends 80% of the model's published window. The user's compaction threshold (Settings, 10–60% of the model's window, or Automatic) replaces the profile cap when set, so it can raise the mark above 150,000 tokens on large windows; the 75% share, the capacity bound, and the 4,000-token floor still apply, and a threshold above them changes nothing. |
 | Handoff summary | 2,500 tokens | One tool-free turn at low reasoning effort. |
 | Output per model turn (`max_tokens`) | 16,000 tokens | Per profile; a cut-off turn gets a note to write large files in parts. |
 | Static system prompt | 4,800 bytes | Per mode; no dynamic values. |

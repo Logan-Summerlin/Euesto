@@ -118,7 +118,39 @@ def _object(value: object) -> dict[str, Any]:
     return dict(value)
 
 
-REASONING_EFFORTS = (None, "minimal", "low", "medium", "high")
+# Thinking levels: the stored selection token, ``None`` meaning unset (the field is omitted).
+REASONING_EFFORTS = (None, "low", "medium", "high", "extra_high", "max")
+# What each selection sends as ``reasoning.effort``. Only the levels the provider accepts are
+# mapped; the two above ``high`` use the provider's own spellings.
+REASONING_EFFORT_PAYLOADS = {
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "extra_high": "xhigh",
+    "max": "max",
+}
+# The selections a rejected turn may fall back to, in order; each chain starts with the
+# requested selection and ends at ``high``. A run retries once, one step down
+# (``reasoning_fallback``).
+REASONING_EFFORT_FALLBACKS = {
+    "max": ("max", "extra_high", "high"),
+    "extra_high": ("extra_high", "high"),
+}
+
+
+def reasoning_payload_effort(effort: str | None) -> str | None:
+    """The ``reasoning.effort`` value for a selection, or ``None`` when unset."""
+    if effort is None:
+        return None
+    if effort not in REASONING_EFFORT_PAYLOADS:
+        raise ValueError("Unknown reasoning effort")
+    return REASONING_EFFORT_PAYLOADS[effort]
+
+
+def reasoning_fallback(effort: str | None) -> str | None:
+    """The one selection a rejected turn retries with, or ``None`` when there is none."""
+    chain = REASONING_EFFORT_FALLBACKS.get(effort or "", ())
+    return chain[1] if len(chain) > 1 else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,10 +174,20 @@ class AgentRunRequest:
     # Sent as ``reasoning.effort`` when set; the desktop sets it only for models that support
     # reasoning, and budget presets default to "low".
     reasoning_effort: str | None = None
+    # The user's compaction threshold in tokens (the desktop computes it from the model window).
+    # ``None`` means the profile's working-set cap alone. The gateway still clamps it, so a
+    # threshold never exceeds the share-of-budget or capacity bounds in ``_high_water``.
+    compaction_threshold_tokens: int | None = None
 
     def __post_init__(self) -> None:
         if self.reasoning_effort not in REASONING_EFFORTS:
             raise ValueError("Unknown reasoning effort")
+        if self.compaction_threshold_tokens is not None and (
+            not isinstance(self.compaction_threshold_tokens, int)
+            or isinstance(self.compaction_threshold_tokens, bool)
+            or not 4_000 <= self.compaction_threshold_tokens <= 2_000_000
+        ):
+            raise ValueError("Compaction threshold is outside safe bounds")
         if (
             self.mode not in {"plan", "agent"}
             or not self.model.strip()
@@ -221,6 +263,7 @@ class AgentRunRequest:
             "investigation_model_id": self.investigation_model_id,
             "investigation_call_budget": self.investigation_call_budget,
             "reasoning_effort": self.reasoning_effort,
+            "compaction_threshold_tokens": self.compaction_threshold_tokens,
         }
 
     @classmethod
@@ -241,6 +284,7 @@ class AgentRunRequest:
             "investigation_model_id",
             "investigation_call_budget",
             "reasoning_effort",
+            "compaction_threshold_tokens",
         }
         if set(data) - expected:
             raise ValueError("Unknown agent run fields")
@@ -272,6 +316,11 @@ class AgentRunRequest:
             reasoning_effort=str(data["reasoning_effort"])
             if data.get("reasoning_effort")
             else None,
+            compaction_threshold_tokens=(
+                int(data["compaction_threshold_tokens"])
+                if data.get("compaction_threshold_tokens") is not None
+                else None
+            ),
         )
 
 
