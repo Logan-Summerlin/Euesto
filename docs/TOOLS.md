@@ -214,9 +214,14 @@ A failed result's `error_code` is chosen where the failure is detected (`Executo
 | `checkpoint.not_found` | The referenced checkpoint does not exist. |
 | `permission.denied` | The mode or capability forbids the operation (for example a Plan-mode mutation). |
 | `tool.timeout` | The operation exceeded its approved timeout; staged changes were rolled back. |
-| `tool.output_truncated` | The turn hit the model output limit, so this mutation was not executed; split the content or append it in parts. |
 | `io.internal` | An operating-system failure the executor could not attribute (retryable). |
 | `tool.internal` | An unexpected executor failure. |
+
+The gateway adds its own codes to a result before the model sees it: `tool.invalid_arguments`,
+`tool.invalid_request`, `tool.unknown`, `tool.output_truncated`, and the budget and context
+refusals (`budget.exhausted`, `context.floor_too_large`). Those live in
+`server/agent/results.py` (`ERROR_HINTS`) and are described with the behavior that raises them,
+not in the executor table above.
 
 ## Modes and permissions
 
