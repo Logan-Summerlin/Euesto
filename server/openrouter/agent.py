@@ -60,8 +60,8 @@ def _tool(
 LOCAL_TOOL_SCHEMAS = [
     _tool(
         "read",
-        "Read a UTF-8 text file by line range or byte offset. Search first; read ranges of "
-        "large files.",
+        "Read UTF-8 text by line range or byte offset; search first and read ranges. max_bytes "
+        "bounds the executor read; the gateway caps each result and names the effective cap.",
         {
             "path": STRING,
             "start_line": _integer(1),
@@ -73,8 +73,14 @@ LOCAL_TOOL_SCHEMAS = [
     ),
     _tool(
         "write",
-        "Create or replace a UTF-8 text file. Use for new files or full rewrites.",
-        {"path": STRING, "content": STRING, "create_parents": BOOLEAN},
+        "Create or replace a UTF-8 text file, or append to one with mode=append. Use for new "
+        "files or full rewrites; append large content one part at a time.",
+        {
+            "path": STRING,
+            "content": STRING,
+            "create_parents": BOOLEAN,
+            "mode": {"type": "string", "enum": ["replace", "append"], "default": "replace"},
+        },
         ["path", "content"],
     ),
     _tool(

@@ -8,7 +8,7 @@ Every executor request contains `request_id`, `run_id`, `tool`, `mode`, and an o
 
 Every result contains `request_id`, `ok`, `output`, `data`, `error_code`, `truncated`, `elapsed_seconds`, `returned`, `total_known`, `limit`, and `next_cursor`. Optional counts are non-negative integers. Errors are classified and returned rather than exposing arbitrary exception details to the model. A failed result may carry bounded, JSON-serializable diagnostics in `data` (for example why an exact edit did not match, or which `apply_patch` operation failed).
 
-**Model-facing results.** The gateway turns each result into lean plain text before the model sees it (`server/agent/results.py`): a one-line summary, the content, and for errors the code with a short hint. Malformed tool-call JSON, arguments that break the schema, and unknown tool names get a one-line corrective result naming the field and expected type, or the valid tool names for the mode, instead of failing the run (see "Loop resilience" below). Each result is bounded on its own (`docs/LIMITS.md`, "Model-facing result bounds"); a shortened result says so and emits `tool.result_bounded`. When `write` or `edit` omits `expected_sha256`, the gateway fills in the hash the agent last saw for that path (for `write`, only after the agent saw the whole file), so a stale edit fails clearly instead of overwriting newer content. Re-reading an unchanged range that is still in context returns a one-line note pointing at the earlier result.
+**Model-facing results.** The gateway turns each result into lean plain text before the model sees it (`server/agent/results.py`): a one-line summary, the content, and for errors the code with a short hint. Malformed tool-call JSON, arguments that break the schema, and unknown tool names get a one-line corrective result naming the field and expected type, or the valid tool names for the mode, instead of failing the run (see "Loop resilience" below). Each result is bounded on its own (`docs/LIMITS.md`, "Model-facing result bounds"); a shortened result says so and emits `tool.result_bounded`. `expected_sha256` is gateway-owned: the gateway fills it with the hash the agent last saw for that path. A whole-file `write` is confirmed only after cumulative byte coverage reaches every byte of the current file (one whole read, or several contiguous chunks); an append or an exact `edit` needs only a known hash. Re-reading an unchanged range that is still in context returns a one-line note stating what the earlier result covered and how to continue.
 
 All tools operate on relative POSIX paths that are normalized and contained beneath the workspace root. Absolute, drive, UNC, traversal (`..`), Windows-alias, reserved-DOS-name, non-canonical-Unicode, and secret-like paths are rejected, as are symlinks and hard-linked files. Only UTF-8 text is readable and writable; binary content is refused.
 
@@ -20,35 +20,37 @@ Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `ve
 - **Arguments:** `path` (required); optional `start_line`, `end_line`, `offset`, and `max_bytes`.
 - **Modes:** Plan and Agent.
 - **Permission:** read-only.
-- **Defaults:** each call returns at most 32,000 bytes unless `max_bytes` asks for more, up to the profile's `max_read_bytes` (1,000,000 in `coding`).
+- **Defaults:** each call returns at most 32,000 bytes unless `max_bytes` asks for more, up to the profile's `max_read_bytes` (1,000,000 in `coding`). The gateway's model-facing content cap is 31,000 bytes in `coding` (the 32,000-byte result cap minus a 1,000-byte header and coverage reserve), 47,000 in `extended-coding`, and 63,000 in `large-coding`. A `max_bytes` above that cap is clamped, and the result names both the requested value and the effective cap.
 - **Hard maximum:** 8,000,000 bytes. The model-facing result is bounded separately (32,000 bytes in `coding`).
 - **Semantics:** Plan reads the read-only source snapshot; Agent reads staged workspace content. Excluded metadata/dependency/cache paths fail as missing files, exactly as they are absent from `find`/`grep`/`ls`. Line ranges and byte offsets cannot be combined. An end-line past the end of the file is clipped to the final available line and reported as `range_clipped`; invalid start lines and offsets remain rejected, and byte offsets must land on UTF-8 character boundaries.
-- **Truncation/cursors:** results report `line_count`, `truncated`, `byte_offset`, `next_offset`, and `next_start_line`; continue with the next line range or offset instead of assuming a whole file fits in one response. A truncated read also carries an `outline` of up to 40 top-level definitions in the unshown remainder, with line numbers, so the next read can target the right range.
+- **Coverage and truncation:** the result header states cumulative byte coverage of the current file (`39% covered`, or `full coverage` when contiguous reads have covered every byte), whether the result was truncated, and the exact continuation (`next_start_line` or `next_offset`). There is no outline: the continuation line is exact, and `grep` is cheaper than repeating an outline in every truncated result. The executor reports `consumed_bytes` (the bytes actually read) beside `content_bytes` (the displayed text length).
 - **Errors:** invalid path, invalid range, invalid offset, non-UTF-8 or binary content, missing file, and resource-limit failures are classified.
 
 ## `write`
 
-- **Purpose:** create or replace one UTF-8 text file.
-- **Arguments:** `path`, `content` required; optional `expected_sha256`, `create_parents`.
+- **Purpose:** create, replace, or append to one UTF-8 text file.
+- **Arguments:** `path` and `content` required; optional `create_parents` and `mode` (`replace`, the default, or `append`). `expected_sha256` is gateway-owned and never offered to the model.
 - **Modes:** Agent only.
 - **Permission:** mutation; checkpointed and staged.
-- **Default:** 1,000,000-byte file content limit in `coding`.
+- **Default:** 1,000,000-byte file content limit in `coding`; an append's resulting file size is bounded by the same limit.
 - **Hard maximum:** 8,000,000 bytes.
-- **Hash:** `expected_sha256` is optional. When supplied it is an optimistic concurrency check; it is not a mandatory compatibility requirement. A mismatch fails with `staging.conflict` and reports the expected and actual hashes in `data`.
-- **Shrink guard:** replacing an existing file (≥200 bytes and ≥20 lines) with less than half its bytes *and* lines is rejected (`staging.shrink_warning`) unless the write is confirmed by a matching `expected_sha256`, which proves the current content was reviewed. A confirmed large shrink is applied and reported with `shrink_warning: true` and `shrink_details`.
+- **Write modes:** `replace` rewrites the file. `append` keeps the existing bytes, adds `content`, and is applied through a copied temporary file, fsync, and atomic replace, so a crash cannot leave a half-appended file. Appending to a new path creates it (with `create_parents` when requested) and is reported as created. Appending never runs the shrink guard because it removes nothing.
+- **Hash:** the gateway supplies `expected_sha256` from the last hash the agent saw. A `replace` is confirmed only when cumulative byte coverage of the current file is complete (one whole read or contiguous chunks); `append` needs only a known hash. A mismatch fails with `staging.conflict` and reports the expected and actual hashes in `data`.
+- **Shrink guard:** replacing an existing file (≥200 bytes and ≥20 lines) with less than half its bytes *and* lines is rejected (`staging.shrink_warning`) unless the gateway's complete coverage confirms the current content was reviewed. A confirmed large shrink is applied and reported with `shrink_warning: true` and `shrink_details`. A refused shrink's result states the covered and remaining bytes and keeps that guidance free of parameters the schema does not offer.
 - **Source/staging:** writes target the writable staging tree, never the read-only source mount. Parent directories are created only with `create_parents`.
-- **File mode:** replacing a file keeps its permission mode; a new file gets the default mode (`0666` minus the executor's umask). A write therefore never reports or publishes a permission change by itself.
+- **File mode:** replacing or appending to a file keeps its permission mode; a new file gets the default mode (`0666` minus the executor's umask). A write therefore never reports or publishes a permission change by itself.
+- **Result:** the model view says `created`, `rewritten`, or `appended N lines (+X bytes)`; `data` carries `mode`, `appended_bytes`, `old_size_bytes`, and the new total `size_bytes`.
 - **Failure:** checkpoint restoration occurs before an unsuccessful mutation is returned.
 
 ## `edit`
 
 - **Purpose:** replace an exact string in one UTF-8 text file.
-- **Arguments:** `path`, `old_str`, `new_str` required; optional `expected_occurrences` (1–1000) and `expected_sha256`.
+- **Arguments:** `path`, `old_str`, `new_str` required; optional `expected_occurrences` (1–1000). `expected_sha256` is gateway-owned and never offered to the model.
 - **Modes:** Agent only.
 - **Permission:** mutation; checkpointed and staged.
 - **Defaults:** 2,000,000-byte target and result limits in `coding`.
 - **Hard maximums:** 16,000,000 bytes for target and result.
-- **Hash:** optional optimistic concurrency check.
+- **Hash:** the gateway fills `expected_sha256` from the last hash the agent saw for the path; a mismatch fails with `staging.conflict`.
 - **Semantics:** replacement streams through a temporary file and is swapped in atomically, keeping the file's permission mode; the actual occurrence count must equal `expected_occurrences` (default 1) or the edit fails. Because an exact match with a verified count already proves the change deliberate, a large proportional reduction is applied and reported as `shrink_warning: true` with `shrink_details` instead of being rejected.
 - **Newline policy:** `old_str` is first matched byte-for-byte. Only if it matches nothing and contains a line break is it retried once with its line breaks translated to the other convention (LF ↔ CRLF); `new_str` is translated the same way so the file keeps its own convention, and the result reports `line_ending_adjustment` (`lf_to_crlf`, `crlf_to_lf`, or null). The occurrence count must still match exactly; nothing fuzzy is ever applied.
 - **Diagnostics:** failures are typed: `edit.no_match` (zero matches), `edit.too_many_matches`, `edit.too_few_matches`, `staging.conflict` (hash mismatch), and `edit.malformed_context` (empty/NUL `old_str`, invalid `expected_occurrences`). For targets up to 1,000,000 bytes, `data` includes the file's and `old_str`'s line-ending styles, up to 10 matching line numbers, and for zero matches the closest line with a ≤240-character escaped `context_preview` and hints (for example "matches only if whitespace is ignored").
@@ -58,7 +60,7 @@ Metadata, dependency, and cache directories (`.git`, `.hg`, `.svn`, `.venv`, `ve
 ## `apply_patch`
 
 - **Purpose:** apply one logical change across several UTF-8 text files atomically.
-- **Arguments:** `operations` (required, 1–`max_patch_operations`): an ordered list of objects with `operation` and `path` plus the fields of that operation — `write` (`content`, optional `expected_sha256`, `create_parents`), `edit` (`old_str`, `new_str`, optional `expected_occurrences`, `expected_sha256`), or `delete` (optional `expected_sha256`).
+- **Arguments:** `operations` (required, 1–`max_patch_operations`): an ordered list of objects with `operation` and `path` plus the fields of that operation — `write` (`content`, optional `create_parents`), `edit` (`old_str`, `new_str`, optional `expected_occurrences`), or `delete` (path only). `expected_sha256` is gateway-owned, and `mode` is not a patch operation field: a patch is atomic, so an append cannot hide inside it.
 - **Modes:** Agent only.
 - **Permission:** mutation; checkpointed and staged. A path-scoped approval rule matches an `apply_patch` request only when every operation path is inside its scope; "allow for this run"/saved rules scope to the deepest directory the paths share.
 - **Defaults:** 100 operations and 2,000,000 bytes of combined `content`/`old_str`/`new_str` in `coding`; each operation also obeys the `write`/`edit` limits.
@@ -179,7 +181,8 @@ Secret-like files never enter staging and are refused by every tool: `.env`, `.a
 
 ## Loop resilience
 
-- **Bad arguments:** malformed tool-call JSON or schema violations return one corrective line naming the field and the expected type; nothing runs.
+- **Bad arguments:** malformed tool-call JSON or schema violations return one corrective line naming the field and the expected type; nothing runs. When the turn hit the model output limit, that line names the limit and the argument size instead of reporting an unterminated string.
+- **Output limit:** a turn whose `finish_reason` is `length` does not execute any mutation (`write`, `edit`, `apply_patch`, `bash`). Each refused call returns `tool.output_truncated` with the limit and argument size, and `loop.output_truncated` is journaled. Read-only calls in that turn still execute; a truncated read's malformed JSON is a normal corrective error with its size. Large content is sent as `write` with `mode="append"`, one part per turn.
 - **Unknown tools:** an unknown tool name returns the valid tool names for the mode.
 - **Repeated failure:** when the same call fails the same way three times, the agent gets a note to change approach (`loop.note`, kind `repeated_failure`).
 - **Empty reply:** an empty or reasoning-only reply gets one re-prompt (`loop.note`, kind `empty_reply`); a second one pauses the run with reason `empty_reply`.
@@ -201,7 +204,7 @@ A failed result's `error_code` is chosen where the failure is detected (`Executo
 | `working_directory.invalid` | `bash` `working_directory` is not a string naming an existing directory. |
 | `command.invalid_arguments` | Malformed `bash` command, timeout, rollback flag, or environment. |
 | `staging.conflict` | `expected_sha256` or the staging baseline no longer matches (retryable after re-reading). |
-| `staging.shrink_warning` | A replacement would shrink an unconfirmed file drastically; confirm with `expected_sha256`. |
+| `staging.shrink_warning` | A replacement would shrink an unconfirmed file drastically; read the remaining bytes and retry. Complete byte coverage confirms the rewrite. |
 | `edit.no_match` | `old_str` matched nothing. |
 | `edit.too_many_matches` | `old_str` matched more often than `expected_occurrences`. |
 | `edit.too_few_matches` | `old_str` matched less often than `expected_occurrences`. |
@@ -211,6 +214,7 @@ A failed result's `error_code` is chosen where the failure is detected (`Executo
 | `checkpoint.not_found` | The referenced checkpoint does not exist. |
 | `permission.denied` | The mode or capability forbids the operation (for example a Plan-mode mutation). |
 | `tool.timeout` | The operation exceeded its approved timeout; staged changes were rolled back. |
+| `tool.output_truncated` | The turn hit the model output limit, so this mutation was not executed; split the content or append it in parts. |
 | `io.internal` | An operating-system failure the executor could not attribute (retryable). |
 | `tool.internal` | An unexpected executor failure. |
 
@@ -246,7 +250,7 @@ The public thirteen-tool model-facing API includes the scoped read-only `investi
 
 ## Concurrency within a turn
 
-When one model turn issues several calls, consecutive independent read-only calls (`read`, `grep`, `find`, `ls`, `status`) run concurrently (at most 8 at a time) and the executor serves them off its event loop. Mutations (`write`, `edit`, `apply_patch`, `bash`) and the gateway tools (`investigate_repository`, `update_plan`, `web_search`, `fetch_url`) run one at a time in their original order, so each keeps its own checkpoint and a read issued after a write observes it. Results are always returned to the model in the original call order.
+When one model turn issues several calls, consecutive independent read-only calls (`read`, `grep`, `find`, `ls`, `status`) run concurrently (at most 8 at a time) and the executor serves them off its event loop. Mutations (`write`, `edit`, `apply_patch`, `bash`) and the gateway tools (`investigate_repository`, `update_plan`, `web_search`, `fetch_url`) run one at a time in their original order, so each keeps its own checkpoint and a read issued after a write observes it. Results are always returned to the model in the original call order. Two identical `read` keys in one parallel batch execute once: the later call gets a one-line pointer to the first result and `read.duplicate_batch` is journaled.
 
 
 ## Permission matching

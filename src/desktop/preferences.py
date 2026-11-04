@@ -58,8 +58,20 @@ RUNTIME_SETTINGS_KEY = "runtime_settings"
 RUNNER_SETTING_FIELDS = ("runner_target", "cpus", "memory_gb", "pids", "git_history_depth")
 MAX_UNREDACTED_PATHS = 50
 CONTEXT_COMPACTION_KEY = "context_compaction_share"
-# A percentage of the model's window; the gateway still clamps the resulting mark to its limit.
-COMPACTION_SHARE_RANGE = (10, 60)
+# A percentage of the model's window; the gateway still clamps the resulting mark to its limit
+# and raises it to the fixed-context floor (CONTEXT_COMPACTION_LIMITS_PLAN 3.1).
+COMPACTION_SHARE_RANGE = (5, 60)
+# The Settings form's conservative estimate of the gateway's fixed-context floor: the static
+# agent prompt, a bounded session context, and the exchange and hysteresis reserves. The gateway
+# measures the rendered prefix per run and journals the exact effective mark.
+ESTIMATED_FIXED_PREFIX_TOKENS = 13_000
+COMPACTION_EXCHANGE_RESERVE_TOKENS = 2_000
+COMPACTION_HYSTERESIS_TOKENS = 2_000
+MINIMUM_CONTEXT_TOKENS = (
+    ESTIMATED_FIXED_PREFIX_TOKENS
+    + COMPACTION_EXCHANGE_RESERVE_TOKENS
+    + COMPACTION_HYSTERESIS_TOKENS
+)
 RETENTION_DAYS_KEY = "staged_session_retention_days"
 RETENTION_DAYS_RANGE = (1, 365)
 LEGACY_INVESTIGATION_DEFAULT = "deepseek/deepseek-chat-v3-0324"
@@ -187,8 +199,9 @@ class SettingsService(QObject):
         return True
 
     def context_compaction_view(self, model: str) -> dict[str, Any]:
-        """The Settings form's view: the requested threshold in tokens for ``model``'s window.
-        The gateway's effective mark (its profile cap) is journaled on the run, not shown here."""
+        """The Settings form's view: the requested threshold in tokens for ``model``'s window,
+        plus an estimate of the fixed-context floor the gateway may raise it to. The gateway
+        measures the rendered prefix per run and journals the exact effective mark."""
         share = self.context_compaction_share()
         window = model_context_length(model, self.catalog.models())
         return {
@@ -196,6 +209,7 @@ class SettingsService(QObject):
             "automatic": share is None,
             "windowTokens": window,
             "resolvedTokens": compaction_threshold_tokens(window, share) or 0,
+            "minimumTokens": MINIMUM_CONTEXT_TOKENS,
         }
 
     @property

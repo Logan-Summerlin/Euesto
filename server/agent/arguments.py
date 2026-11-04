@@ -23,14 +23,26 @@ class ArgumentError(ValueError):
     """A tool call whose arguments cannot be used; the message is one corrective line."""
 
 
-def parse_call_arguments(name: str, raw_arguments: str) -> dict[str, Any]:
-    """Decode a tool call's JSON arguments, or explain how they are malformed."""
+def parse_call_arguments(
+    name: str, raw_arguments: str, *, output_truncated: bool = False
+) -> dict[str, Any]:
+    """Decode a tool call's JSON arguments, or explain how they are malformed.
+
+    A turn cut off by the output limit has a truncated argument string; saying so is more
+    useful than reporting an unterminated string, and the size tells the model how far it got.
+    """
+    size = len(raw_arguments.encode("utf-8"))
     try:
         arguments = json.loads(raw_arguments or "{}")
     except json.JSONDecodeError as exc:
+        if output_truncated:
+            raise ArgumentError(
+                f"{name} arguments are not valid JSON and were cut off by the model output "
+                f"limit ({size:,} argument bytes received); send a smaller call"
+            ) from None
         raise ArgumentError(
-            f"{name} arguments are not valid JSON ({exc.msg} at character {exc.pos}); send "
-            "one JSON object"
+            f"{name} arguments are not valid JSON ({exc.msg} at character {exc.pos}; "
+            f"{size:,} argument bytes received); send one JSON object"
         ) from None
     if not isinstance(arguments, dict):
         raise ArgumentError(f"{name} arguments must be a JSON object")

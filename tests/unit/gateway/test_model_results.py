@@ -17,7 +17,7 @@ def ok(data: dict, output: str = "") -> ToolResult:
     return ToolResult("req", True, output=output, data=data)
 
 
-def test_read_header_states_range_total_and_exact_continuation() -> None:
+def test_read_header_states_range_total_and_coverage_without_an_outline() -> None:
     text = format_tool_result(
         "read",
         {"path": "src/app.py"},
@@ -27,25 +27,79 @@ def test_read_header_states_range_total_and_exact_continuation() -> None:
                 "start_line": 1,
                 "end_line": 400,
                 "line_count": 1832,
+                "size_bytes": 120_000,
+                "consumed_bytes": 29_000,
                 "truncated": True,
                 "next_start_line": 401,
                 "sha256": "f" * 64,
-                "outline": [
-                    {"line": 12, "text": "class App:"},
-                    {"line": 900, "text": "def main():"},
-                ],
             },
             output="line one",
         ),
+        coverage={
+            "size_bytes": 120_000,
+            "covered_bytes": 29_000,
+            "complete": False,
+            "ranges": 1,
+            "cap_bytes": 31_000,
+            "profile": "coding",
+        },
+        requested_max_bytes=1_000_000,
     )
     header, _, body = text.partition("\n")
-    assert (
-        header
-        == "read src/app.py lines 1–400 of 1832 (truncated; continue with start_line=401)"
+    assert header == (
+        "read src/app.py lines 1–400 of 1832 (24% covered; requested max_bytes 1,000,000, "
+        "capped at 31,000 by the coding profile; continue with start_line=401)"
     )
-    assert body.startswith("line one")
-    assert "12: class App:" in body and "900: def main():" in body
-    assert "f" * 64 not in text
+    assert body == "line one"
+    assert "outline" not in text and "f" * 64 not in text
+
+
+def test_a_fully_covered_read_says_so() -> None:
+    text = format_tool_result(
+        "read",
+        {"path": "src/app.py", "start_line": 707},
+        ok(
+            {
+                "path": "src/app.py",
+                "start_line": 707,
+                "end_line": 1_832,
+                "line_count": 1_832,
+                "size_bytes": 120_000,
+                "consumed_bytes": 91_000,
+                "truncated": False,
+                "sha256": "f" * 64,
+            },
+            output="last line",
+        ),
+        coverage={
+            "size_bytes": 120_000,
+            "covered_bytes": 120_000,
+            "complete": True,
+            "ranges": 1,
+            "cap_bytes": 31_000,
+            "profile": "coding",
+        },
+    )
+    assert text.splitlines()[0] == "read src/app.py lines 707–1832 of 1832 (full coverage)"
+
+
+def test_write_mode_append_is_named() -> None:
+    text = format_tool_result(
+        "write",
+        {"path": "src/app.py", "content": "x\n"},
+        ok(
+            {
+                "path": "src/app.py",
+                "mode": "append",
+                "old_sha256": "a" * 64,
+                "new_sha256": "b" * 64,
+                "appended_bytes": 30,
+                "size_bytes": 130,
+                "diff": {"text": "", "added_lines": 2, "removed_lines": 0},
+            }
+        ),
+    )
+    assert text == "write src/app.py: appended 2 lines (+30 bytes)"
 
 
 def test_byte_offset_reads_continue_with_offset() -> None:
@@ -57,16 +111,25 @@ def test_byte_offset_reads_continue_with_offset() -> None:
                 "path": "a.txt",
                 "byte_offset": 0,
                 "content_bytes": 10,
+                "consumed_bytes": 10,
                 "size_bytes": 99,
                 "truncated": True,
                 "next_offset": 10,
             },
             output="0123456789",
         ),
+        coverage={
+            "size_bytes": 99,
+            "covered_bytes": 10,
+            "complete": False,
+            "ranges": 1,
+            "cap_bytes": 31_000,
+            "profile": "coding",
+        },
     )
     assert (
         text.splitlines()[0]
-        == "read a.txt bytes 0+10 of 99 (truncated; continue with offset=10)"
+        == "read a.txt bytes 0+10 of 99 (10% covered; continue with offset=10)"
     )
 
 

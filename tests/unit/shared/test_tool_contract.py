@@ -69,7 +69,7 @@ LEGACY_TOOL_NAMES = frozenset(
 )
 SCHEMA_PROPERTIES = {
     "read": {"path", "start_line", "end_line", "offset", "max_bytes"},
-    "write": {"path", "content", "create_parents"},
+    "write": {"path", "content", "create_parents", "mode"},
     "edit": {"path", "old_str", "new_str", "expected_occurrences"},
     "apply_patch": {"operations"},
     "bash": {
@@ -176,8 +176,41 @@ def test_schemas_declare_exactly_the_executor_arguments() -> None:
         assert set(schemas[name]["parameters"]["properties"]) == properties, name
     # The gateway fills expected_sha256 from the last hash the agent saw, so the model never
     # spends output tokens on hashes; include_metadata only affected the JSON envelope.
+    write = schemas["write"]["parameters"]["properties"]
+    assert write["mode"]["enum"] == ["replace", "append"]
+    assert write["mode"]["default"] == "replace"
+    assert "expected_sha256" not in write
     operation = schemas["apply_patch"]["parameters"]["properties"]["operations"]["items"]
     assert "expected_sha256" not in operation["properties"]
+    assert "mode" not in operation["properties"]
+
+
+def test_apply_patch_rejects_write_mode(tmp_path: Path) -> None:
+    from executor.errors import ExecutorToolError
+    from executor.tools.apply_patch import apply_patch
+
+    with pytest.raises(ExecutorToolError) as raised:
+        apply_patch(
+            tmp_path,
+            {
+                "operations": [
+                    {
+                        "operation": "write",
+                        "path": "a.txt",
+                        "content": "x",
+                        "mode": "append",
+                    }
+                ]
+            },
+            max_operations=10,
+            max_patch_bytes=1_000,
+            max_write_bytes=1_000,
+            max_edit_target_bytes=1_000,
+            max_edit_result_bytes=1_000,
+            max_checkpoint_bytes=100_000_000,
+        )
+    assert raised.value.code == "apply_patch.malformed"
+    assert "mode" in raised.value.message
 
 
 def test_model_schema_hard_maxima_match_configuration_ceilings() -> None:

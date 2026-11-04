@@ -4,8 +4,8 @@ Limits below describe the current `coding` executor profile. `executor/config.py
 
 | Area | Coding default | Hard maximum | Notes |
 |---|---:|---:|---|
-| `read` bytes | 1,000,000 | 8,000,000 | Exact byte values: 1,000,000 / 8,000,000. Requested value is clamped to effective limit. Each call returns 32,000 bytes unless `max_bytes` asks for more, up to the profile value. |
-| `write` bytes | 1,000,000 | 8,000,000 | Exact byte values: 1,000,000 / 8,000,000. UTF-8 text content. |
+| `read` bytes | 1,000,000 | 8,000,000 | Exact byte values: 1,000,000 / 8,000,000. Requested value is clamped to effective limit. Each call returns 32,000 bytes unless `max_bytes` asks for more, up to the profile value. The gateway's model-facing content cap is 31,000 bytes in `coding` (47,000 / 63,000 in the larger profiles); a clamped request states the effective cap in the result. |
+| `write` bytes | 1,000,000 | 8,000,000 | Exact byte values: 1,000,000 / 8,000,000. UTF-8 text content. A `mode="append"` write's resulting file size (`old size + content`) is bounded by the same value. |
 | `edit` target | 2,000,000 | 16,000,000 | Exact byte values: 2,000,000 / 16,000,000. Target file size. |
 | `edit` result | 2,000,000 | 16,000,000 | Exact byte values: 2,000,000 / 16,000,000. Resulting file size. |
 | `apply_patch` operations | 100 | 500 | Exact counts: 100 / 500 (`max_patch_operations`). Operations per atomic patch. |
@@ -37,20 +37,26 @@ The gateway bounds each tool result it gives the model, independently of the exe
 
 | Result | `coding` | `extended-coding` | `large-coding` |
 |---|---:|---:|---:|
-| `read` | 32,000 bytes | 48,000 bytes | 64,000 bytes |
+| `read` result cap | 32,000 bytes | 48,000 bytes | 64,000 bytes |
+| `read` content cap (result cap − 1,000-byte header/coverage reserve) | 31,000 bytes | 47,000 bytes | 63,000 bytes |
 | Every other tool | 24,000 bytes | 32,000 bytes | 48,000 bytes |
 | `bash` output shown | 8,000 characters | 12,000 characters | 16,000 characters |
 | Ceiling for any result | 40% of the working set in tokens (60,000 bytes) | 96,000 bytes | 160,000 bytes |
 
 The ceiling counts four bytes per token: 40% of the working set in tokens equals 10% of it in bytes at four bytes per token. `investigate_repository` keeps its own, separate allowance (below).
 
+The `read` result cap includes a 1,000-byte reserve for the header and coverage line, so the content a read can show is 31,000 bytes in `coding`. A requested `max_bytes` above that is clamped, and the result names the requested value and the effective cap. A file larger than the cap is read in contiguous chunks; the header's cumulative coverage reaches `full coverage` when every byte has been read.
+
 ## Context, output, and steering
 
 | Bound | Value | Notes |
 |---|---:|---|
-| Working set (compaction high-water) | 150,000 tokens (`coding`), 240,000 (`extended-coding`), 400,000 (`large-coding`) | The smallest of this, 75% of the request's prompt budget, and the room left after one full output turn plus a 32,000-token growth reserve applies (floor 4,000); compaction returns to a third of it, and never leaves more than 90% of the prompt budget. The default prompt budget is 160,000 tokens (a 200k-class window); the desktop sends 80% of the model's published window. The user's compaction threshold (Settings, 10–60% of the model's window, or Automatic) replaces the profile cap when set, so it can raise the mark above 150,000 tokens on large windows; the 75% share, the capacity bound, and the 4,000-token floor still apply, and a threshold above them changes nothing. |
+| Working set (compaction high-water) | 150,000 tokens (`coding`), 240,000 (`extended-coding`), 400,000 (`large-coding`) | The smallest of this, 75% of the request's prompt budget, and the room left after one full output turn plus a 32,000-token growth reserve applies (floor 4,000); compaction returns to a third of the effective mark, and never leaves more than 90% of the prompt budget. The default prompt budget is 160,000 tokens (a 200k-class window); the desktop sends 80% of the model's published window. The user's compaction threshold (Settings, 5–60% of the model's window, or Automatic) replaces the profile cap when set, so it can raise the mark above 150,000 tokens on large windows; the 75% share, the capacity bound, and the 4,000-token floor still apply, and a threshold above them changes nothing. |
+| Effective compaction mark | The larger of the request-derived mark and the fixed-context floor | The floor is the rendered leading system prefix plus a 2,000-token exchange reserve and a 2,000-token hysteresis, so a low threshold is raised rather than silently missed; a compaction that still lands at or above the mark raises it further and journals `context.compaction_floor`. A floor that cannot fit the prompt budget fails the run with `context.floor_too_large` before any provider call. |
+| Compaction trigger | The effective mark minus 1,000 tokens | The prompt estimate that triggers compaction counts the tool schemas, the provider's measured overhead, the previous turn's actual `prompt_tokens` as a lower bound, and a 2,000-token margin, so the summary request itself is sent below the mark. |
 | Handoff summary | 2,500 tokens | One tool-free turn at low reasoning effort. |
 | Output per model turn (`max_tokens`) | 16,000 tokens | Per profile; a cut-off turn gets a note to write large files in parts. |
+| Length-truncated turn | Mutations refused | When `finish_reason` is `length`, `write`, `edit`, `apply_patch`, and `bash` calls are not executed and return `tool.output_truncated` with the limit and argument size; read-only calls still run. |
 | Static system prompt | 4,800 bytes | Per mode; no dynamic values. |
 | Session context | 48,000 characters | Workspace instructions 32,000 characters, `AGENTS.md` 24,000 bytes, skills 16,000 characters, conversation prompt 8,000 characters, executor facts 2,000 characters, workspace snapshot 6,000 bytes. |
 | Steering message | 8,000 characters | At most 16 queued per run. |

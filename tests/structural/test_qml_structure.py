@@ -129,12 +129,17 @@ def test_the_thinking_control_offers_the_five_levels_from_the_backend() -> None:
 
 
 def test_settings_offer_the_context_compaction_threshold() -> None:
-    """MODEL_CONTROLS_PLAN 1.3: the Conversation tab sets the compaction share with an
-    Automatic option and saves it through the backend, which names the resolved mark."""
+    """MODEL_CONTROLS_PLAN 1.3 with CONTEXT_COMPACTION_LIMITS_PLAN 3.1: the Conversation tab sets
+    the compaction share from 5% in 1% steps with an Automatic option, and its helper text names
+    both the requested mark and the fixed-context floor the gateway may raise it to."""
     source = _qml("Main.qml")
     form = source[source.index('objectName: "compactionShare"') :][:900]
-    assert "from: 10" in form and "to: 60" in form
+    assert "from: 5" in form and "to: 60" in form
+    assert "stepSize: 1" in form and "editable: true" in form
     assert 'objectName: "compactionAutomatic"' in source
     assert "backend.saveContextCompactionShare(" in source
     assert "backend.contextThreshold" in source
     assert 'objectName: "compactionHelp"' in source
+    help_text = source[source.index('objectName: "compactionHelp"') :][:1800]
+    assert "Requested:" in help_text and "minimumTokens" in help_text
+    assert "the run journal shows the mark actually used" in help_text

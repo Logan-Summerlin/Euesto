@@ -280,23 +280,61 @@ class ConversationService(QObject):
             window, self.host.settings.context_compaction_share()
         )
 
+    def _last_effective_mark(self, conversation_id: str) -> dict[str, object] | None:
+        """The effective compaction mark the gateway journaled on the newest run, if any.
+
+        The gateway measures the rendered prefix per run, which the desktop cannot know, so the
+        journal is the only authoritative source for the mark the run actually used."""
+        events = self.storage.list_run_events(
+            conversation_id,
+            event_types=frozenset({"context.high_water", "context.compacted"}),
+            payload_keys=(
+                "requested_tokens",
+                "effective_tokens",
+                "effective_high_water_tokens",
+                "floor_tokens",
+                "binding",
+            ),
+        )
+        for event in reversed(events):
+            payload = event.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            effective = payload.get("effective_tokens")
+            if effective is None:
+                effective = payload.get("effective_high_water_tokens")
+            if effective is None:
+                continue
+            return {
+                "effective_tokens": effective,
+                "requested_tokens": payload.get("requested_tokens"),
+                "floor_tokens": payload.get("floor_tokens"),
+                "binding": payload.get("binding"),
+            }
+        return None
+
     def inspect_context(self) -> None:
         conversation = self.current()
         if not conversation:
             return
         messages = self.storage.list_messages(conversation.id)
         estimate = sum(estimate_tokens(item.content) for item in messages)
-        limit = self._submission_limit(conversation.model)
         threshold = self._compaction_threshold(conversation.model)
         threshold_text = f"{threshold:,} tokens" if threshold is not None else "Automatic"
+        mark = self._last_effective_mark(conversation.id)
+        if mark is None:
+            mark_text = "Not journaled yet; the next run records it."
+        else:
+            binding = f" ({mark['binding']})" if mark.get("binding") else ""
+            mark_text = f"{int(mark['effective_tokens']):,} tokens{binding}"
         compactions = self.storage.list_compactions(conversation.id)
         latest = compactions[-1]["summary"] if compactions else "No saved compaction."
         self.host.infoRequested.emit(
             "Context inspection",
             f"Active branch: {len(messages)} messages\n"
             f"Estimated text tokens: {estimate:,}\n"
-            f"Submission limit: {limit:,}\n"
-            f"Compaction threshold: {threshold_text}\n"
+            f"Compaction threshold requested: {threshold_text}\n"
+            f"Effective mark on the last run: {mark_text}\n"
             f"Saved compactions: {len(compactions)}\n\n"
             f"{str(latest)[:6000]}",
         )
