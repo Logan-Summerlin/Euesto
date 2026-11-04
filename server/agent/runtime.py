@@ -1183,7 +1183,7 @@ class AgentRuntime:
         plan_note = f"\n\nCurrent plan (from update_plan):\n{plan_text}" if plan_text else ""
         status_text = await self._fresh_status(run_id, request)
         status_prompt_note = (
-            "\n\nFresh staged status (application-generated; use this for \"Files touched\"):\n"
+            '\n\nFresh staged status (application-generated; use this for "Files touched"):\n'
             f"{status_text}"
         )
         status_handoff_note = f"\n\nFresh staged status (application-generated):\n{status_text}"
