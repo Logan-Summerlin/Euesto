@@ -176,9 +176,7 @@ class Provider:
         for name in ("idle_timeout", "turn_timeout", "on_delta"):
             kwargs.pop(name, None)
         self.payloads.append(
-            agent_payload(
-                model, messages, mode, provider_preferences, allowed_tools, **kwargs
-            )
+            agent_payload(model, messages, mode, provider_preferences, allowed_tools, **kwargs)
         )
         turn = self.turns.pop(0)
         if isinstance(turn, Exception):
@@ -421,12 +419,8 @@ def test_the_re_read_note_says_full_coverage() -> None:
         "profile": "coding",
     }
     runtime._live["run"] = [{"role": "tool", "tool_call_id": "r1", "content": "first"}]
-    first = runtime._unchanged_read(
-        "run", "r1", {"path": "a"}, result, "first", coverage
-    )
-    second = runtime._unchanged_read(
-        "run", "r2", {"path": "a"}, result, "second", coverage
-    )
+    first = runtime._unchanged_read("run", "r1", {"path": "a"}, result, "first", coverage)
+    second = runtime._unchanged_read("run", "r2", {"path": "a"}, result, "second", coverage)
     assert first == "first"
     assert second == (
         "read a: unchanged since tool call r1; that result covered the whole file "

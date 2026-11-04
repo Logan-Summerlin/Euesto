@@ -1867,9 +1867,7 @@ class AgentRuntime:
         )
         text = await self._redact(run_id, request_id, name, arguments, text)
         if name == "read" and result.ok:
-            text = self._unchanged_read(
-                run_id, request_id, arguments, result, text, coverage
-            )
+            text = self._unchanged_read(run_id, request_id, arguments, result, text, coverage)
         cap = profile.result_cap(name)
         bounded, clipped = bound_text(text, cap)
         if clipped:
