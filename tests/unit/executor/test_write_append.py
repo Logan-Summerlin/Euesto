@@ -42,20 +42,28 @@ def test_append_creates_a_missing_file_and_parents(tmp_path: Path) -> None:
     assert output.startswith("Created new/deep/a.txt.")
 
 
-def test_append_preserves_content_size_and_mode(tmp_path: Path) -> None:
+def test_append_preserves_content_and_reports_sizes(tmp_path: Path) -> None:
     path = tmp_path / "a.txt"
     path.write_text("old\n", encoding="utf-8")
-    os.chmod(path, 0o640)
     _, data = _write(
         tmp_path,
         {"path": "a.txt", "content": "new\n", "mode": "append"},
     )
     assert path.read_text(encoding="utf-8") == "old\nnew\n"
-    assert stat.S_IMODE(path.stat().st_mode) == 0o640
     assert data["old_size_bytes"] == 4
     assert data["appended_bytes"] == 4
     assert data["size_bytes"] == 8
     assert data["old_sha256"] != data["new_sha256"]
+
+
+@pytest.mark.posix
+def test_append_preserves_the_file_mode(tmp_path: Path) -> None:
+    # Windows has no POSIX permission bits: os.chmod there only toggles the read-only flag.
+    path = tmp_path / "a.txt"
+    path.write_text("old\n", encoding="utf-8")
+    os.chmod(path, 0o640)
+    _write(tmp_path, {"path": "a.txt", "content": "new\n", "mode": "append"})
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
 
 
 def test_append_without_the_shrink_guard(tmp_path: Path) -> None:
