@@ -44,12 +44,13 @@ def test_append_creates_a_missing_file_and_parents(tmp_path: Path) -> None:
 
 def test_append_preserves_content_and_reports_sizes(tmp_path: Path) -> None:
     path = tmp_path / "a.txt"
-    path.write_text("old\n", encoding="utf-8")
+    # Bytes, not write_text: text mode writes "\r\n" on Windows — five bytes, not four.
+    path.write_bytes(b"old\n")
     _, data = _write(
         tmp_path,
         {"path": "a.txt", "content": "new\n", "mode": "append"},
     )
-    assert path.read_text(encoding="utf-8") == "old\nnew\n"
+    assert path.read_bytes() == b"old\nnew\n"
     assert data["old_size_bytes"] == 4
     assert data["appended_bytes"] == 4
     assert data["size_bytes"] == 8
