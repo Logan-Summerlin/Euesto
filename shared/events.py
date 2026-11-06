@@ -24,11 +24,17 @@ EVENT_TYPES = frozenset(
         "model.stream",
         "plan.updated",
         "loop.note",
+        "loop.output_truncated",
+        "read.duplicate_batch",
         "secret.redacted",
         "web.requested",
         "usage.turn",
         "cache.unexpected_miss",
         "context.compacted",
+        "context.high_water",
+        "context.compaction_floor",
+        "context.status_snapshot",
+        "context.status_unavailable",
         "input.steered",
         "tool.result_bounded",
         "context.inspected",
@@ -51,6 +57,7 @@ EVENT_TYPES = frozenset(
         "subagent.tool_result",
         "subagent.completed",
         "subagent.failed",
+        "subagent.executor_error",
     }
 )
 
