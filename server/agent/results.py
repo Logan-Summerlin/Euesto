@@ -18,13 +18,13 @@ SNIPPET_LINES_PER_HUNK = 10
 LISTING_LINE_CHARS = 240
 SNIPPET_LINE_CHARS = 160
 DIAGNOSTIC_BYTES = 1_200
-# Header and outline room inside a read result; the content itself is clamped to the rest.
-READ_OVERHEAD_BYTES = 3_000
+# Header and coverage room inside a read result; the content itself is clamped to the rest.
+READ_OVERHEAD_BYTES = 1_000
 
 ERROR_HINTS = {
     "staging.conflict": "the file changed since you last saw it; read it again, then retry",
     "staging.shrink_warning": (
-        "read the whole file first (no range); a rewrite is then accepted as deliberate"
+        "read the remaining bytes; the gateway confirms the rewrite after full coverage"
     ),
     "path.missing": "check the path with find or ls",
     "path.unsafe": "use a relative path inside the workspace; links are never followed",
@@ -45,6 +45,10 @@ ERROR_HINTS = {
     "working_directory.invalid": "use an existing directory relative to the workspace root",
     "apply_patch.malformed": "each operation needs operation, path, and its own fields",
     "tool.invalid_request": "send arguments as one JSON object matching the tool schema",
+    "tool.output_truncated": (
+        'split the content into smaller calls; for a large file, use write mode="append" one '
+        "part at a time"
+    ),
 }
 
 _HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
@@ -56,6 +60,8 @@ def format_tool_result(
     result: ToolResult,
     *,
     bash_chars: int = 8_000,
+    coverage: dict[str, Any] | None = None,
+    requested_max_bytes: int | None = None,
 ) -> str:
     """The plain-text model view of one executor result (before the per-result byte cap)."""
     if not result.ok:
@@ -66,18 +72,33 @@ def format_tool_result(
         return result.output
     if name == "bash":
         return _bash(data, bash_chars)
+    if name == "read":
+        return _read(
+            arguments,
+            result.output,
+            data,
+            coverage=coverage,
+            requested_max_bytes=requested_max_bytes,
+        )
     return formatter(arguments, result.output, data)
 
 
 def format_error(code: str | None, message: str, data: dict[str, Any] | None = None) -> str:
     code = code or "tool.failed"
     text = " ".join(str(message or "").split())[:600]
+    coverage = _coverage_diagnostic(data or {})
     hint = ERROR_HINTS.get(code)
     line = f"error {code}: {text}"
-    if hint and hint not in text:
+    # A coverage line already tells the model exactly what to read next.
+    if hint and hint not in text and not coverage:
         line += f"; {hint}"
+    lines = [line]
+    if coverage:
+        lines.append(coverage)
     diagnostics = _diagnostics(data or {})
-    return f"{line}\n{diagnostics}" if diagnostics else line
+    if diagnostics:
+        lines.append(diagnostics)
+    return "\n".join(lines)
 
 
 def bound_text(text: str, cap: int) -> tuple[str, bool]:
@@ -96,7 +117,14 @@ def bound_text(text: str, cap: int) -> tuple[str, bool]:
 # -- per-tool formatters --------------------------------------------------------------------
 
 
-def _read(arguments: dict[str, Any], output: str, data: dict[str, Any]) -> str:
+def _read(
+    arguments: dict[str, Any],
+    output: str,
+    data: dict[str, Any],
+    *,
+    coverage: dict[str, Any] | None = None,
+    requested_max_bytes: int | None = None,
+) -> str:
     path = data.get("path") or arguments.get("path")
     total = data.get("line_count")
     start, end = data.get("start_line"), data.get("end_line")
@@ -109,30 +137,77 @@ def _read(arguments: dict[str, Any], output: str, data: dict[str, Any]) -> str:
         header = f"read {path} lines {start}–{end}"
         if total is not None:
             header += f" of {total}"
-    if data.get("truncated"):
+    notes: list[str] = []
+    if coverage is not None:
+        complete = bool(coverage.get("complete"))
+        notes.append("full coverage" if complete else _coverage_share(coverage))
+        cap = coverage.get("cap_bytes")
+        if (
+            isinstance(cap, int)
+            and isinstance(requested_max_bytes, int)
+            and requested_max_bytes > cap
+        ):
+            profile = str(coverage.get("profile") or "active")
+            notes.append(
+                f"requested max_bytes {requested_max_bytes:,}, capped at {cap:,} by the "
+                f"{profile} profile"
+            )
+        if data.get("truncated"):
+            if data.get("next_start_line"):
+                notes.append(f"continue with start_line={data['next_start_line']}")
+            elif data.get("next_offset") is not None:
+                notes.append(f"continue with offset={data['next_offset']}")
+    elif data.get("truncated"):
         if data.get("next_start_line"):
-            header += f" (truncated; continue with start_line={data['next_start_line']})"
+            notes.append(f"truncated; continue with start_line={data['next_start_line']}")
         elif data.get("next_offset") is not None:
-            header += f" (truncated; continue with offset={data['next_offset']})"
-    elif data.get("range_clipped"):
-        header += " (range ends at end of file)"
-    body = output
-    outline = data.get("outline")
-    if data.get("truncated") and isinstance(outline, list) and outline:
-        entries = "\n".join(
-            f"{item.get('line')}: {str(item.get('text') or '')[:120]}"
-            for item in outline
-            if isinstance(item, dict)
-        )
-        body += f"\n[outline of {path}: top-level definitions by line]\n{entries}"
-    return f"{header}\n{body}" if body else header
+            notes.append(f"truncated; continue with offset={data['next_offset']}")
+    if data.get("range_clipped"):
+        notes.append("range ends at end of file")
+    header += f" ({'; '.join(notes)})" if notes else ""
+    return f"{header}\n{output}" if output else header
+
+
+def _coverage_share(coverage: dict[str, Any]) -> str:
+    covered = max(0, int(coverage.get("covered_bytes") or 0))
+    size = max(0, int(coverage.get("size_bytes") or 0))
+    if size == 0:
+        return "0% covered"
+    percent = min(100, (covered * 100 + size // 2) // size)
+    return f"{percent}% covered"
+
+
+def _coverage_diagnostic(data: dict[str, Any]) -> str:
+    """The guarded-write coverage line: what was read and what remains."""
+    covered = data.get("covered_bytes")
+    size = data.get("size_bytes")
+    if not isinstance(covered, int) or isinstance(covered, bool):
+        return ""
+    if not isinstance(size, int) or isinstance(size, bool):
+        return ""
+    ranges = int(data.get("coverage_ranges") or 0)
+    remaining = data.get("remaining_bytes")
+    if not isinstance(remaining, int) or isinstance(remaining, bool):
+        remaining = max(0, size - covered)
+    scope = f"{covered:,} of {size:,} bytes"
+    if ranges:
+        scope += f" in {ranges} range{'s' if ranges != 1 else ''}"
+    if data.get("complete"):
+        return f"coverage: {scope}; the whole file was read"
+    return f"coverage: {scope}; {remaining:,} bytes remain; read the rest, then retry"
 
 
 def _write(arguments: dict[str, Any], output: str, data: dict[str, Any]) -> str:
     diff = data.get("diff") if isinstance(data.get("diff"), dict) else {}
     created = data.get("old_sha256") is None
+    mode = data.get("mode") or "replace"
     if created:
         header = f"write {data.get('path')}: created, {diff.get('added_lines', 0)} lines"
+    elif mode == "append":
+        header = (
+            f"write {data.get('path')}: appended {diff.get('added_lines', 0)} lines "
+            f"(+{int(data.get('appended_bytes') or 0):,} bytes)"
+        )
     else:
         header = (
             f"write {data.get('path')}: rewritten, +{diff.get('added_lines', 0)} "

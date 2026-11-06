@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from ..errors import INVALID_ARGUMENTS, INVALID_UTF8, PATH_MISSING, ExecutorToolError
@@ -9,18 +8,6 @@ from ..staging import sha256_file
 from ..utf8 import CHUNK_BYTES, validate_utf8_file
 
 DEFAULT_READ_BYTES = 32_000
-MAX_OUTLINE_ENTRIES = 40
-MAX_OUTLINE_LINE_CHARS = 120
-# Top-level definitions across common languages, matched only at column 0 so the outline of a
-# truncated file stays short: Python, JS/TS, Go, Rust, Java/C#/Kotlin, C/C++, shell, Markdown.
-_OUTLINE = re.compile(
-    r"^(?:(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:def|class|function|interface|type|enum)\b"
-    r"|func\b|(?:pub(?:\([^)]*\))?\s+)?(?:fn|struct|trait|impl|mod|enum)\b"
-    r"|(?:public|private|protected|internal|abstract|final|static|sealed|data)\s"
-    r"|(?:export\s+)?(?:const|let|var)\s+\w+\s*=\s*(?:async\s*)?(?:\(|function)"
-    r"|#{1,3}\s|[A-Za-z_][\w:<>,*&\s]*\s[*&]?[A-Za-z_][\w:]*\s*\([^;]*$"
-    r"|[A-Za-z_][\w-]*\s*\(\)\s*\{)"
-)
 
 
 def read(root: Path, arguments: dict, *, max_bytes: int) -> tuple[str, dict]:
@@ -104,11 +91,10 @@ def read(root: Path, arguments: dict, *, max_bytes: int) -> tuple[str, dict]:
             next_offset=next_offset if truncated else None,
             next_start_line=next_line if truncated and next_line > start_line else None,
             truncated=truncated,
+            consumed_bytes=consumed_bytes,
         )
         data["range_clipped"] = range_clipped
         data["line_count"] = line_count
-        if truncated:
-            data["outline"] = outline(path, start_line, data["end_line"])
         return text, data
 
     offset = arguments.get("offset", 0)
@@ -143,6 +129,7 @@ def read(root: Path, arguments: dict, *, max_bytes: int) -> tuple[str, dict]:
         byte_offset=offset,
         next_offset=next_offset if truncated else None,
         truncated=truncated,
+        consumed_bytes=consumed_bytes,
     )
     data["line_count"] = _line_count(path)
     if truncated and not has_offset:
@@ -150,7 +137,6 @@ def read(root: Path, arguments: dict, *, max_bytes: int) -> tuple[str, dict]:
         data["end_line"] = max(1, newlines)
         if newlines:
             data["next_start_line"] = newlines + 1
-        data["outline"] = outline(path, 1, data["end_line"])
     return text, data
 
 
@@ -164,22 +150,6 @@ def _line_count(path: Path) -> int:
     if not last:
         return 0
     return newlines if last == b"\n" else newlines + 1
-
-
-def outline(path: Path, shown_start: int, shown_end: int) -> list[dict[str, object]]:
-    """Top-level definitions outside the lines already shown, so the next read can target a
-    range. Bounded in entries and characters; only column-0 lines are considered."""
-    entries: list[dict[str, object]] = []
-    with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
-        for number, line in enumerate(handle, start=1):
-            if shown_start <= number <= shown_end or not line[:1].strip():
-                continue
-            text = line.rstrip("\r\n")
-            if _OUTLINE.match(text):
-                entries.append({"line": number, "text": text[:MAX_OUTLINE_LINE_CHARS]})
-                if len(entries) >= MAX_OUTLINE_ENTRIES:
-                    break
-    return entries
 
 
 def _line_range_offsets(
@@ -241,12 +211,14 @@ def _metadata(
     next_offset: int | None,
     next_start_line: int | None = None,
     truncated: bool,
+    consumed_bytes: int,
 ) -> dict:
     return {
         "path": relative,
         "sha256": sha256_file(path),
         "size_bytes": size_bytes,
         "content_bytes": len(text.encode("utf-8")),
+        "consumed_bytes": consumed_bytes,
         "start_line": start_line,
         "end_line": end_line,
         "truncated": truncated,

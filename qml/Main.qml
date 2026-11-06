@@ -719,15 +719,15 @@ ApplicationWindow {
                             SpinBox {
                                 id: compactionShare
                                 objectName: "compactionShare"
-                                from: 10
+                                from: 5
                                 to: 60
-                                stepSize: 5
+                                stepSize: 1
                                 editable: true
                                 enabled: !compactionAuto.checked
                                 textFromValue: function(value) { return value + "%" }
-                                valueFromText: function(text) { return parseInt(text) || 10 }
+                                valueFromText: function(text) { return parseInt(text) || 5 }
                                 ToolTip.visible: hovered
-                                ToolTip.text: "Share of the model's context window at which compaction starts"
+                                ToolTip.text: "Share of the model's context window at which compaction starts (5% to 60%)"
                             }
                             CheckBox {
                                 id: compactionAuto
@@ -746,9 +746,11 @@ ApplicationWindow {
                             color: window.mutedColor
                             text: backend.contextThreshold.automatic
                                 ? "Automatic: compaction starts at the profile's working-set cap, never above 75% of the model's window."
-                                : "About " + String(Math.round(backend.contextThreshold.resolvedTokens)).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+                                : "Requested: about " + String(Math.round(backend.contextThreshold.resolvedTokens)).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
                                     + " tokens of a " + String(Math.round(backend.contextThreshold.windowTokens)).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
-                                    + "-token window for the current model. Runs never exceed 75% of the window."
+                                    + "-token window (" + backend.contextThreshold.share + "%). The gateway may raise this to about "
+                                    + String(Math.round(Math.max(backend.contextThreshold.resolvedTokens, backend.contextThreshold.minimumTokens))).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+                                    + " tokens so the fixed prompt and one exchange fit; the run journal shows the mark actually used."
                         }
                         RowLayout {
                             Button { text: backend.theme === "dark" ? "Use light theme" : "Use dark theme"; onClicked: backend.setTheme(backend.theme === "dark" ? "light" : "dark") }

@@ -37,8 +37,8 @@ Efficiency
 2. Search before reading. Read line ranges of large files. Do not re-read a file you already \
 have unless it changed.
 3. Use `edit` or `apply_patch` for existing files. Use `write` only for new files or full \
-rewrites. Write very large files in parts: `write` the first part, then extend it with \
-`apply_patch`.
+rewrites. Write very large files in parts: `write` the first part, then `write` with \
+`mode="append"` one part at a time.
 4. Chain related commands in one `bash` call, use quiet flags, and run the narrowest test \
 first. Full command output is saved to the log path the result names; search it with \
 `grep -n` or `sed -n` through `bash` instead of rerunning.

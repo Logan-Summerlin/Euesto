@@ -560,7 +560,7 @@ This phase makes the context append-only and byte-stable, keeps what enters it s
     ```
 
   - **Per-tool defaults.** These are profile values, and larger profiles raise them.
-    - **`read`:** 32,000 bytes per call, down from 64,000. When a file is truncated, the result adds a bounded outline of its top-level definitions with line numbers, so the next call can target the right range.
+    - **`read`:** 32,000 bytes per call, down from 64,000. ~~When a file is truncated, the result adds a bounded outline of its top-level definitions with line numbers, so the next call can target the right range.~~ Superseded by [HARNESS_TOOL_FEEDBACK_PLAN.md](HARNESS_TOOL_FEEDBACK_PLAN.md) §3.2: the outline is removed; the exact continuation line and the cumulative coverage record replace it.
     - **`write`, `edit`, and `apply_patch`:** a confirmation with line counts and a numbered snippet around each change, capped at 1,500 bytes per call. Today they return diffs of up to 8,000 bytes per file. The full diff stays available through `status` with `include_diffs`.
     - **`bash`:** 8,000 characters across stdout and stderr by default, instead of up to 32,000 each. The excerpt is weighted to the tail, with stderr first. The full log is kept as an artifact (1.5), and test and compiler output is reduced first (1.6).
     - **`grep`, `find`, and `ls`:** one line per entry, with the path stated once per group of matches and long lines clipped to 240 characters.

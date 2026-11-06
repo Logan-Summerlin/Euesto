@@ -138,7 +138,7 @@ def test_read_defaults_to_32k_and_honors_larger_configured_limits(tmp_path: Path
     assert data["line_count"] == 5_000
 
 
-def test_truncated_reads_continue_exactly_and_carry_an_outline(tmp_path: Path) -> None:
+def test_truncated_reads_continue_exactly_without_an_outline(tmp_path: Path) -> None:
     body = ["import os", ""]
     for index in range(60):
         body += [f"def function_{index}():", "    return " + "1 + " * 30 + "1", ""]
@@ -147,9 +147,8 @@ def test_truncated_reads_continue_exactly_and_carry_an_outline(tmp_path: Path) -
     assert data["truncated"]
     continuation = data["next_start_line"]
     assert first.count("\n") + 1 == continuation  # every shown line is complete
-    outline = data["outline"]
-    assert outline and all(entry["line"] > data["end_line"] for entry in outline)
-    assert outline[0]["text"].startswith("def function_")
+    assert "outline" not in data
+    assert data["consumed_bytes"] == data["content_bytes"]
     second, _ = read(tmp_path, {"path": "mod.py", "start_line": continuation}, max_bytes=2_000)
     lines = (tmp_path / "mod.py").read_text(encoding="utf-8").splitlines()
     assert second.splitlines()[0] == lines[continuation - 1]

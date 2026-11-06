@@ -82,6 +82,16 @@ HARD_CEILING_WINDOW_SHARE = 0.9
 # water, so a single over-large turn can never fill the request budget.
 TURN_GROWTH_RESERVE_TOKENS = 32_000
 MIN_HIGH_WATER_TOKENS = 4_000
+# The effective mark is never below what the fixed context needs: the leading system prefix,
+# one newest exchange that ``recent_exchanges`` always keeps, and the hysteresis that keeps the
+# compacted context below the trigger.
+EXCHANGE_RESERVE_TOKENS = 2_000
+COMPACTION_HYSTERESIS_TOKENS = 2_000
+# Room for ``HANDOFF_REQUEST`` and provider framing in the summary call, so the summary request
+# itself is sent below the effective mark.
+COMPACTION_REQUEST_RESERVE_TOKENS = 1_000
+# Covers the difference between the local estimate and the provider's own count.
+PROMPT_ESTIMATE_MARGIN_TOKENS = 2_000
 SUMMARY_MAX_TOKENS = 2_500
 MAX_STEERING_MESSAGES = 16
 # Prefixes of system messages written by earlier gateway versions; dropped when a stored session
@@ -96,13 +106,16 @@ HANDOFF_REQUEST = (
     "COMPACTION REQUEST (application-generated): the context is about to be compacted and "
     "earlier turns will be removed. Do not call tools. Write a HANDOFF block for yourself, at "
     "most about 1,500 words, with these headings:\n"
-    "Objective and constraints\nDecisions made\nFiles touched (from status)\n"
+    "Objective and constraints\nDecisions made\nFiles touched (from the fresh status below)\n"
     "Commands run and their results\nPlan state and open questions\nNext steps"
 )
 LENGTH_NOTE = (
-    "RUN NOTE: your last reply hit the output limit and was cut off. Write large files in "
-    "parts: `write` the first part, then extend it with `apply_patch`."
+    "RUN NOTE: your last reply hit the output limit and was cut off, so its mutation calls "
+    "were not applied. Write large files in parts: `write` the first part, then `write` with "
+    '`mode="append"` one part at a time.'
 )
+# The compaction handoff carries a fresh read-only status snapshot, bounded like other results.
+STATUS_SNAPSHOT_BYTES = 4_000
 # Budget wind-down (3.3).
 WRAP_UP_NOTE = (
     "RUN NOTE: {budget} budget is {percent}% used. Wrap up: finish the current step, leave "
@@ -138,6 +151,26 @@ STREAM_FLUSH_CHARS = 4_000
 STREAM_MAX_CHARS = 64_000
 
 
+class ContextFloorTooLarge(Exception):
+    """The fixed session context cannot fit the request's prompt budget.
+
+    Raised before an over-limit provider call: a window that cannot hold the static prefix, one
+    exchange, and one output turn is a configuration error, not a prompt to send.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class HighWater:
+    """The compaction marks of one check: the request-derived mark, the fixed-context floor, the
+    floor learned from a previous compaction, and the effective mark they produce."""
+
+    requested: int
+    floor: int
+    learned: int
+    effective: int
+    binding: str
+
+
 @dataclass(slots=True)
 class RunState:
     """Per-run facts fixed at start (tool shape, network) and the loop's own bookkeeping."""
@@ -158,6 +191,21 @@ class RunState:
     failures: dict[str, int] = field(default_factory=dict)
     # The selection sent on this run's turns; a provider rejection steps it down (3.2).
     effort: str | None = None
+
+
+@dataclass(slots=True)
+class SeenFile:
+    """What the model has seen of one staged file, keyed by its current hash.
+
+    ``covered`` holds merged, sorted, non-overlapping byte ranges, so several contiguous
+    chunked reads prove the same thing as one whole-file read. A changed hash starts a new
+    record: coverage of older content never vouches for a rewrite of newer content.
+    """
+
+    sha256: str
+    size_bytes: int
+    covered: list[tuple[int, int]] = field(default_factory=list)
+    complete: bool = False
 
 
 class _DeltaJournal:
@@ -230,12 +278,22 @@ class AgentRuntime:
         self._investigation_calls: dict[str, int] = {}
         self._api_keys: dict[str, str] = {}
         self._steering: dict[str, deque[str]] = {}
-        # Per run: the last hash the agent saw for each path, and whether it saw the whole file.
-        self._seen_hashes: dict[str, dict[str, tuple[str, bool]]] = {}
-        # Per run: (read key) -> (hash, tool_call_id, model-facing text) of earlier reads.
-        self._reads: dict[str, dict[tuple[Any, ...], tuple[str, str, str]]] = {}
+        # Per run: what the agent has read of each path, keyed by the current content hash.
+        self._seen_files: dict[str, dict[str, SeenFile]] = {}
+        # Per run: (read key) -> (hash, tool_call_id, model text, read view) of earlier reads.
+        self._reads: dict[
+            str, dict[tuple[Any, ...], tuple[str, str, str, dict[str, Any] | None]]
+        ] = {}
         self._live: dict[str, list[Message]] = {}
         self._expected_miss: dict[str, str] = {}
+        # Compaction accounting per run: the measured tool-schema overhead, the provider's
+        # framed-prompt overhead over the local estimate, the previous turn's actual prompt, and
+        # the floor learned from a compaction that could not reach the low-water mark.
+        self._schema_tokens: dict[str, int] = {}
+        self._prompt_overhead: dict[str, int] = {}
+        self._last_prompt_tokens: dict[str, int] = {}
+        self._last_prompt_message_count: dict[str, int] = {}
+        self._compaction_floor: dict[str, int] = {}
         # Per session: the previous request (for cache classification) and cumulative usage.
         self._last_turn: OrderedDict[str, TurnRecord] = OrderedDict()
         self._session_usage: OrderedDict[str, UsageLedger] = OrderedDict()
@@ -280,8 +338,13 @@ class AgentRuntime:
         visible = [dict(x) for x in (visible_messages or request.messages)]
         self._api_keys[run_id] = api_key
         self._steering[run_id] = deque()
-        self._seen_hashes[run_id] = {}
+        self._seen_files[run_id] = {}
         self._reads[run_id] = {}
+        self._schema_tokens.pop(run_id, None)
+        self._prompt_overhead.pop(run_id, None)
+        self._last_prompt_tokens.pop(run_id, None)
+        self._last_prompt_message_count.pop(run_id, None)
+        self._compaction_floor.pop(run_id, None)
         try:
             await self._approve_budget_profile(run_id, request, profile, budget)
             status = await self.executor.status()
@@ -339,8 +402,24 @@ class AgentRuntime:
                     "budget": budget.snapshot(),
                 },
             )
+            # The effective mark depends on the rendered prefix, so it is journaled once the
+            # session layout exists; `context.compacted` and `context.compaction_floor` record
+            # any later movement (CONTEXT_COMPACTION_LIMITS_PLAN 3.3).
+            mark = self._effective_high_water(run_id, request, profile, messages)
+            await self.append(
+                run_id,
+                "context.high_water",
+                {
+                    **_mark_payload(mark),
+                    "schema_tokens": self._schema_overhead(run_id, request),
+                    "trigger_tokens": _trigger_tokens(mark.effective),
+                    "limit_tokens": request.context_limit_tokens,
+                },
+            )
             self._save_snapshot(run_id, request, messages, visible, budget, True)
             await self._agent_loop(run_id, request, api_key, messages, visible, budget, profile)
+        except ContextFloorTooLarge as exc:
+            await self._fail(run_id, "context.floor_too_large", str(exc), budget)
         except ApprovalTimeoutError as exc:
             await self.append(
                 run_id,
@@ -365,10 +444,15 @@ class AgentRuntime:
             self._investigation_calls.pop(run_id, None)
             self._api_keys.pop(run_id, None)
             self._steering.pop(run_id, None)
-            self._seen_hashes.pop(run_id, None)
+            self._seen_files.pop(run_id, None)
             self._reads.pop(run_id, None)
             self._live.pop(run_id, None)
             self._expected_miss.pop(run_id, None)
+            self._schema_tokens.pop(run_id, None)
+            self._prompt_overhead.pop(run_id, None)
+            self._last_prompt_tokens.pop(run_id, None)
+            self._last_prompt_message_count.pop(run_id, None)
+            self._compaction_floor.pop(run_id, None)
             self._state.pop(run_id, None)
 
     def _get_state(self, run_id: str, request: AgentRunRequest) -> RunState:
@@ -567,6 +651,9 @@ class AgentRuntime:
                     return
                 budget.add_usage(turn.usage, check=False)
                 await self._record_turn(run_id, request, turn, budget)
+                # Record the measured prompt before this turn's message is appended, so the next
+                # compaction check knows how much the provider actually counted.
+                self._observe_prompt(run_id, request, messages, turn)
                 budget.check()
                 content = str(turn.content or "")
                 if not turn.tool_calls and not content.strip():
@@ -619,6 +706,7 @@ class AgentRuntime:
                 # The investigation call cap is per turn: each turn starts with a fresh allowance.
                 self._investigation_calls.pop(run_id, None)
                 state.progressed = False
+                output_truncated = turn.finish_reason == "length"
                 groups = tool_call_groups(turn.tool_calls)
                 for group in groups:
                     reason = budget.wind_down_reason(between_turns=False)
@@ -642,12 +730,23 @@ class AgentRuntime:
                         self._session_ledger(request, run_id).tool_calls += 1
                     if len(group) == 1:
                         mutated = await self._execute_tool_call(
-                            run_id, request, group[0], messages, budget, profile
+                            run_id,
+                            request,
+                            group[0],
+                            messages,
+                            budget,
+                            profile,
+                            output_truncated=output_truncated,
                         )
                         run_mutated = mutated or run_mutated
                         continue
                     for buffer in await self._execute_parallel_group(
-                        run_id, request, group, budget, profile
+                        run_id,
+                        request,
+                        group,
+                        budget,
+                        profile,
+                        output_truncated=output_truncated,
                     ):
                         messages.extend(buffer)
                 if turn.finish_reason == "length":
@@ -955,6 +1054,108 @@ class AgentRuntime:
 
     # -- compaction ----------------------------------------------------------------------------
 
+    def _schema_overhead(self, run_id: str, request: AgentRunRequest) -> int:
+        """The measured token cost of the offered tool schemas, computed once per run.
+
+        The schemas are fixed for the session and the provider counts them on every call, but
+        ``estimate_message_tokens`` serializes messages only; without this the local estimate
+        understates every prompt by the size of the tool list.
+        """
+        cached = self._schema_tokens.get(run_id)
+        if cached is not None:
+            return cached
+        state = self._get_state(run_id, request)
+        schemas = tool_schemas(
+            request.mode, state.offered, bash_description=state.bash_description
+        )
+        serialized = json.dumps(schemas, ensure_ascii=False, separators=(",", ":"))
+        tokens = estimate_message_tokens([{"role": "system", "content": serialized}])
+        self._schema_tokens[run_id] = tokens
+        return tokens
+
+    def _observe_prompt(
+        self, run_id: str, request: AgentRunRequest, messages: list[Message], turn: AgentTurn
+    ) -> None:
+        """Record the provider's own prompt count as a lower bound for the next estimate."""
+        prompt_tokens = int(turn.usage.get("prompt_tokens") or 0)
+        if prompt_tokens <= 0:
+            return
+        schema_tokens = self._schema_overhead(run_id, request)
+        overhead = max(0, prompt_tokens - estimate_message_tokens(messages) - schema_tokens)
+        self._prompt_overhead[run_id] = max(self._prompt_overhead.get(run_id, 0), overhead)
+        self._last_prompt_tokens[run_id] = prompt_tokens
+        self._last_prompt_message_count[run_id] = len(messages)
+
+    def _prompt_estimate(
+        self, run_id: str, request: AgentRunRequest, messages: list[Message]
+    ) -> int:
+        """The best estimate of the next prompt: local estimate plus framing and margin, or the
+        previous actual prompt plus the messages added since (CONTEXT_COMPACTION_LIMITS_PLAN
+        3.4). The previous actual count is a lower bound, so a provider that reports more than
+        the local estimate is never ignored."""
+        local = (
+            estimate_message_tokens(messages)
+            + self._schema_overhead(run_id, request)
+            + self._prompt_overhead.get(run_id, 0)
+            + PROMPT_ESTIMATE_MARGIN_TOKENS
+        )
+        last = self._last_prompt_tokens.get(run_id, 0)
+        if last <= 0:
+            return local
+        index = min(self._last_prompt_message_count.get(run_id, 0), len(messages))
+        return max(local, last + estimate_message_tokens(messages[index:]))
+
+    def _effective_high_water(
+        self,
+        run_id: str,
+        request: AgentRunRequest,
+        profile: BudgetProfile,
+        messages: list[Message],
+    ) -> HighWater:
+        """The mark compaction actually works against, including any floor learned this run."""
+        return effective_high_water(
+            request, profile, messages, learned=self._compaction_floor.get(run_id, 0)
+        )
+
+    async def _fresh_status(self, run_id: str, request: AgentRunRequest) -> str:
+        """Refresh staged status for the compaction handoff (the summary turn cannot call tools)."""
+        request_id = str(uuid.uuid4())
+        try:
+            result = await self.executor.execute(
+                ToolRequest(request_id, run_id, "status", request.mode, {})
+            )
+        except Exception as exc:
+            return await self._status_unavailable(run_id, request_id, str(exc))
+        if not result.ok:
+            return await self._status_unavailable(
+                run_id, request_id, result.output or result.error_code or "status failed"
+            )
+        text = format_tool_result("status", {}, result)
+        bounded, _clipped = bound_text(text, STATUS_SNAPSHOT_BYTES)
+        counts = result.data.get("counts")
+        if not isinstance(counts, dict):
+            counts = {}
+        await self.append(
+            run_id,
+            "context.status_snapshot",
+            {"ok": True, "counts": counts, "bytes": len(bounded.encode("utf-8"))},
+        )
+        return bounded
+
+    async def _status_unavailable(self, run_id: str, request_id: str, message: str) -> str:
+        text = "status unavailable; run status after compaction"
+        await self.append(
+            run_id,
+            "context.status_snapshot",
+            {"ok": False, "counts": None, "bytes": len(text.encode("utf-8"))},
+        )
+        await self.append(
+            run_id,
+            "context.status_unavailable",
+            {"request_id": request_id, "message": " ".join(message.split())[:500]},
+        )
+        return text
+
     async def _maybe_compact(
         self,
         run_id: str,
@@ -964,14 +1165,28 @@ class AgentRuntime:
         budget: RunBudget,
         profile: BudgetProfile,
     ) -> list[Message]:
-        """Compact only at the high-water mark, back down to the low-water mark."""
-        high = _high_water(request, profile)
-        before = estimate_message_tokens(messages)
-        if before < high:
+        """Compact at the effective high-water mark, back down to the low-water mark.
+
+        The trigger sits one summary request below the effective mark, so the summary call
+        itself is sent below the mark (CONTEXT_COMPACTION_LIMITS_PLAN 3.3).
+        """
+        # The base mark ignores the learned floor, so the post-compaction check can tell whether
+        # the requested mark is working again (CONTEXT_COMPACTION_LIMITS_PLAN 3.5).
+        base = effective_high_water(request, profile, messages)
+        mark = self._effective_high_water(run_id, request, profile, messages)
+        trigger = _trigger_tokens(mark.effective)
+        before = self._prompt_estimate(run_id, request, messages)
+        if before < trigger:
             return messages
-        low = max(1_000, int(high * LOW_WATER_SHARE))
+        low = max(1_000, int(mark.effective * LOW_WATER_SHARE))
         plan_text = self._get_state(run_id, request).plan.render()
         plan_note = f"\n\nCurrent plan (from update_plan):\n{plan_text}" if plan_text else ""
+        status_text = await self._fresh_status(run_id, request)
+        status_prompt_note = (
+            '\n\nFresh staged status (application-generated; use this for "Files touched"):\n'
+            f"{status_text}"
+        )
+        status_handoff_note = f"\n\nFresh staged status (application-generated):\n{status_text}"
         prefix_length = _prefix_length(messages)
         prefix, history = messages[:prefix_length], messages[prefix_length:]
         summary_usage: dict[str, Any] = {}
@@ -981,7 +1196,10 @@ class AgentRuntime:
                 run_id,
                 request,
                 api_key,
-                [*messages, {"role": "user", "content": HANDOFF_REQUEST}],
+                [
+                    *messages,
+                    {"role": "user", "content": f"{HANDOFF_REQUEST}{status_prompt_note}"},
+                ],
                 allowed_tools=set(),
                 max_tokens=SUMMARY_MAX_TOKENS,
                 reasoning_effort="low" if request.reasoning_effort else None,
@@ -994,7 +1212,8 @@ class AgentRuntime:
             handoff_message = {
                 "role": "user",
                 "content": f"{HANDOFF_HEADER} (written by you before earlier turns were "
-                f"compacted away)\n{handoff[: SUMMARY_MAX_TOKENS * 6]}{plan_note}",
+                f"compacted away)\n{handoff[: SUMMARY_MAX_TOKENS * 6]}{plan_note}"
+                f"{status_handoff_note}",
             }
             room = max(500, low - estimate_message_tokens([*prefix, handoff_message]))
             compacted = [*prefix, handoff_message, *recent_exchanges(history, room)]
@@ -1003,17 +1222,53 @@ class AgentRuntime:
             body = compact_agent_context(
                 history, max(500, low - estimate_message_tokens(prefix)), summary_role="user"
             )
-            if plan_note:
-                body = [{"role": "user", "content": f"{HANDOFF_HEADER}{plan_note}"}, *body]
+            if plan_note or status_text:
+                body = [
+                    {
+                        "role": "user",
+                        "content": f"{HANDOFF_HEADER}{plan_note}{status_handoff_note}",
+                    },
+                    *body,
+                ]
             compacted = [*prefix, *body]
         window = request.context_limit_tokens
-        if estimate_message_tokens(compacted) > int(window * HARD_CEILING_WINDOW_SHARE):
+        after_raw = estimate_message_tokens(compacted)
+        if after_raw > int(window * HARD_CEILING_WINDOW_SHARE):
             body = compact_agent_context(
                 compacted[prefix_length:],
                 max(500, int(window * 0.8) - estimate_message_tokens(prefix)),
                 summary_role="user",
             )
             compacted = [*prefix, *body]
+            after_raw = estimate_message_tokens(compacted)
+        # The next turn measures the compacted prompt from scratch, not against the index of the
+        # pre-compaction list.
+        self._last_prompt_tokens[run_id] = 0
+        self._last_prompt_message_count[run_id] = len(compacted)
+        after = self._prompt_estimate(run_id, request, compacted)
+        learned = after + COMPACTION_REQUEST_RESERVE_TOKENS + COMPACTION_HYSTERESIS_TOKENS
+        fits = learned <= _mark_room(request, profile)
+        if after >= _trigger_tokens(base.effective) and fits:
+            # The fixed context keeps the compacted prompt at or above what the base mark
+            # allows: raise the mark so the run does not pay for a summary turn every iteration
+            # (D5). The trigger subtracts the request reserve, so adding it back here keeps the
+            # compacted context one full hysteresis below the new trigger. A later compaction
+            # that fits the base mark clears it again. A floor that would not fit the window is
+            # never recorded: it could only fail the next check closed.
+            self._compaction_floor[run_id] = learned
+            await self.append(
+                run_id,
+                "context.compaction_floor",
+                {
+                    "compacted_tokens": after_raw,
+                    "requested_high_water_tokens": mark.requested,
+                    "effective_high_water_tokens": mark.effective,
+                    "floor_tokens": self._compaction_floor[run_id],
+                    "trigger_tokens": trigger,
+                },
+            )
+        else:
+            self._compaction_floor.pop(run_id, None)
         self._expected_miss[run_id] = "compaction"
         await self.append(
             run_id,
@@ -1022,7 +1277,10 @@ class AgentRuntime:
                 "method": method,
                 "tokens_before": before,
                 "tokens_after": estimate_message_tokens(compacted),
-                "high_water_tokens": high,
+                "tokens_after_estimated_prompt": after,
+                "high_water_tokens": mark.requested,
+                "effective_high_water_tokens": mark.effective,
+                "trigger_tokens": trigger,
                 "low_water_tokens": low,
                 "summary_cost": summary_usage.get("cost"),
                 "summary_usage": summary_usage,
@@ -1082,24 +1340,68 @@ class AgentRuntime:
         group: list[dict[str, Any]],
         budget: RunBudget,
         profile: BudgetProfile,
+        *,
+        output_truncated: bool = False,
     ) -> list[list[Message]]:
         """Run independent read-only calls concurrently; each fills its own message buffer so
-        results can be appended in the original call order."""
+        results can be appended in the original call order.
+
+        Exact duplicate reads in one batch share the first call's result: the duplicate gets a
+        one-line pointer without spending an executor call.
+        """
         limiter = asyncio.Semaphore(MAX_PARALLEL_TOOL_CALLS)
         buffers: list[list[Message]] = [[] for _ in group]
+        cap = profile.result_cap("read") - READ_OVERHEAD_BYTES
+        first_by_key: dict[tuple[Any, ...], str] = {}
+        scheduled: list[tuple[dict[str, Any], list[Message]]] = []
 
         async def run_one(raw_call: dict[str, Any], buffer: list[Message]) -> bool:
             async with limiter:
                 return await self._execute_tool_call(
-                    run_id, request, raw_call, buffer, budget, profile, track_active=False
+                    run_id,
+                    request,
+                    raw_call,
+                    buffer,
+                    budget,
+                    profile,
+                    track_active=False,
+                    output_truncated=output_truncated,
                 )
 
-        await asyncio.gather(
-            *(
-                run_one(raw_call, buffer)
-                for raw_call, buffer in zip(group, buffers, strict=True)
+        for raw_call, buffer in zip(group, buffers, strict=True):
+            request_id, name, raw_arguments = parse_tool_call(raw_call)
+            duplicate_of = None
+            parsed: dict[str, Any] | None = None
+            if name == "read":
+                try:
+                    parsed = parse_call_arguments(name, raw_arguments)
+                    validate_arguments(
+                        name, self._schema(self._get_state(run_id, request), name), parsed
+                    )
+                except ArgumentError:
+                    parsed = None
+                if parsed is not None:
+                    key = _read_dedup_key(parsed, cap)
+                    duplicate_of = first_by_key.get(key)
+                    if duplicate_of is None:
+                        first_by_key[key] = request_id
+            if duplicate_of is None:
+                scheduled.append((raw_call, buffer))
+                continue
+            path = str((parsed or {}).get("path") or "")
+            buffer.append(
+                tool_message(
+                    request_id,
+                    f"read {path}: duplicate of tool call {duplicate_of} in this batch; "
+                    "use that result.",
+                )
             )
-        )
+            await self.append(
+                run_id,
+                "read.duplicate_batch",
+                {"path": path, "request_id": request_id, "duplicate_of": duplicate_of},
+            )
+        await asyncio.gather(*(run_one(raw_call, buffer) for raw_call, buffer in scheduled))
         return buffers
 
     async def _execute_tool_call(
@@ -1112,6 +1414,7 @@ class AgentRuntime:
         profile: BudgetProfile,
         *,
         track_active: bool = True,
+        output_truncated: bool = False,
     ) -> bool:
         """Run one model tool call and append its result; return whether it staged changes."""
         request_id, name, raw_arguments = parse_tool_call(raw_call)
@@ -1128,8 +1431,34 @@ class AgentRuntime:
                 )
             )
             return False
+        if output_truncated and name in MUTATION_TOOLS:
+            raw_bytes = len(raw_arguments.encode("utf-8"))
+            await self.append(
+                run_id,
+                "loop.output_truncated",
+                {
+                    "turn": budget.turns,
+                    "tool": name,
+                    "raw_argument_bytes": raw_bytes,
+                    "output_limit_tokens": profile.max_output_tokens,
+                },
+            )
+            messages.append(
+                tool_message(
+                    request_id,
+                    format_error(
+                        "tool.output_truncated",
+                        f"the model output limit ({profile.max_output_tokens:,} tokens) cut off "
+                        f"this {name} after {raw_bytes:,} argument characters; nothing was "
+                        "applied",
+                    ),
+                )
+            )
+            return False
         try:
-            arguments = parse_call_arguments(name, raw_arguments)
+            arguments = parse_call_arguments(
+                name, raw_arguments, output_truncated=output_truncated
+            )
             validate_arguments(name, self._schema(state, name), arguments)
         except ArgumentError as exc:
             error = format_error("tool.invalid_arguments", str(exc))
@@ -1151,6 +1480,7 @@ class AgentRuntime:
             )
         # The approval prompt shows ``description``; the executor never receives it.
         description = arguments.pop("description", None) if name == "bash" else None
+        requested_max_bytes = arguments.get("max_bytes") if name == "read" else None
         try:
             if name == "bash":
                 _clamp_bash_timeout(arguments, budget)
@@ -1181,6 +1511,8 @@ class AgentRuntime:
             finally:
                 if track_active:
                     self.active_request.pop(run_id, None)
+        # Coverage and guarded-write enrichment must be visible to the journaled result.
+        self._observe_files(run_id, name, executor_arguments, result)
         await self.append(run_id, "tool.output", result.to_dict())
         if name == "bash" and bool(result.data.get("rolled_back")):
             await self.append(
@@ -1203,9 +1535,14 @@ class AgentRuntime:
                     "tool": name,
                 },
             )
-        self._observe_hashes(run_id, name, executor_arguments, result)
         text = await self._model_tool_result(
-            run_id, request_id, name, executor_arguments, result, profile
+            run_id,
+            request_id,
+            name,
+            executor_arguments,
+            result,
+            profile,
+            requested_max_bytes=requested_max_bytes,
         )
         if not result.ok:
             text = await self._failure(run_id, name, raw_arguments, text)
@@ -1381,44 +1718,89 @@ class AgentRuntime:
             if not isinstance(requested, int) or isinstance(requested, bool) or requested > cap:
                 arguments["max_bytes"] = cap
             return arguments
-        seen = self._seen_hashes.get(run_id, {})
+        seen = self._seen_files.get(run_id, {})
         if name in {"edit", "write"}:
-            _fill_expected_hash(arguments, seen, whole_file_required=name == "write")
+            _fill_expected_hash(arguments, seen, tool=name)
         elif name == "apply_patch" and isinstance(arguments.get("operations"), list):
             operations = []
             for item in arguments["operations"]:
                 if isinstance(item, dict):
                     item = dict(item)
-                    _fill_expected_hash(
-                        item, seen, whole_file_required=item.get("operation") == "write"
-                    )
+                    _fill_expected_hash(item, seen, tool=str(item.get("operation") or ""))
                 operations.append(item)
             arguments["operations"] = operations
         return arguments
 
-    def _observe_hashes(
+    def _observe_files(
         self, run_id: str, name: str, arguments: dict[str, Any], result: ToolResult
     ) -> None:
-        seen = self._seen_hashes.setdefault(run_id, {})
+        """Update the per-path coverage record from one executor result."""
+        seen = self._seen_files.setdefault(run_id, {})
         data = result.data or {}
+        if name == "bash":
+            # A command may have changed anything, including on a kept non-zero exit; the
+            # agent must look again rather than trust an earlier hash or coverage record.
+            if not data.get("rolled_back"):
+                seen.clear()
+                self._reads.get(run_id, {}).clear()
+            return
         if not result.ok:
-            if result.error_code == "staging.conflict" and data.get("path"):
-                seen.pop(str(data["path"]), None)
+            path = str(data.get("path") or "")
+            if result.error_code == "staging.conflict" and path:
+                seen.pop(path, None)
+            elif result.error_code == "staging.shrink_warning" and path:
+                _enrich_shrink_coverage(result, seen.get(path))
             return
         if name == "read" and data.get("path") and data.get("sha256"):
-            whole = (
-                not data.get("truncated")
-                and int(data.get("byte_offset") or 0) == 0
-                and "start_line" not in arguments
-                and "end_line" not in arguments
-            )
-            previous = seen.get(str(data["path"]))
-            keep_whole = bool(previous and previous[0] == data["sha256"] and previous[1])
-            seen[str(data["path"])] = (str(data["sha256"]), whole or keep_whole)
-        elif name in {"write", "edit"} and data.get("path") and data.get("new_sha256"):
-            previous = seen.get(str(data["path"]))
-            whole = name == "write" or bool(previous and previous[1])
-            seen[str(data["path"])] = (str(data["new_sha256"]), whole)
+            path = str(data["path"])
+            digest = str(data["sha256"])
+            raw_size = data.get("size_bytes")
+            if isinstance(raw_size, bool) or not isinstance(raw_size, int):
+                # Older/partial result shapes: a no-range, untruncated read is a whole read.
+                whole = (
+                    not data.get("truncated")
+                    and "start_line" not in arguments
+                    and "end_line" not in arguments
+                    and "offset" not in arguments
+                )
+                seen[path] = SeenFile(digest, _int_field(data, "content_bytes"), [], whole)
+                return
+            size = max(0, raw_size)
+            record = seen.get(path)
+            if record is None or record.sha256 != digest:
+                record = SeenFile(digest, size)
+            else:
+                record.size_bytes = size
+            offset = _int_field(data, "byte_offset")
+            consumed = _consumed_bytes(data, arguments, size)
+            record.covered = _merge_coverage(record.covered, offset, offset + consumed, size)
+            record.complete = _coverage_complete(record.covered, size)
+            seen[path] = record
+        elif name == "write" and data.get("path") and data.get("new_sha256"):
+            path = str(data["path"])
+            digest = str(data["new_sha256"])
+            size = _int_field(data, "size_bytes")
+            mode = str(data.get("mode") or "replace")
+            old_digest = data.get("old_sha256")
+            previous = seen.get(path)
+            known = previous if previous and previous.sha256 == str(old_digest or "") else None
+            if mode == "append" and old_digest is not None:
+                covered = list(known.covered) if known else []
+                appended = _int_field(data, "appended_bytes")
+                old_size = max(0, size - appended)
+                covered = _merge_coverage(covered, old_size, size, size)
+                complete = bool(known and known.complete)
+                seen[path] = SeenFile(digest, size, covered, complete)
+            else:
+                seen[path] = _seen_whole(digest, size)
+        elif name == "edit" and data.get("path") and data.get("new_sha256"):
+            path = str(data["path"])
+            digest = str(data["new_sha256"])
+            size = _int_field(data, "size_bytes")
+            previous = seen.get(path)
+            old_digest = str(data.get("old_sha256") or "")
+            complete = bool(previous and previous.complete and previous.sha256 == old_digest)
+            seen[path] = _seen_whole(digest, size) if complete else SeenFile(digest, size)
         elif name == "apply_patch":
             for item in data.get("operations") or ():
                 if not isinstance(item, dict) or not item.get("path"):
@@ -1427,13 +1809,36 @@ class AgentRuntime:
                 if item.get("operation") == "delete":
                     seen.pop(path, None)
                 elif item.get("new_sha256"):
-                    previous = seen.get(path)
-                    whole = item.get("operation") == "write" or bool(previous and previous[1])
-                    seen[path] = (str(item["new_sha256"]), whole)
-        elif name == "bash" and not data.get("rolled_back"):
-            # A command may have changed anything; the agent must look again.
-            seen.clear()
-            self._reads.get(run_id, {}).clear()
+                    digest = str(item["new_sha256"])
+                    size = _int_field(item, "size_bytes")
+                    if item.get("operation") == "write":
+                        seen[path] = _seen_whole(digest, size)
+                    else:
+                        previous = seen.get(path)
+                        old_digest = str(item.get("old_sha256") or "")
+                        complete = bool(
+                            previous and previous.complete and previous.sha256 == old_digest
+                        )
+                        seen[path] = (
+                            _seen_whole(digest, size) if complete else SeenFile(digest, size)
+                        )
+
+    def _read_coverage(
+        self, run_id: str, result: ToolResult, profile: BudgetProfile
+    ) -> dict[str, Any] | None:
+        """The cumulative byte-coverage view of the file a read just returned."""
+        path = str((result.data or {}).get("path") or "")
+        record = self._seen_files.get(run_id, {}).get(path)
+        if record is None:
+            return None
+        return {
+            "size_bytes": record.size_bytes,
+            "covered_bytes": _covered_bytes(record.covered),
+            "complete": record.complete,
+            "ranges": len(record.covered),
+            "cap_bytes": profile.result_cap("read") - READ_OVERHEAD_BYTES,
+            "profile": profile.name,
+        }
 
     async def _model_tool_result(
         self,
@@ -1443,12 +1848,26 @@ class AgentRuntime:
         arguments: dict[str, Any],
         result: ToolResult,
         profile: BudgetProfile,
+        *,
+        requested_max_bytes: int | None = None,
     ) -> str:
         """The bounded, plain-text model view of one result (each result has its own cap)."""
-        text = format_tool_result(name, arguments, result, bash_chars=profile.bash_result_chars)
+        coverage = (
+            self._read_coverage(run_id, result, profile)
+            if name == "read" and result.ok
+            else None
+        )
+        text = format_tool_result(
+            name,
+            arguments,
+            result,
+            bash_chars=profile.bash_result_chars,
+            coverage=coverage,
+            requested_max_bytes=requested_max_bytes,
+        )
         text = await self._redact(run_id, request_id, name, arguments, text)
         if name == "read" and result.ok:
-            text = self._unchanged_read(run_id, request_id, arguments, result, text)
+            text = self._unchanged_read(run_id, request_id, arguments, result, text, coverage)
         cap = profile.result_cap(name)
         bounded, clipped = bound_text(text, cap)
         if clipped:
@@ -1472,6 +1891,7 @@ class AgentRuntime:
         arguments: dict[str, Any],
         result: ToolResult,
         text: str,
+        coverage: dict[str, Any] | None = None,
     ) -> str:
         """A one-line note when the same range, unchanged, is still in the live context."""
         reads = self._reads.setdefault(run_id, {})
@@ -1483,14 +1903,13 @@ class AgentRuntime:
         earlier = reads.get(key)
         if (
             earlier
+            and earlier[3] is not None
             and earlier[0] == digest
             and _still_live(self._live.get(run_id, []), earlier[1], earlier[2])
         ):
-            return (
-                f"read {arguments.get('path')}: unchanged since your earlier read "
-                f"(tool call {earlier[1]}); use that result."
-            )
-        reads[key] = (digest, request_id, text)
+            return _unchanged_note(str(arguments.get("path")), earlier[1], earlier[3])
+        view = _read_view(arguments, result.data or {}, coverage)
+        reads[key] = (digest, request_id, text, view)
         return text
 
     async def _permission(
@@ -1708,6 +2127,99 @@ def _high_water(request: AgentRunRequest, profile: BudgetProfile) -> int:
     return max(MIN_HIGH_WATER_TOKENS, high)
 
 
+def _mark_room(request: AgentRunRequest, profile: BudgetProfile) -> int:
+    """The largest mark the request can carry: the 90% clamp and the capacity bound."""
+    limit = request.context_limit_tokens
+    ceiling = int(limit * HARD_CEILING_WINDOW_SHARE)
+    capacity = limit - profile.max_output_tokens - TURN_GROWTH_RESERVE_TOKENS
+    return min(ceiling, capacity)
+
+
+def effective_high_water(
+    request: AgentRunRequest,
+    profile: BudgetProfile,
+    messages: list[Message],
+    *,
+    learned: int = 0,
+) -> HighWater:
+    """The mark compaction actually works against.
+
+    The request-derived mark is unchanged (``_high_water``). The effective mark also honours the
+    fixed context -- the rendered leading system prefix, one exchange, and the hysteresis that
+    keeps a compacted context below the trigger -- and any floor learned from a compaction that
+    could not reach the low-water mark. A floor that cannot fit the prompt budget fails closed
+    rather than sending a prompt the window cannot hold.
+    """
+    requested = _high_water(request, profile)
+    limit = request.context_limit_tokens
+    prefix = estimate_message_tokens(_leading_system(messages))
+    floor = prefix + EXCHANGE_RESERVE_TOKENS + COMPACTION_HYSTERESIS_TOKENS
+    learned = max(0, learned)
+    effective = max(requested, floor, learned)
+    if effective > _mark_room(request, profile):
+        raise ContextFloorTooLarge(
+            "the fixed session context does not fit this model's prompt budget: "
+            f"prefix {prefix:,} tokens, requested mark {requested:,} tokens, effective "
+            f"mark {effective:,} tokens, prompt budget {limit:,} tokens with a "
+            f"{profile.max_output_tokens:,}-token output turn and a "
+            f"{TURN_GROWTH_RESERVE_TOKENS:,}-token growth reserve. Choose a larger model "
+            "window or a higher compaction threshold."
+        )
+    return HighWater(
+        requested,
+        floor,
+        learned,
+        effective,
+        _mark_binding(request, profile, requested, floor, learned, effective),
+    )
+
+
+def _trigger_tokens(effective: int) -> int:
+    """Compact one summary request below the effective mark, never below the protocol floor."""
+    return max(MIN_HIGH_WATER_TOKENS, effective - COMPACTION_REQUEST_RESERVE_TOKENS)
+
+
+def _request_binding(request: AgentRunRequest, profile: BudgetProfile) -> str:
+    """Which bound produced the request-derived mark: ``capacity`` or the user/profile request."""
+    limit = request.context_limit_tokens
+    capacity = limit - profile.max_output_tokens - TURN_GROWTH_RESERVE_TOKENS
+    threshold = request.compaction_threshold_tokens
+    requested_bound = profile.working_set_tokens if threshold is None else threshold
+    if capacity <= min(requested_bound, int(limit * HIGH_WATER_WINDOW_SHARE)):
+        return "capacity"
+    return "requested"
+
+
+def _mark_binding(
+    request: AgentRunRequest,
+    profile: BudgetProfile,
+    requested: int,
+    floor: int,
+    learned: int,
+    effective: int,
+) -> str:
+    """Name the term that set the effective mark: ``learned``, ``prefix``, ``capacity``, or
+    ``requested``. A tie prefers the request-derived mark, so the reason stays the one a reader
+    would expect."""
+    if effective == requested:
+        return _request_binding(request, profile)
+    if effective == learned:
+        return "learned"
+    if effective == floor:
+        return "prefix"
+    return "requested"
+
+
+def _mark_payload(mark: HighWater) -> dict[str, Any]:
+    return {
+        "requested_tokens": mark.requested,
+        "effective_tokens": mark.effective,
+        "floor_tokens": mark.floor,
+        "learned_tokens": mark.learned,
+        "binding": mark.binding,
+    }
+
+
 def _prefix_length(messages: list[Message]) -> int:
     length = 0
     while length < len(messages) and messages[length].get("role") == "system":
@@ -1746,23 +2258,186 @@ def _still_live(messages: list[Message], tool_call_id: str, text: str) -> bool:
 
 def _fill_expected_hash(
     arguments: dict[str, Any],
-    seen: dict[str, tuple[str, bool]],
+    seen: dict[str, SeenFile],
     *,
-    whole_file_required: bool,
+    tool: str,
 ) -> None:
-    """Fill ``expected_sha256`` from the last hash the agent saw for the path.
+    """Fill ``expected_sha256`` from the hash the agent last saw for the path.
 
-    A ``write`` may replace a whole file, and a matching hash downgrades the shrink guard to a
-    warning, so it is filled only after the agent saw the entire file (a full read or its own
-    write).
+    A replace destroys the whole file, so it is confirmed only after the agent covered every
+    byte (in one read or several contiguous chunks). An append never removes unseen content,
+    and an exact edit is itself a confirmation, so either needs only a known hash.
     """
     if arguments.get("expected_sha256") is not None:
         return
     path = arguments.get("path")
     known = seen.get(path) if isinstance(path, str) else None
-    if known is None or (whole_file_required and not known[1]):
+    if known is None:
         return
-    arguments["expected_sha256"] = known[0]
+    mode = arguments.get("mode", "replace") if tool == "write" else None
+    if tool == "write" and mode != "append" and not known.complete:
+        return
+    arguments["expected_sha256"] = known.sha256
+
+
+def _read_dedup_key(arguments: dict[str, Any], cap: int) -> tuple[Any, ...]:
+    """Canonical identity of a read: an omitted or larger max_bytes is the effective cap."""
+    max_bytes = arguments.get("max_bytes")
+    if not isinstance(max_bytes, int) or isinstance(max_bytes, bool):
+        max_bytes = cap
+    return (
+        arguments.get("path"),
+        arguments.get("start_line"),
+        arguments.get("end_line"),
+        arguments.get("offset"),
+        min(max_bytes, cap),
+    )
+
+
+def _int_field(data: dict[str, Any], name: str) -> int:
+    value = data.get(name)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(0, value)
+
+
+def _consumed_bytes(data: dict[str, Any], arguments: dict[str, Any], size: int) -> int:
+    """The exact bytes a read consumed, tolerant of older result shapes in tests."""
+    value = data.get("consumed_bytes")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return max(0, value)
+    content = data.get("content_bytes")
+    if isinstance(content, int) and not isinstance(content, bool):
+        return max(0, content)
+    if (
+        not data.get("truncated")
+        and "start_line" not in arguments
+        and "offset" not in arguments
+    ):
+        return size
+    return 0
+
+
+def _merge_coverage(
+    covered: list[tuple[int, int]], start: int, end: int, size: int
+) -> list[tuple[int, int]]:
+    """Clip one byte range into the file and merge it with adjacent ranges.
+
+    Line-range reads stop before a trailing newline and the next range starts after it, so a
+    one-byte gap is contiguous coverage, not unread content.
+    """
+    if size <= 0:
+        return []
+    start = max(0, min(start, size))
+    end = max(0, min(end, size))
+    ranges = list(covered)
+    if end > start:
+        ranges.append((start, end))
+    ranges.sort()
+    merged: list[tuple[int, int]] = []
+    for range_start, range_end in ranges:
+        if merged and range_start <= merged[-1][1] + 1:
+            previous_start, previous_end = merged[-1]
+            merged[-1] = (previous_start, max(previous_end, range_end))
+        else:
+            merged.append((range_start, range_end))
+    return merged
+
+
+def _covered_bytes(covered: list[tuple[int, int]]) -> int:
+    return sum(end - start for start, end in covered)
+
+
+def _coverage_complete(covered: list[tuple[int, int]], size: int) -> bool:
+    if size <= 0:
+        return True
+    if not covered or covered[0][0] != 0:
+        return False
+    return _covered_bytes(covered) >= size
+
+
+def _seen_whole(digest: str, size: int) -> SeenFile:
+    return SeenFile(digest, size, [(0, size)] if size else [], True)
+
+
+def _enrich_shrink_coverage(result: ToolResult, record: SeenFile | None) -> None:
+    """Give a refused shrink the gateway's cumulative coverage, which the executor cannot know."""
+    if record is None or not isinstance(result.data, dict):
+        return
+    covered = _covered_bytes(record.covered)
+    result.data.update(
+        {
+            "size_bytes": record.size_bytes,
+            "covered_bytes": covered,
+            "coverage_ranges": len(record.covered),
+            "remaining_bytes": max(0, record.size_bytes - covered),
+            "complete": record.complete,
+        }
+    )
+
+
+def _coverage_percent(covered: int, size: int) -> int:
+    if size <= 0:
+        return 100
+    return min(100, (covered * 100 + size // 2) // size)
+
+
+def _read_view(
+    arguments: dict[str, Any],
+    data: dict[str, Any],
+    coverage: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """What an earlier read result covered, for the unchanged re-read note."""
+    if coverage is None:
+        return None
+    if "offset" in arguments:
+        kind = "bytes"
+        start = _int_field(data, "byte_offset")
+        end = start + _int_field(data, "consumed_bytes")
+        total = _int_field(data, "size_bytes")
+    else:
+        kind = "lines"
+        start = _int_field(data, "start_line") or 1
+        end = _int_field(data, "end_line") or start
+        total = _int_field(data, "line_count") or end
+    next_hint = None
+    if data.get("next_start_line"):
+        next_hint = f"start_line={data['next_start_line']}"
+    elif data.get("next_offset") is not None:
+        next_hint = f"offset={data['next_offset']}"
+    elif not coverage.get("complete") and kind == "lines" and end < total:
+        next_hint = f"start_line={end + 1}"
+    return {
+        "kind": kind,
+        "start": start,
+        "end": end,
+        "total": total,
+        "complete": bool(coverage.get("complete")),
+        "covered_bytes": int(coverage.get("covered_bytes") or 0),
+        "size_bytes": int(coverage.get("size_bytes") or 0),
+        "next": next_hint,
+    }
+
+
+def _unchanged_note(path: str, tool_call_id: str, view: dict[str, Any] | None) -> str:
+    """Never a bare pointer: say whether the earlier result was the whole file."""
+    prefix = f"read {path}: unchanged since tool call {tool_call_id};"
+    if not view:
+        return f"{prefix} use that result."
+    if view.get("complete"):
+        return f"{prefix} that result covered the whole file (full coverage)."
+    share = _coverage_percent(
+        int(view.get("covered_bytes") or 0), int(view.get("size_bytes") or 0)
+    )
+    note = (
+        f"{prefix} that result covered {view.get('kind')} {view.get('start')}–"
+        f"{view.get('end')} of {view.get('total')} ({share}%), not the whole file."
+    )
+    if view.get("next"):
+        note += f" Continue with {view['next']}, or use the earlier result for that range."
+    else:
+        note += " Use the earlier result for that range."
+    return note
 
 
 def _fallback_state(run_id: str) -> RunState:

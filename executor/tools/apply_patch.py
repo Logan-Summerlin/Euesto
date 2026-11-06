@@ -20,6 +20,8 @@ from .edit import EDIT_ARGUMENTS, apply_edit, edit_result, prepare_edit
 from .write import WRITE_ARGUMENTS, commit_write, prepare_write, write_result
 
 PATCH_OPERATIONS = ("write", "edit", "delete")
+# A patch is atomic, so an append cannot hide inside it: patch writes keep replace semantics.
+PATCH_WRITE_ARGUMENTS = WRITE_ARGUMENTS - {"mode"}
 DELETE_ARGUMENTS = frozenset({"path", "expected_sha256"})
 MAX_PATCH_DIFF_BYTES = 64_000
 
@@ -141,9 +143,11 @@ def _validate_shape(index: int, item: object) -> None:
         raise _malformed(
             f"apply_patch operation {index} must be one of {', '.join(PATCH_OPERATIONS)}", index
         )
-    allowed = {"write": WRITE_ARGUMENTS, "edit": EDIT_ARGUMENTS, "delete": DELETE_ARGUMENTS}[
-        operation
-    ] | {"operation"}
+    allowed = {
+        "write": PATCH_WRITE_ARGUMENTS,
+        "edit": EDIT_ARGUMENTS,
+        "delete": DELETE_ARGUMENTS,
+    }[operation] | {"operation"}
     unknown = sorted(set(item) - allowed)
     if unknown:
         raise _malformed(

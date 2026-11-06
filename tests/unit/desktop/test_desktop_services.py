@@ -1194,6 +1194,7 @@ def test_the_context_compaction_share_is_validated_saved_and_viewed(host, storag
         "automatic": True,
         "windowTokens": 1_048_576,
         "resolvedTokens": 0,
+        "minimumTokens": 17_000,
     }
 
     assert settings.save_context_compaction_share(30)
@@ -1203,13 +1204,23 @@ def test_the_context_compaction_share_is_validated_saved_and_viewed(host, storag
         "automatic": False,
         "windowTokens": 1_048_576,
         "resolvedTokens": 314_572,
+        "minimumTokens": 17_000,
     }
 
+    # The 5–60% range: 5 is accepted, 4 and 61 are not.
+    assert settings.save_context_compaction_share(5)
+    assert settings.context_compaction_share() == 5
+    assert settings.context_compaction_view("vendor/big")["resolvedTokens"] == 52_428
+    assert settings.save_context_compaction_share(60)
+    assert settings.context_compaction_share() == 60
+    assert settings.save_context_compaction_share(30)
+
     # Out-of-range and non-integer input is refused with an error, not clamped.
-    for bad in (9, 61, True, 30.5, "junk"):
+    for bad in (4, 61, True, 30.5, "junk"):
         assert not settings.save_context_compaction_share(bad), bad
         assert host.errorRequested.calls[-1][0] == "Invalid compaction threshold"
     assert settings.context_compaction_share() == 30  # unchanged
+    assert "from 5 to 60" in host.errorRequested.calls[-1][1]
 
     # A stored value outside the range, or unreadable, loads as Automatic.
     storage.set_setting("context_compaction_share", "99")
@@ -1252,5 +1263,47 @@ def test_manual_compaction_and_inspection_follow_the_saved_threshold(
     history.inspect_context()
     title, text = host.infoRequested.calls[-1][:2]
     assert title == "Context inspection"
-    assert "Submission limit: 838,860" in text
-    assert "Compaction threshold: 314,572 tokens" in text
+    assert "Compaction threshold requested: 314,572 tokens" in text
+    assert "Effective mark on the last run: Not journaled yet" in text
+
+    # Once a run has journaled its effective mark, inspection reports that instead of restating
+    # the submission limit (CONTEXT_COMPACTION_LIMITS_PLAN 3.6).
+    storage.save_run_event(
+        conversation.id,
+        SimpleNamespace(
+            run_id="run-1",
+            event_id=1,
+            type="context.high_water",
+            payload={
+                "requested_tokens": 314_572,
+                "effective_tokens": 314_572,
+                "floor_tokens": 17_000,
+                "binding": "requested",
+            },
+            created_at="2026-01-01T00:00:00+00:00",
+        ),
+    )
+    history.inspect_context()
+    _title, text = host.infoRequested.calls[-1][:2]
+    assert "Effective mark on the last run: 314,572 tokens (requested)" in text
+    assert "Submission limit" not in text
+
+    # A run that raised the mark to the fixed-context floor names that reason instead.
+    storage.save_run_event(
+        conversation.id,
+        SimpleNamespace(
+            run_id="run-2",
+            event_id=1,
+            type="context.high_water",
+            payload={
+                "requested_tokens": 10_000,
+                "effective_tokens": 17_000,
+                "floor_tokens": 17_000,
+                "binding": "prefix",
+            },
+            created_at="2026-01-01T00:00:01+00:00",
+        ),
+    )
+    history.inspect_context()
+    _title, text = host.infoRequested.calls[-1][:2]
+    assert "Effective mark on the last run: 17,000 tokens (prefix)" in text

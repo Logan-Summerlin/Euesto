@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 import tempfile
 from pathlib import Path
@@ -45,3 +46,25 @@ def atomic_write_bytes(
 
 def atomic_write_text(target: Path, content: str, *, encoding: str = "utf-8") -> None:
     atomic_write_bytes(target, content.encode(encoding), prefix=f".{target.name}.atomic-")
+
+
+def atomic_append_text(target: Path, content: str, *, encoding: str = "utf-8") -> None:
+    """Append to *target* through a copied temporary file and an atomic replace.
+
+    Copying first means a crash or power loss never leaves the original file half appended:
+    the old content and the new bytes become visible together, or not at all.
+    """
+    mode = replacement_mode(target)
+    descriptor, raw_temp = tempfile.mkstemp(prefix=f".{target.name}.atomic-", dir=target.parent)
+    temporary = Path(raw_temp)
+    try:
+        with target.open("rb") as source, os.fdopen(descriptor, "wb") as handle:
+            shutil.copyfileobj(source, handle)
+            handle.write(content.encode(encoding))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, target)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise

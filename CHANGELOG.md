@@ -1,10 +1,36 @@
 # Changelog
 
+## Unreleased — harness tool feedback
+
+Implements [docs/HARNESS_TOOL_FEEDBACK_PLAN.md](docs/HARNESS_TOOL_FEEDBACK_PLAN.md). The thirteen-tool surface, approval tiers, and sandbox are unchanged: `write` gains one argument and `read` loses the outline.
+
+- **Read coverage.** The gateway records merged byte coverage per path and current hash. A file larger than the model-facing cap can be read in contiguous chunks, and the result header reports the cumulative percentage or `full coverage` plus the exact continuation. `consumed_bytes` joins `content_bytes` in the executor result so trailing-newline normalization cannot undercount coverage.
+- **Read cap.** The header/coverage reserve drops from 3,000 to 1,000 bytes, raising the effective content cap to 31,000 (`coding`), 47,000 (`extended-coding`), and 63,000 (`large-coding`). A clamped `max_bytes` request is named in the result instead of silently reduced. The truncated-file outline is removed; the exact continuation line replaces it.
+- **Shrink guard.** A complete-coverage hash still downgrades a deliberate whole-file shrink to a warning. The refused result carries `covered_bytes`, `remaining_bytes`, and range count, and its message never names a parameter the schema does not offer.
+- **`write` append.** `write` accepts `mode="replace"` (default) or `"append"`. Append never removes bytes, skips the shrink guard, is bounded by the resulting file size, preserves the file mode, and commits through a copied temporary file, fsync, and atomic replace. The model view says created, rewritten, or `appended N lines (+X bytes)`; `apply_patch` stays replace-only.
+- **Length-truncated turns.** A turn whose `finish_reason` is `length` executes no mutation; each refused call returns `tool.output_truncated` with the output limit and argument size and journals `loop.output_truncated`. Read-only calls in the same turn still run, and a malformed read reports the truncation and size.
+- **Fresh compaction status.** The harness runs one read-only `status` for the handoff, appends it to the summary prompt, and keeps it in the handoff that survives compaction. A failure falls back without failing compaction and journals `context.status_unavailable`.
+- **Batch duplicate reads.** Two identical read keys in one parallel batch execute once; the later call gets a one-line pointer and `read.duplicate_batch` is journaled.
+- Unchanged re-read notes now state what the earlier result covered and how to continue.
+
+## Unreleased — context compaction limits
+
+Implements [docs/CONTEXT_COMPACTION_LIMITS_PLAN.md](docs/CONTEXT_COMPACTION_LIMITS_PLAN.md). No tool, protocol field, or sandbox change: the setting widens, the mark gains a fixed-context floor, and compaction triggers before any ordinary call exceeds the mark.
+
+- **5–60% setting.** Settings → Conversation accepts any whole percentage from 5 to 60 in 1% steps, with *Automatic* still the default; 4% is rejected. The helper text names the requested token count and the estimated fixed-context floor the gateway may raise it to.
+- **Effective mark.** `effective_high_water` raises the request-derived mark to the fixed context — the rendered leading system prefix plus a 2,000-token exchange reserve and a 2,000-token hysteresis — and to any floor learned from a compaction that could not go lower. The mark and its binding reason (`requested`, `capacity`, `prefix`, `learned`) are journaled as `context.high_water` on every run.
+- **Fail closed.** A fixed context that cannot fit the prompt budget (90% of it, or the capacity bound after one output turn and the growth reserve) ends the run with `context.floor_too_large` before any provider call, naming the prefix, the requested mark, and the budget.
+- **Trigger.** Compaction now runs one summary request (1,000 tokens) below the effective mark, so the summary call itself is sent below it. `context.compacted` records `trigger_tokens` and `effective_high_water_tokens`.
+- **Prompt estimate.** The estimate counts the measured tool-schema overhead, the provider's own framing (learned from `prompt_tokens - local estimate - schemas`), a 2,000-token margin, and the previous turn's actual `prompt_tokens` plus the messages added since as a lower bound. A provider that reports more than the margin is corrected on the next turn instead of drifting above the mark.
+- **No repeated compaction.** A compaction that still lands at or above the base trigger raises the mark to the compacted size plus the request reserve and hysteresis, journals `context.compaction_floor`, and keeps the following turns ordinary; a later compaction that fits the base mark clears it.
+- **Event registry fix.** `context.high_water`, `context.compaction_floor`, `context.status_snapshot`, `context.status_unavailable`, `loop.output_truncated`, `read.duplicate_batch`, and `subagent.executor_error` are registered in `shared/events.py`. The journal rejected them as unknown, so every agent run failed with `Unknown event type: context.high_water`. `tests/structural/test_event_registry.py` now requires every event type the gateway journals to be registered.
+- Context inspection reports the requested threshold and the effective mark of the last run from the journal instead of restating the submission limit, and the run meter shows the effective mark.
+
 ## Unreleased — context compaction threshold
 
 Implements Phase 1 of [docs/MODEL_CONTROLS_PLAN.md](docs/MODEL_CONTROLS_PLAN.md). No tool, permission, or sandbox behaviour changes.
 
-- Settings → Conversation has a *Compact context at* control (10–60% of the model's window) with an *Automatic* default that reproduces today's numbers.
+- Settings → Conversation has a *Compact context at* control (5–60% of the model's window since the context compaction limits change above) with an *Automatic* default that reproduces today's numbers.
 - The gateway accepts an optional `compaction_threshold_tokens` on agent runs (4,000–2,000,000). The high water is the smallest of the profile cap, the threshold, 75% of the prompt budget, and the capacity bound, with a 4,000-token floor. `run.started` records the resolved mark.
 - Chat compaction and manual compaction follow the same setting; context inspection reports the configured limit and threshold.
 

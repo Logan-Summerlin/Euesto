@@ -124,8 +124,15 @@ def test_preparation_passes_the_saved_threshold_and_bounds_chat_compaction(
     assert chosen.context_limit == 838_860
     assert chosen.compaction_threshold == 314_572
 
+    # The 5% end of the range: on a 1M window it is 52,428 tokens, sent as requested.
+    low = controller.prepare(conversation, messages, "model/a", catalog, 5)
+    assert low.context_limit == 838_860
+    assert low.compaction_threshold == 52_428
+
     # A small window's threshold is raised to the protocol floor and never sent below it.
     small = [ModelOption("model/a", "A", context_length=8_000)]
-    floored = controller.prepare(conversation, messages, "model/a", small, 10)
+    floored = controller.prepare(conversation, messages, "model/a", small, 5)
     assert floored.compaction_threshold == 4_000
+    floored_ten = controller.prepare(conversation, messages, "model/a", small, 10)
+    assert floored_ten.compaction_threshold == 4_000
     storage.close()

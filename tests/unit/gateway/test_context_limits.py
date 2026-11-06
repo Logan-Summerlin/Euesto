@@ -239,3 +239,103 @@ def test_the_threshold_round_trips_and_defaults_to_the_profile_cap() -> None:
 def test_out_of_range_thresholds_are_rejected(bad) -> None:
     with pytest.raises(ValueError, match="Compaction threshold"):
         request_with_threshold(1_048_576, bad)
+
+
+# -- the effective mark and the fixed-context floor (CONTEXT_COMPACTION_LIMITS_PLAN 3.2) -------
+
+
+def prefix_messages(tokens: int) -> list[dict[str, str]]:
+    """A leading system message that estimates to exactly ``tokens``, then a user turn."""
+    message = {"role": "system", "content": "x" * max(0, 4 * tokens - 33)}
+    if tokens:
+        assert estimate_message_tokens([message]) == tokens
+    return [message, {"role": "user", "content": "go"}]
+
+
+# window, share, prefix tokens, learned floor, effective mark, binding.
+EFFECTIVE_TABLE = (
+    (1_048_576, 5, 0, 0, 52_428, "requested"),
+    (1_048_576, 10, 0, 0, 104_857, "requested"),
+    (400_000, 5, 0, 0, 20_000, "requested"),
+    # A 5% request on a 200k window is 10,000 tokens, below the fixed-context floor, so the
+    # gateway raises it to 13,000 prefix + 2,000 exchange + 2,000 hysteresis and says so.
+    (200_000, 5, 13_000, 0, 17_000, "prefix"),
+    (200_000, 10, 13_000, 0, 20_000, "requested"),
+    # Both 5% and 10% of a 128k window are below the floor.
+    (128_000, 5, 13_000, 0, 17_000, "prefix"),
+    (128_000, 10, 13_000, 0, 17_000, "prefix"),
+    # Automatic on a 128k window is capacity-bound, not request-bound.
+    (128_000, None, 0, 0, 54_400, "capacity"),
+    # A floor learned after a compaction that could not reach the low-water mark binds.
+    (200_000, 5, 13_000, 25_000, 25_000, "learned"),
+)
+
+
+def test_the_effective_mark_of_every_window():
+    for window, share, prefix, learned, expected, binding in EFFECTIVE_TABLE:
+        threshold = None if share is None else max(4_000, int(window * share / 100))
+        mark = runtime_module.effective_high_water(
+            request_with_threshold(window, threshold),
+            CODING,
+            prefix_messages(prefix),
+            learned=learned,
+        )
+        assert mark.effective == expected, (window, share, prefix, learned, mark)
+        assert mark.binding == binding, (window, share, prefix, learned, mark)
+        assert mark.requested == runtime_module._high_water(
+            request_with_threshold(window, threshold), CODING
+        )
+        if prefix:
+            # The exchange reserve plus the hysteresis (2,000 + 2,000).
+            assert mark.floor == prefix + 4_000
+        assert mark.effective <= int(window * 0.8 * runtime_module.HARD_CEILING_WINDOW_SHARE)
+
+
+def test_the_effective_mark_still_leaves_room_for_one_turn_and_the_growth_reserve() -> None:
+    for window, share, prefix, learned, _expected, _binding in EFFECTIVE_TABLE:
+        threshold = None if share is None else max(4_000, int(window * share / 100))
+        request = request_with_threshold(window, threshold)
+        limit = request.context_limit_tokens
+        for profile in BUDGET_PROFILES.values():
+            mark = runtime_module.effective_high_water(
+                request, profile, prefix_messages(prefix), learned=learned
+            )
+            # The effective mark plus one output turn and the growth reserve stays inside the
+            # prompt budget, and the 90% safety clamp still holds above it.
+            assert (
+                mark.effective
+                + profile.max_output_tokens
+                + runtime_module.TURN_GROWTH_RESERVE_TOKENS
+                <= limit
+            ), (window, share, profile.name, mark)
+            assert mark.effective <= int(limit * runtime_module.HARD_CEILING_WINDOW_SHARE)
+
+
+def test_the_trigger_sits_one_summary_request_below_the_effective_mark() -> None:
+    for effective in (4_000, 4_001, 17_000, 52_428, 150_000):
+        trigger = runtime_module._trigger_tokens(effective)
+        assert trigger == max(
+            4_000, effective - runtime_module.COMPACTION_REQUEST_RESERVE_TOKENS
+        )
+        assert trigger <= effective
+    # The protocol floor wins below 5,000 tokens; a summary call is never triggered by the
+    # reserve alone.
+    assert runtime_module._trigger_tokens(4_000) == 4_000
+
+
+@pytest.mark.parametrize(
+    "window,prefix",
+    [
+        # 90% of the 838,860-token budget is 754,974: a prefix that large can never be prompted.
+        (1_048_576, 760_000),
+        # The capacity bound binds first on a 200k window: 160,000 − 16,000 − 32,000 = 112,000.
+        (200_000, 120_000),
+    ],
+)
+def test_a_floor_that_cannot_fit_the_budget_fails_closed(window, prefix) -> None:
+    request = request_with_threshold(window, max(4_000, int(window * 5 / 100)))
+    with pytest.raises(runtime_module.ContextFloorTooLarge) as raised:
+        runtime_module.effective_high_water(request, CODING, prefix_messages(prefix))
+    message = str(raised.value)
+    assert f"prefix {prefix:,} tokens" in message
+    assert "requested mark" in message and "prompt budget" in message

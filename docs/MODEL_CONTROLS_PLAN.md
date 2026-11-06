@@ -16,6 +16,11 @@ Non-goals: per-model compaction thresholds, a second provider adapter, prompt-pr
 defaults (still harness plan 7.4), and any change to profile cost budgets, result caps, or
 approval policy.
 
+> Phase 1 is implemented in the current tree. The 5–60% setting range, the fixed-context floor,
+> and the corrected trigger point are specified in
+> [CONTEXT_COMPACTION_LIMITS_PLAN.md](CONTEXT_COMPACTION_LIMITS_PLAN.md); where the two plans
+> differ on those points, that plan is authoritative. The rest of Phase 1 stands.
+
 ## 1. User-set context compaction threshold
 
 ### 1.1 Today
@@ -44,7 +49,9 @@ One new global setting, expressed as a share of the selected model's published w
 follows model switches:
 
 - **Setting:** `context_compaction_share`, an integer percentage of the model's window. Empty or
-  absent means *Automatic*, today's derivation. Range 10–60.
+  absent means *Automatic*, today's derivation. Range 5–60, in 1% steps (widened from 10–60 by
+  [CONTEXT_COMPACTION_LIMITS_PLAN.md](CONTEXT_COMPACTION_LIMITS_PLAN.md); that plan owns the
+  range, the fixed-context floor, and the trigger point).
 - **Default:** Automatic, so behaviour is unchanged until the user opts in.
 - **Effective threshold:** `int(window * share / 100)` is sent as a new optional request field and
   the gateway still takes the minimum with the 75% share, the capacity bound, and the floor. This
@@ -70,7 +77,7 @@ changes nothing, and one below them lowers the mark.
 | `src/controllers.py` | Keep `CONTEXT_WINDOW_SHARE = 0.8` as a named constant; `PreparedGeneration` gains `compaction_threshold: int \| None`, computed from the saved share and the model window. Chat compaction targets `min(threshold, context_limit)` instead of the raw budget, so one setting governs both modes. |
 | `src/desktop/generation.py` | Pass `compaction_threshold_tokens=prepared.compaction_threshold` to `AgentWorker.for_run`. |
 | `src/gateway_client.py` | `stream_agent` (`:307`) gains `compaction_threshold_tokens: int \| None = None` and includes it in the run payload. |
-| `src/desktop/preferences.py` | `context_compaction_share()` / `set_context_compaction_share(value)` with range 10–60 and empty = automatic, plus a view (`{"share", "automatic", "windowTokens", "resolvedTokens"}`) for the Settings form. The desktop cannot compute the gateway's effective mark (the profile cap is gateway-side), so the form reports the requested threshold in tokens while the run journal carries the resolved one. Reject out-of-range input with an error dialog rather than clamping silently, matching the runner settings. |
+| `src/desktop/preferences.py` | `context_compaction_share()` / `set_context_compaction_share(value)` with range 5–60 and empty = automatic, plus a view (`{"share", "automatic", "windowTokens", "resolvedTokens", "minimumTokens"}`) for the Settings form. The desktop cannot compute the gateway's exact effective mark (the rendered prefix is gateway-side), so the form reports the requested threshold and a conservative fixed-context floor while the run journal carries the resolved mark. Reject out-of-range input with an error dialog rather than clamping silently, matching the runner settings. |
 | `src/qml_backend.py` | `@Property("QVariantMap") contextThreshold` (notify `settingsChanged`) and `@Slot(int) saveContextCompactionShare(int)`; both delegate to `SettingsService`. |
 | `qml/Main.qml` | In Settings → Conversation, under *Model controls* (`:681`): a "Compact context at" spin/field (`objectName: "compactionShare"`) with an *Automatic* checkbox, helper text showing the resolved token count for the current model, and a save button calling `backend.saveContextCompactionShare`. |
 | `src/desktop/conversations.py` | Manual compaction targets half the configured threshold (today's 40% is half of 80%), and `inspect_context` reports the configured submission limit and threshold instead of restating 80%. |
@@ -79,10 +86,12 @@ changes nothing, and one below them lowers the mark.
 
 | Quantity | Value | Where |
 |---|---:|---|
-| Setting range | 10–60% of the model's window | desktop form, fails closed |
+| Setting range | 5–60% of the model's window, 1% steps | desktop form, fails closed |
 | Protocol field range | 4,000–2,000,000 tokens | `AgentRunRequest.__post_init__` |
-| Effective high water | `min(threshold, 75% of budget, budget − 16,000 − 32,000)`, floor 4,000 | `_high_water` |
-| Safety clamp | 90% of the prompt budget | unchanged, `runtime.py:983` |
+| Request-derived high water | `min(threshold, 75% of budget, budget − 16,000 − 32,000)`, floor 4,000 | `_high_water` |
+| Effective high water | the larger of the request-derived mark and the fixed-context floor (prefix + 2,000 exchange + 2,000 hysteresis), plus any learned floor | `effective_high_water` ([CONTEXT_COMPACTION_LIMITS_PLAN.md](CONTEXT_COMPACTION_LIMITS_PLAN.md)) |
+| Compaction trigger | the effective mark − 1,000 tokens | `_trigger_tokens` |
+| Safety clamp | 90% of the prompt budget | unchanged |
 
 An out-of-range stored value loads as Automatic; there is no migration, since a missing setting
 is already the default.
@@ -97,8 +106,8 @@ is already the default.
   `test_the_mark_never_reaches_the_safety_clamp_or_the_output_cap` to run with a threshold set,
   and round-trip the new field through `to_dict` / `from_dict`, including a snapshot without it
   (defaults to `None` = profile cap).
-- `tests/unit/desktop/test_desktop_services.py`: share validation (10–60, junk, empty =
-  automatic) and the resolved-token view.
+- `tests/unit/desktop/test_desktop_services.py`: share validation (5–60, junk, empty =
+  automatic) and the resolved-token and fixed-floor view.
 - `tests/unit/desktop/test_controllers.py`: `prepare` passes the threshold through for both a
   window-derived default and a saved share; manual compaction and inspection use the setting.
 - `tests/structural/test_qml_structure.py`: the settings form exposes `compactionShare` and calls

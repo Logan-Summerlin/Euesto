@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from server.agent import runtime as runtime_module
+from server.agent.context import estimate_message_tokens
 from server.agent.prompts import PROMPT_VERSION, agent_prompt
 from server.agent.runtime import AgentRuntime, recent_exchanges
 from server.openrouter.agent import AgentTurn, agent_payload, serialize_payload
@@ -59,6 +60,7 @@ class ScriptedExecutor:
                 data={
                     "path": request.arguments["path"],
                     "sha256": self.file_hash,
+                    "size_bytes": self.read_bytes,
                     "start_line": 1,
                     "end_line": 1,
                     "line_count": 1,
@@ -102,10 +104,16 @@ class AllowApprovals:
 
 class Provider:
     """A scripted provider: each call pops the next turn (or raises it) and records the
-    exact request bytes the gateway would send."""
+    exact request bytes the gateway would send.
 
-    def __init__(self, turns) -> None:
+    With ``usage_from_payload`` it reports the prompt tokens the serialized payload actually
+    holds (messages plus tool schemas), so a scenario can check that the loop compacts before a
+    real prompt exceeds the mark instead of trusting the fixed fixture count.
+    """
+
+    def __init__(self, turns, *, usage_from_payload: bool = False) -> None:
         self.turns = list(turns)
+        self.usage_from_payload = usage_from_payload
         self.payloads: list[dict] = []
         self.bodies: list[bytes] = []
         self.on_call = None
@@ -132,7 +140,24 @@ class Provider:
         turn = self.turns.pop(0)
         if isinstance(turn, Exception):
             raise turn
-        return turn
+        return self._measured(turn) if self.usage_from_payload else turn
+
+    def _measured(self, turn: AgentTurn) -> AgentTurn:
+        payload = self.payloads[-1]
+        schemas = json.dumps(payload["tools"], ensure_ascii=False, separators=(",", ":"))
+        prompt = estimate_message_tokens(payload["messages"]) + estimate_message_tokens(
+            [{"role": "system", "content": schemas}]
+        )
+        usage = {**turn.usage, "prompt_tokens": prompt, "cached_tokens": prompt // 2}
+        return AgentTurn(
+            turn.content,
+            turn.tool_calls,
+            turn.message,
+            usage,
+            turn.finish_reason,
+            turn.provider,
+            turn.model,
+        )
 
 
 def call(call_id: str, name: str, arguments: dict) -> dict:
@@ -187,9 +212,10 @@ def run(
     request=None,
     runtime=None,
     events=None,
+    usage_from_payload=False,
     **run_kwargs,
 ):
-    provider = Provider(turns)
+    provider = Provider(turns, usage_from_payload=usage_from_payload)
     monkeypatch.setattr(runtime_module, "agent_turn", provider)
     monkeypatch.setattr(runtime_module, "RETRY_BASE_DELAY", 0.0)
     events = [] if events is None else events
@@ -271,13 +297,14 @@ def test_each_result_is_bounded_by_its_tool_cap_and_journaled(monkeypatch) -> No
 
 def test_read_requests_are_clamped_to_the_read_result_cap(monkeypatch) -> None:
     executor = ScriptedExecutor()
-    run(
+    provider, _events, _saved, _runtime = run(
         monkeypatch,
         [tools_turn(call("r1", "read", {"path": "a.py", "max_bytes": 900_000})), final_turn()],
         executor=executor,
     )
     reads = [item for item in executor.requests if item.tool == "read"]
-    assert reads[0].arguments["max_bytes"] == 29_000
+    assert reads[0].arguments["max_bytes"] == 31_000
+    assert "capped at 31,000 by the coding profile" in tool_contents(provider.payloads[-1])[0]
 
 
 # -- 0.2 prompt -----------------------------------------------------------------------------
@@ -531,29 +558,36 @@ def test_cache_breakpoints_only_for_providers_that_need_them(model, expected) ->
 def test_compaction_happens_only_at_the_high_water_mark_and_keeps_tool_pairs(
     monkeypatch,
 ) -> None:
-    # A 20,800-token window with the growth reserve suppressed holds 4,800 tokens once the
-    # 16,000-token output cap is set aside, so the high-water mark is the readable 4,800 this
-    # scenario was written around; each read adds about 1,500 tokens and the fourth request
-    # compacts.
+    # A 32,000-token window with the growth reserve suppressed holds 16,000 tokens once the
+    # 16,000-token output cap is set aside, so the capacity bound sets the mark: the request
+    # asks for 16,000 and the trigger is one summary request below it, 15,000. Each read adds
+    # about 1,550 estimated prompt tokens, and the eighth check compacts.
     monkeypatch.setattr(runtime_module, "TURN_GROWTH_RESERVE_TOKENS", 0)
-    turns = [tools_turn(call(f"r{index}", "read", {"path": f"f{index}"})) for index in range(4)]
-    handoff = final_turn("Objective: finish.\nNext steps: read f6.")
-    turns.insert(3, handoff)
+    turns = [tools_turn(call(f"r{index}", "read", {"path": f"f{index}"})) for index in range(8)]
+    handoff = final_turn("Objective: finish.\nNext steps: read f9.")
+    turns.insert(7, handoff)
     provider, events, saved, _runtime = run(
         monkeypatch,
         [*turns, final_turn()],
         executor=ScriptedExecutor(read_bytes=6_000),
-        request=make_request(context_limit_tokens=20_800),
+        request=make_request(context_limit_tokens=32_000),
     )
     compactions = [payload for kind, payload in events if kind == "context.compacted"]
     assert len(compactions) == 1 and compactions[0]["method"] == "summary"
-    assert compactions[0]["high_water_tokens"] == 4_800
-    assert compactions[0]["tokens_after"] < compactions[0]["tokens_before"]
-    summary_request = provider.payloads[3]
+    journal = compactions[0]
+    assert journal["high_water_tokens"] == 16_000  # the request-derived mark
+    assert journal["effective_high_water_tokens"] == 16_000
+    assert journal["trigger_tokens"] == 15_000
+    assert journal["tokens_before"] >= journal["trigger_tokens"]
+    assert journal["tokens_after"] < journal["tokens_before"]
+    assert journal["tokens_after"] <= journal["low_water_tokens"] == 5_333
+    summary_request = provider.payloads[7]
     assert summary_request["tool_choice"] == "none"
     assert summary_request["max_tokens"] == 2_500
     assert summary_request["messages"][-1]["content"].startswith("COMPACTION REQUEST")
-    after = provider.payloads[4]["messages"]
+    # The summary request itself is sent below the effective mark.
+    assert estimate_message_tokens(summary_request["messages"]) <= 16_000
+    after = provider.payloads[8]["messages"]
     assert after[0]["content"] == agent_prompt("agent")
     assert after[1]["content"].startswith("SESSION CONTEXT")
     assert after[2]["content"].startswith("HANDOFF")
@@ -566,13 +600,13 @@ def test_compaction_happens_only_at_the_high_water_mark_and_keeps_tool_pairs(
 
 def test_a_failed_summary_turn_falls_back_to_deterministic_compaction(monkeypatch) -> None:
     monkeypatch.setattr(runtime_module, "TURN_GROWTH_RESERVE_TOKENS", 0)
-    turns = [tools_turn(call(f"r{index}", "read", {"path": f"f{index}"})) for index in range(4)]
-    turns.insert(3, ProviderError("provider.agent_error", "context too long", retryable=False))
+    turns = [tools_turn(call(f"r{index}", "read", {"path": f"f{index}"})) for index in range(8)]
+    turns.insert(7, ProviderError("provider.agent_error", "context too long", retryable=False))
     _provider, events, _saved, _runtime = run(
         monkeypatch,
         [*turns, final_turn()],
         executor=ScriptedExecutor(read_bytes=6_000),
-        request=make_request(context_limit_tokens=20_800),
+        request=make_request(context_limit_tokens=32_000),
     )
     compactions = [payload for kind, payload in events if kind == "context.compacted"]
     assert compactions and compactions[0]["method"] == "deterministic"
@@ -623,10 +657,10 @@ def test_an_unchanged_re_read_is_a_one_line_note_while_the_result_is_live(monkey
         ],
     )
     results = tool_contents(provider.payloads[-1])
-    assert results[0].startswith("read a lines 1–1 of 1")
-    assert (
-        results[1]
-        == "read a: unchanged since your earlier read (tool call r1); use that result."
+    assert results[0].startswith("read a lines 1–1 of 1 (full coverage)")
+    assert results[1] == (
+        "read a: unchanged since tool call r1; that result covered the whole file "
+        "(full coverage)."
     )
 
 
@@ -735,20 +769,163 @@ def test_the_workspace_snapshot_is_in_the_first_request(monkeypatch) -> None:
 
 
 def test_a_saved_threshold_changes_where_an_agent_run_compacts(monkeypatch) -> None:
-    # The same scenario as above, with the user's threshold set below the window's own mark.
-    # The run compacts at the threshold, and the journal records the mark it actually used.
+    # The user's threshold is below the window's own capacity mark, so it binds: the run
+    # compacts at the threshold, and the journal records the mark it actually used.
     monkeypatch.setattr(runtime_module, "TURN_GROWTH_RESERVE_TOKENS", 0)
-    turns = [tools_turn(call(f"r{index}", "read", {"path": f"f{index}"})) for index in range(4)]
+    turns = [tools_turn(call(f"r{index}", "read", {"path": f"f{index}"})) for index in range(3)]
     turns.insert(3, final_turn("Objective: finish.\nNext steps: read f6."))
     _provider, events, _saved, _runtime = run(
         monkeypatch,
         [*turns, final_turn()],
         executor=ScriptedExecutor(read_bytes=6_000),
-        request=make_request(context_limit_tokens=20_800, compaction_threshold_tokens=4_000),
+        request=make_request(context_limit_tokens=32_000, compaction_threshold_tokens=10_000),
     )
     started = [payload for kind, payload in events if kind == "run.started"]
-    assert started[0]["compaction_threshold_tokens"] == 4_000
+    assert started[0]["compaction_threshold_tokens"] == 10_000
+    # The effective mark is journaled once the session layout exists.
+    high_water = [payload for kind, payload in events if kind == "context.high_water"]
+    assert high_water[0]["requested_tokens"] == 10_000
+    assert high_water[0]["effective_tokens"] == 10_000
+    assert high_water[0]["binding"] == "requested"
+    assert high_water[0]["trigger_tokens"] == 9_000
     compactions = [payload for kind, payload in events if kind == "context.compacted"]
-    assert len(compactions) >= 1
-    assert compactions[0]["high_water_tokens"] == 4_000
+    assert len(compactions) == 1
+    assert compactions[0]["high_water_tokens"] == 10_000
+    assert compactions[0]["tokens_before"] >= compactions[0]["trigger_tokens"] == 9_000
     assert kinds(events)[-1] == "run.completed"
+
+
+def test_a_5_percent_threshold_compacts_before_the_next_ordinary_call(monkeypatch) -> None:
+    # 5% of a 200k window is 10,000 tokens, below the fixed-context floor once the workspace
+    # instructions render into the session prefix, so the run works against the raised mark and
+    # journals it. The provider reports the real size of each payload, so a run that waited for
+    # the message-only estimate to catch up would show an ordinary call above the mark.
+    turns = [
+        tools_turn(call(f"r{index}", "read", {"path": f"f{index}"})) for index in range(10)
+    ]
+    turns.insert(0, final_turn("Objective: finish.\nNext steps: read f9."))
+    provider, events, _saved, _runtime = run(
+        monkeypatch,
+        [*turns, final_turn()],
+        executor=ScriptedExecutor(read_bytes=6_000),
+        request=make_request(
+            context_limit_tokens=160_000,
+            compaction_threshold_tokens=10_000,
+            workspace_config={"instructions": "x" * 32_000},
+        ),
+        usage_from_payload=True,
+    )
+    marks = [payload for kind, payload in events if kind == "context.high_water"]
+    assert marks[0]["requested_tokens"] == 10_000
+    effective = marks[0]["effective_tokens"]
+    trigger = marks[0]["trigger_tokens"]
+    assert effective == marks[0]["floor_tokens"] > 10_000  # raised to the fixed-context floor
+    assert marks[0]["binding"] == "prefix"
+    assert trigger == effective - runtime_module.COMPACTION_REQUEST_RESERVE_TOKENS
+    compactions = [payload for kind, payload in events if kind == "context.compacted"]
+    assert compactions, kinds(events)
+    assert compactions[0]["effective_high_water_tokens"] == effective
+    assert compactions[0]["trigger_tokens"] == trigger
+    # Every ordinary call stayed at or below the mark, and no `usage.turn` reports a larger
+    # prompt before the compaction that follows it.
+    prompts = [payload["prompt_tokens"] for kind, payload in events if kind == "usage.turn"]
+    assert prompts, kinds(events)
+    assert all(tokens <= effective for tokens in prompts), prompts
+    first_over = next(
+        (index for index, tokens in enumerate(prompts) if tokens > effective), None
+    )
+    if first_over is not None:
+        assert kinds(events).index("context.compacted") < _usage_index(events, first_over)
+    # The summary request itself is sent at or below the mark.
+    summary = next(payload for payload in provider.payloads if payload["tool_choice"] == "none")
+    assert _payload_tokens(summary) <= effective
+
+
+def test_the_previous_actual_prompt_is_a_lower_bound_for_the_next_check(monkeypatch) -> None:
+    # A provider that reports far more prompt tokens than the local estimate must not be ignored:
+    # the next check compacts, where the message-only estimate alone would not.
+    turns = [
+        tools_turn(call("r0", "read", {"path": "a"}), usage={"prompt_tokens": 60_000}),
+        final_turn("Objective: finish."),
+        tools_turn(call("r1", "read", {"path": "b"})),
+        final_turn(),
+    ]
+    _provider, events, _saved, _runtime = run(
+        monkeypatch,
+        turns,
+        executor=ScriptedExecutor(read_bytes=1_000),
+        request=make_request(context_limit_tokens=160_000, compaction_threshold_tokens=50_000),
+    )
+    compactions = [payload for kind, payload in events if kind == "context.compacted"]
+    assert len(compactions) == 1, kinds(events)
+    # The local estimate of that prompt was a few thousand tokens; the provider's own count is
+    # what triggered the compaction.
+    assert compactions[0]["tokens_before"] >= 60_000
+    first_prompt = next(payload for kind, payload in events if kind == "usage.turn")
+    assert first_prompt["prompt_tokens"] == 60_000
+    assert kinds(events).index("context.compacted") < _usage_index(events, 1)
+
+
+def test_a_window_that_cannot_hold_the_fixed_context_fails_closed(monkeypatch) -> None:
+    # A 20,000-token prompt budget cannot hold the output turn and the growth reserve, let alone
+    # the fixed prefix: the run names the reason instead of sending an over-limit prompt.
+    provider, events, _saved, _runtime = run(
+        monkeypatch,
+        [final_turn()],
+        request=make_request(context_limit_tokens=20_000),
+    )
+    assert provider.payloads == []  # no provider call was made
+    failed = [payload for kind, payload in events if kind == "run.failed"]
+    assert failed and failed[0]["code"] == "context.floor_too_large"
+    assert "fixed session context does not fit" in failed[0]["message"]
+    assert "prompt budget 20,000 tokens" in failed[0]["message"]
+    assert not any(kind == "context.high_water" for kind, _payload in events)
+
+
+def _payload_tokens(payload: dict) -> int:
+    schemas = json.dumps(payload["tools"], ensure_ascii=False, separators=(",", ":"))
+    return estimate_message_tokens(payload["messages"]) + estimate_message_tokens(
+        [{"role": "system", "content": schemas}]
+    )
+
+
+def _usage_index(events, ordinal: int) -> int:
+    """The event index of the ``ordinal``-th ``usage.turn`` event."""
+    seen = 0
+    for index, (kind, _payload) in enumerate(events):
+        if kind == "usage.turn":
+            if seen == ordinal:
+                return index
+            seen += 1
+    return len(events)
+
+
+def test_a_fixed_prefix_above_the_requested_mark_compacts_once(monkeypatch) -> None:
+    # The workspace instructions render into the session context, so the fixed prefix alone is
+    # larger than the 5,000-token request. The run compacts once, learns the floor that keeps
+    # it from compacting again immediately, and journals that decision.
+    monkeypatch.setattr(runtime_module, "TURN_GROWTH_RESERVE_TOKENS", 0)
+    turns = [tools_turn(call(f"r{index}", "read", {"path": f"f{index}"})) for index in range(6)]
+    turns.insert(0, final_turn("Objective: finish.\nNext steps: read f2."))
+    _provider, events, _saved, _runtime = run(
+        monkeypatch,
+        [*turns, final_turn()],
+        executor=ScriptedExecutor(read_bytes=1_000),
+        request=make_request(
+            context_limit_tokens=160_000,
+            compaction_threshold_tokens=5_000,
+            workspace_config={"instructions": "x" * 32_000},
+        ),
+    )
+    compactions = [payload for kind, payload in events if kind == "context.compacted"]
+    floors = [payload for kind, payload in events if kind == "context.compaction_floor"]
+    assert len(compactions) == 1, compactions
+    assert len(floors) == 1, floors
+    assert compactions[0]["high_water_tokens"] == 5_000
+    assert compactions[0]["effective_high_water_tokens"] > 5_000  # raised to the prefix floor
+    assert floors[0]["floor_tokens"] > compactions[0]["effective_high_water_tokens"]
+    assert floors[0]["compacted_tokens"] > 0
+    assert kinds(events)[-1] == "run.completed"
+    # The floor outlives the compaction: the following turns are ordinary model calls.
+    summary_calls = [p for p in _provider.payloads if p["tool_choice"] == "none"]
+    assert len(summary_calls) == 1

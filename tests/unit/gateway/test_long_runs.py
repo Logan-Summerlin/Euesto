@@ -509,11 +509,13 @@ def test_plan_mode_can_delegate_an_investigation(monkeypatch) -> None:
 
 def test_a_large_window_run_compacts_at_the_working_set_and_keeps_going(monkeypatch) -> None:
     # Twenty-four reads at the 32,000-byte read cap put about 154,000 tokens of live context in
-    # the window, which crosses the 400k-window request's mark: the profile cap, 150,000.
+    # the window, which crosses the 400k-window request's mark: the profile cap, 150,000. The
+    # trigger sits one summary request below it, at 149,000, so the compaction lands on the
+    # twentieth check.
     turns = [
         tools_turn(call(f"r{index}", "read", {"path": f"f{index}.py"})) for index in range(24)
     ]
-    turns.insert(21, final_turn("HANDOFF\nObjective: finish.\nNext steps: read f99.py."))
+    turns.insert(19, final_turn("HANDOFF\nObjective: finish.\nNext steps: read f99.py."))
     provider, events, _saved, _runtime = run(
         monkeypatch,
         [*turns, final_turn()],
@@ -522,13 +524,20 @@ def test_a_large_window_run_compacts_at_the_working_set_and_keeps_going(monkeypa
     )
     inspections = [payload for kind, payload in events if kind == "context.inspected"]
     assert [item["high_water_tokens"] for item in inspections] == [150_000]
+    marks = [payload for kind, payload in events if kind == "context.high_water"]
+    assert marks[0]["requested_tokens"] == 150_000
+    assert marks[0]["effective_tokens"] == 150_000
+    assert marks[0]["trigger_tokens"] == 149_000
     compactions = [payload for kind, payload in events if kind == "context.compacted"]
     assert len(compactions) == 1
     journal = compactions[0]
     assert journal["high_water_tokens"] == 150_000
+    assert journal["effective_high_water_tokens"] == 150_000
+    assert journal["trigger_tokens"] == 149_000
     assert journal["low_water_tokens"] == 50_000
     assert journal["method"] == "summary"
-    assert journal["tokens_before"] > 150_000 >= journal["tokens_after"]
+    # The run compacts before the next ordinary call can exceed the mark, not after it.
+    assert journal["tokens_before"] >= journal["trigger_tokens"]
     assert journal["low_water_tokens"] >= journal["tokens_after"]
     # The compaction turn is the only extra model call, and the run still finishes normally.
     assert len(provider.payloads) == 26

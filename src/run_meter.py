@@ -39,10 +39,16 @@ class RunMeter:
         elif event_type == "usage.updated":
             self._budget(payload.get("budget"))
             self._run_totals(payload)
+        elif event_type == "context.high_water":
+            effective = optional_int(payload.get("effective_tokens"))
+            if effective is not None:
+                self.working_set_tokens = effective
         elif event_type == "context.compacted":
             self.context_tokens = optional_int(payload.get("tokens_after"))
             self.working_set_tokens = (
-                optional_int(payload.get("high_water_tokens")) or self.working_set_tokens
+                optional_int(payload.get("effective_high_water_tokens"))
+                or optional_int(payload.get("high_water_tokens"))
+                or self.working_set_tokens
             )
             self.compactions += 1
         elif event_type == "model.retry":

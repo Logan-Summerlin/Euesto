@@ -84,8 +84,8 @@ def guard_shrink(
     if not advisory:
         raise ExecutorToolError(
             STAGING_SHRINK_WARNING,
-            f"{message}; review the full replacement before retrying, or pass the current "
-            "expected_sha256 to confirm a deliberate rewrite.",
+            f"{message}; read the whole file in contiguous parts before retrying; a deliberate "
+            "rewrite is confirmed automatically.",
             details={"failure": "shrink_guard", "path": relative, **sizes},
         )
     return {
@@ -164,6 +164,26 @@ def bounded_diff(
         "changed_lines": max(added_lines, removed_lines),
         "added_lines": added_lines,
         "removed_lines": removed_lines,
+    }
+
+
+def bounded_append_diff(
+    relative: str, appended_bytes: int, appended_lines: int
+) -> dict[str, object]:
+    preview, _ = _truncate_utf8(
+        f"{relative}: appended {appended_lines} line{'s' if appended_lines != 1 else ''} "
+        f"(+{appended_bytes} bytes) to a large file; full diff omitted to preserve bounded "
+        "memory.",
+        MAX_DIFF_BYTES,
+    )
+    return {
+        "path": relative,
+        "text": preview,
+        "truncated": True,
+        "lines": 0,
+        "changed_lines": appended_lines,
+        "added_lines": appended_lines,
+        "removed_lines": 0,
     }
 
 
