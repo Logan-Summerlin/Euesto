@@ -26,6 +26,7 @@ Each living plan and the roadmap live only in this directory, one authoritative 
 | [AGENTIC_HARNESS_PLAN.md](AGENTIC_HARNESS_PLAN.md) | Phased plan to widen agent capability inside the sandbox. Phases 0–5 are implemented; Phases 6–7 (long-running projects, simple setup) are proposed. |
 | [MODEL_CONTROLS_PLAN.md](MODEL_CONTROLS_PLAN.md) | Proposed plan for three desktop model-control changes: a user-set context compaction threshold, a blended per-million-token cost estimate in the model picker, and the five thinking levels with their provider mapping. |
 | [HARNESS_TOOL_FEEDBACK_PLAN.md](HARNESS_TOOL_FEEDBACK_PLAN.md) | Implemented plan for six tool-feedback failures: shrink-guard coverage, ambiguous re-reads, length-truncated writes, the read cap and outline, the compaction handoff's status, and duplicate reads in one batch. |
+| [CODEBASE_SIMPLIFICATION_PLAN.md](CODEBASE_SIMPLIFICATION_PLAN.md) | Proposed KISS/YAGNI pass that preserves behavior: confirmed bug fixes, dead code and duplication removal, splitting `server/agent/runtime.py`, `src/runtime_manager.py`, and `qml/Main.qml`, test-scaffolding consolidation, and archiving the implemented plans. |
 | [CONTEXT_COMPACTION_LIMITS_PLAN.md](CONTEXT_COMPACTION_LIMITS_PLAN.md) | Implemented plan widening the compaction threshold to 5–60% and making compaction trigger before any ordinary call exceeds the effective high-water mark: the fixed-context floor, the trigger reserve, the measured prompt estimate, and the learned floor. |
 
 ## Naming and ownership rules
